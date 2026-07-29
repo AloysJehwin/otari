@@ -112,6 +112,71 @@ async def test_call_tool_returns_formatted_results_without_extraction(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_published_date_is_rendered_when_backend_supplies_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A recency-aware adapter (e.g. Brave with time_range) may set
+    # published_date; a plain SearXNG backend never does. Both must render
+    # correctly: present inline next to the title, absent means no residue.
+    body = {
+        "results": [
+            {
+                "url": "https://example.com/post-a",
+                "title": "Post A",
+                "content": "snippet about A",
+                "published_date": "2026-07-20T00:00:00.000Z",
+            },
+            {
+                "url": "https://example.org/post-b",
+                "title": "Post B",
+                "content": "snippet about B",
+            },
+        ]
+    }
+    _patched_async_client({("searxng", "/search"): httpx.Response(200, json=body)}, monkeypatch)
+
+    async with WebSearchBackend(base_url="http://searxng:8080", extract_content=False) as backend:
+        result = await backend.call_tool(WEB_SEARCH_TOOL_NAME, {"query": "claude code"})
+
+    assert "[1] Post A (2026-07-20T00:00:00.000Z)" in result
+    # No published_date supplied for B: no stray parens/empty date rendered.
+    assert "[2] Post B" in result
+    assert "[2] Post B (" not in result
+
+
+@pytest.mark.asyncio
+async def test_published_date_is_bounded_and_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A multiline or oversized published_date shouldn't make the rendered
+    result block hard to read; collapse to one line and cap the length.
+    """
+    body = {
+        "results": [
+            {
+                "url": "https://example.com/a",
+                "title": "Post A",
+                "content": "snippet a",
+                "published_date": "line one\nline two\r\nline three",
+            },
+            {
+                "url": "https://example.org/b",
+                "title": "Post B",
+                "content": "snippet b",
+                "published_date": "x" * 500,
+            },
+        ]
+    }
+    _patched_async_client({("searxng", "/search"): httpx.Response(200, json=body)}, monkeypatch)
+
+    async with WebSearchBackend(base_url="http://searxng:8080", extract_content=False) as backend:
+        result = await backend.call_tool(WEB_SEARCH_TOOL_NAME, {"query": "claude code"})
+
+    # Multiline input collapses to one line, no injected newlines survive it.
+    assert "line one line two line three" in result
+    assert "line one\nline two" not in result
+    # Oversized input is capped, not reproduced in full.
+    assert f"[2] Post B ({'x' * 128})" in result
+    assert f"[2] Post B ({'x' * 129})" not in result
+
+
+@pytest.mark.asyncio
 async def test_call_tool_extracts_content_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     _patched_async_client(
         {
