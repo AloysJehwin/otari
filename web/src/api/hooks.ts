@@ -1,6 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch } from "@/api/client";
+import { isoAgo } from "@/lib/timeRange";
 import type {
   AliasResponse,
   ApiKey,
@@ -687,6 +688,40 @@ export function useUsageCount(filters: UsageFilters, enabled = true) {
     enabled,
     placeholderData: keepPreviousData,
     staleTime: 10_000,
+  });
+}
+
+// How often the rolling failure count re-reads. A dropped-traffic signal is only
+// useful if it moves while the operator watches it.
+const FAILURE_COUNT_POLL_MS = 60_000;
+
+// Requests that failed within the last `windowSeconds`, as a live count. The
+// window is resolved inside the query function, not in the key, for two reasons:
+// the key stays stable (a "now"-derived key would mint a new cache entry on every
+// render), and every refetch re-anchors, so a tab left open keeps reporting the
+// last hour rather than quietly widening to the last hour and a half.
+//
+// Scoped to `source: "gateway"`: imported usage can carry status=error too (the
+// external-events API accepts it), and an imported session's failures are not this
+// gateway dropping traffic. Counting them would make the signal cry wolf.
+export function useFailureCount(windowSeconds: number, enabled = true) {
+  return useQuery({
+    queryKey: [USAGE, "count", "failures", windowSeconds],
+    queryFn: () => {
+      const filters: UsageFilters = {
+        status: "error",
+        source: "gateway",
+        start_date: isoAgo(windowSeconds),
+      };
+      return apiFetch<UsageCount>(`/v1/usage/count?${usageParams(filters).toString()}`);
+    },
+    enabled,
+    refetchInterval: FAILURE_COUNT_POLL_MS,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
+    // A failed count is not worth surfacing: it sits beside its own alarm, and
+    // the next poll retries anyway.
+    retry: false,
   });
 }
 
