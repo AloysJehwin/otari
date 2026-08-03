@@ -94,6 +94,74 @@ For a full client setup example, see [Use with Claude Code](use-with-claude-code
 |--------|------|-------------|------|
 | `POST` | `/v1/rerank` | Reorder documents by relevance to a query. | API key or master key |
 
+### Search
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/v1/search` | Run a search against a configured search tool, named in `search_tool_name`. | API key or master key |
+| `POST` | `/v1/search/{search_tool_name}` | Same, with the tool named in the path. | API key or master key |
+
+Search tools are declared under [`search_tools`](configuration.md#search-tools)
+in `config.yml`. This is the direct counterpart to the `otari_web_search` tool:
+the tool answers a model's search call mid-completion, while this endpoint takes
+a query from the caller and returns results. Both forms log
+`endpoint="/v1/search"`, so one Activity filter covers every search.
+
+The request and response follow LiteLLM's `/v1/search` (itself shaped after
+Perplexity's Search API), so a client moving off the LiteLLM proxy keeps its
+request shape:
+
+```bash
+curl http://localhost:8000/v1/search/exa-search \
+  -H "Otari-Key: Bearer $OTARI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "post-training quantization for small models",
+    "max_results": 5,
+    "search_domain_filter": ["arxiv.org"]
+  }'
+```
+
+```json
+{
+  "object": "search",
+  "search_tool": "exa-search",
+  "results": [
+    {
+      "title": "…",
+      "url": "https://arxiv.org/abs/…",
+      "snippet": "…",
+      "date": "2026-01-02T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+The accepted request fields are `query`, `search_tool_name`, `max_results`
+(1 to 20), `search_domain_filter` (up to 20 entries; prefix a domain with `-` to
+exclude it rather than restrict to it), `country`, `max_tokens_per_page`, and
+`user`. Two differences from Perplexity are worth knowing before you migrate:
+`query` must be a single string, so the multi-query array form is rejected with
+a 422; and the filters Otari does not model (`search_recency_filter`,
+`search_context_size`, the published-date filters) are ignored rather than
+rejected, so check that your client does not depend on one. Provider-native
+knobs with no request field, such as Exa's `type` or `category`, belong in the
+tool's `options`.
+
+Search bills per request rather than per token, so a usage
+row carries zero tokens and a cost taken from the provider's own reported charge
+when it reports one (Exa does); otherwise it uses the flat per-request rate
+configured for `<provider>:<tool>`, under the same convention as
+[moderations](#moderations). Like moderations, search is exempt from
+`require_pricing`. Configuring the flat rate is still
+[recommended](configuration.md#search-tools): it is what gets reserved against
+the caller's budget before the search runs.
+
+A search the gateway itself refuses, an unknown or ambiguous `search_tool_name`
+(400) or a tool the key's allowed-models list does not name (403), is written to
+the usage log too, with a null cost, so refused searches are visible in Activity
+and counted as failures rather than only in the caller's own logs.
+
 ### Images
 
 | Method | Path | Description | Auth |

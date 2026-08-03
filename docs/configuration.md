@@ -67,6 +67,7 @@ pricing:
 | `providers` | dict | `{}` | Provider credentials (see below) |
 | `aliases` | dict | `{}` | Model name aliases (display name to target selector `instance:model` or `provider:model`). The alias is what users see in `GET /v1/models` and in response `model` fields; pricing, budgets, and usage key on the resolved target. Standalone mode only. |
 | `pricing` | dict | `{}` | Model pricing entries |
+| `search_tools` | dict | `{}` | Search tools served by `POST /v1/search` (see below). Standalone mode only. |
 | `enable_metrics` | bool | `false` | Enable Prometheus `/metrics` endpoint |
 | `enable_docs` | bool | `true` | Enable `/docs`, `/redoc`, `/openapi.json` |
 | `bootstrap_api_key` | bool | `true` | Create a first-use API key on startup when none exist |
@@ -255,6 +256,75 @@ providers:
 ```
 
 The `credentials` field points to a Google Cloud service account JSON file.
+
+## Search tools
+
+`search_tools` declares what [`POST /v1/search`](api-reference.md#search) can
+run against, keyed by the name callers pass as `search_tool_name` (or in the
+`/v1/search/{tool}` path):
+
+```yaml
+search_tools:
+  exa-search:
+    provider: exa
+    api_key: ${EXA_API_KEY}
+    # api_base: "https://api.exa.ai"   # optional; override to route via a proxy
+    # timeout: 30                      # optional; seconds
+    options:                           # optional provider-native defaults
+      type: fast
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `provider` | string | the tool name | Search provider to dispatch to. Supported: `exa`. |
+| `api_key` | string | required | Credential for the provider. |
+| `api_base` | string | provider default | Override the provider's base URL. |
+| `timeout` | number | `30` | Request timeout in seconds; must be greater than 0. |
+| `options` | dict | `{}` | Provider-native request fields used as defaults. |
+
+`options` is the escape hatch for knobs the LiteLLM-shaped request has no field
+for, such as Exa's `type`, `category`, or `moderation`. Fields derived from the
+request win over it, and `query` always comes from the caller.
+
+Page content is requested by default, because the `snippet` on each result is
+that text. Providers charge per page for it, so a deployment that only wants
+ranked URLs (or highlights) can opt out by pinning `contents.text` to null:
+
+```yaml
+search_tools:
+  exa-urls-only:
+    provider: exa
+    api_key: ${EXA_API_KEY}
+    options:
+      contents:
+        text: null        # no page content, so no per-page content charge
+        highlights: true  # keep the cheaper highlight sentences as the snippet
+```
+
+The opt-out is the operator's, so it holds even for a request that carries
+`max_tokens_per_page`.
+
+Every entry is validated at startup, so an unsupported provider or a missing
+`api_key` fails before the first request. Search tools are standalone mode only:
+in hybrid mode, search is the platform's to configure.
+
+To price search, add a flat per-request rate under the model key
+`<provider>:<tool>` (for example `exa:exa-search`), following the same
+convention as moderations: the stored `input_price_per_million` is USD per
+million requests, so `5000.0` charges $0.005 per search. For what a search is
+billed at, this is only a fallback; when the provider reports its own charge
+(Exa returns `costDollars`), that is what gets billed.
+
+Configuring the rate anyway is strongly recommended, because it is also what
+the gateway reserves against the caller's budget *before* the search runs. With
+no rate configured, that reservation is $0: a user already over their cap is
+still refused, but one just under it can overshoot by a search's cost, and
+concurrent searches cannot see each other's holds. Spend stays truthful either
+way (the provider's charge is reconciled onto the usage row afterwards), so this
+is about how tightly the cap holds, not about billing accuracy. Set the rate to
+a typical search cost for the tool and the pre-flight hold does its job. Otari
+logs a warning at startup for any configured search tool with no rate; an
+explicit `0` counts as configured, for a tool you mean to be free.
 
 ## Pricing
 
