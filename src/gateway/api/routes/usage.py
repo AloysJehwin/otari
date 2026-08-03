@@ -44,7 +44,31 @@ _MAX_SUMMARY_SPAN = timedelta(days=366)
 # single synthesized "other" row (so the tables still reconcile with the totals).
 _BREAKDOWN_TOP_N = 100
 
+# Sessions (``source_label``) are an order of magnitude higher-cardinality than
+# models or users: one agent workload can open hundreds of them in a month, and
+# the interesting signal is a long-ish head ("which tasks burned the budget"),
+# not just the top few. Give that dimension a deeper cap so the head is not
+# swallowed by the "other" fold.
+_SESSION_BREAKDOWN_TOP_N = 250
+
 Bucket = Literal["hour", "day"]
+
+# Every breakdown ``/summary`` can compute, mapped to the column it groups by and
+# its top-N cap. A dimension name is the ``by_<name>`` response field it fills, so
+# a caller reads the selector and the payload with one vocabulary.
+_SUMMARY_DIMENSIONS: dict[str, tuple[Any, int]] = {
+    "model": (UsageLog.model, _BREAKDOWN_TOP_N),
+    "user": (UsageLog.user_id, _BREAKDOWN_TOP_N),
+    "api_key": (UsageLog.api_key_id, _BREAKDOWN_TOP_N),
+    "source": (UsageLog.source, _BREAKDOWN_TOP_N),
+    "source_label": (UsageLog.source_label, _SESSION_BREAKDOWN_TOP_N),
+    "endpoint": (UsageLog.endpoint, _BREAKDOWN_TOP_N),
+    "provider": (UsageLog.provider, _BREAKDOWN_TOP_N),
+}
+
+# Keep in step with _SUMMARY_DIMENSIONS; the extra ``none`` is the explicit empty
+# selection (a repeated query param cannot express an empty list on the wire).
+SummaryDimension = Literal["model", "user", "api_key", "source", "source_label", "endpoint", "provider", "none"]
 
 
 def _utc_iso(value: datetime) -> str:
@@ -127,12 +151,20 @@ _USER_DESC = "Filter to a single user"
 _STATUS_DESC = "Filter to a single status (e.g. 'success' or 'error')"
 _MODEL_DESC = "Filter to a single model"
 _ENDPOINT_DESC = "Filter to a single endpoint (e.g. '/v1/chat/completions')"
+_PROVIDER_DESC = "Filter to a single provider (e.g. 'openai')"
 _SOURCE_DESC = "Filter to a single provenance source (e.g. 'gateway' or 'claude_code')"
+_SOURCE_LABEL_DESC = "Filter to a single session/project label (the source_label carried by imported usage)"
 _API_KEY_DESC = "Filter to a single API key id"
 _PRICED_DESC = "Filter by pricing state: true = only rows with a cost, false = only unpriced rows (cost is null)"
 _COUNTS_DESC = (
     "Filter by budget participation: true = only enforced gateway rows, "
     "false = only imported rows that never touch a budget"
+)
+_DIMENSIONS_DESC = (
+    "Which breakdowns to compute; repeatable (dimensions=model&dimensions=user). Each value names the "
+    "'by_<value>' response field it fills. Omit for every breakdown (the default); pass 'none' for a "
+    "totals-and-series-only response. Each dimension left out skips one GROUP BY scan, so a caller that "
+    "reads only the tiles or the time series should say so. Fields that were not requested come back empty."
 )
 
 
@@ -144,7 +176,9 @@ def _usage_filters(
     status: str | None,
     model: str | None,
     endpoint: str | None,
+    provider: str | None = None,
     source: str | None = None,
+    source_label: str | None = None,
     api_key_id: str | None = None,
     priced: bool | None = None,
     counts_toward_budget: bool | None = None,
@@ -167,8 +201,12 @@ def _usage_filters(
         conditions.append(UsageLog.model == model)
     if endpoint is not None:
         conditions.append(UsageLog.endpoint == endpoint)
+    if provider is not None:
+        conditions.append(UsageLog.provider == provider)
     if source is not None:
         conditions.append(UsageLog.source == source)
+    if source_label is not None:
+        conditions.append(UsageLog.source_label == source_label)
     if api_key_id is not None:
         conditions.append(UsageLog.api_key_id == api_key_id)
     if priced is True:
@@ -189,7 +227,9 @@ async def list_usage(
     status: str | None = Query(default=None, description=_STATUS_DESC),
     model: str | None = Query(default=None, description=_MODEL_DESC),
     endpoint: str | None = Query(default=None, description=_ENDPOINT_DESC),
+    provider: str | None = Query(default=None, description=_PROVIDER_DESC),
     source: str | None = Query(default=None, description=_SOURCE_DESC),
+    source_label: str | None = Query(default=None, description=_SOURCE_LABEL_DESC),
     api_key_id: str | None = Query(default=None, description=_API_KEY_DESC),
     priced: bool | None = Query(default=None, description=_PRICED_DESC),
     counts_toward_budget: bool | None = Query(default=None, description=_COUNTS_DESC),
@@ -198,7 +238,8 @@ async def list_usage(
 ) -> list[UsageEntry]:
     """List usage logs ordered by timestamp (most recent first).
 
-    Supports optional filters for time range, user, status, model, and endpoint.
+    Supports optional filters for time range, user, status, model, endpoint,
+    provider, source, and session (``source_label``).
     Paginated via skip/limit. The return shape is a bare JSON array; external
     billing/analytics consumers depend on this, so the total row count for a
     paginated UI is served separately by ``GET /v1/usage/count`` rather than
@@ -212,7 +253,9 @@ async def list_usage(
         status=status,
         model=model,
         endpoint=endpoint,
+        provider=provider,
         source=source,
+        source_label=source_label,
         api_key_id=api_key_id,
         priced=priced,
         counts_toward_budget=counts_toward_budget,
@@ -267,7 +310,9 @@ async def count_usage(
     status: str | None = Query(default=None, description=_STATUS_DESC),
     model: str | None = Query(default=None, description=_MODEL_DESC),
     endpoint: str | None = Query(default=None, description=_ENDPOINT_DESC),
+    provider: str | None = Query(default=None, description=_PROVIDER_DESC),
     source: str | None = Query(default=None, description=_SOURCE_DESC),
+    source_label: str | None = Query(default=None, description=_SOURCE_LABEL_DESC),
     api_key_id: str | None = Query(default=None, description=_API_KEY_DESC),
     priced: bool | None = Query(default=None, description=_PRICED_DESC),
     counts_toward_budget: bool | None = Query(default=None, description=_COUNTS_DESC),
@@ -287,7 +332,9 @@ async def count_usage(
         status=status,
         model=model,
         endpoint=endpoint,
+        provider=provider,
         source=source,
+        source_label=source_label,
         api_key_id=api_key_id,
         priced=priced,
         counts_toward_budget=counts_toward_budget,
@@ -359,7 +406,7 @@ class UsageTotals(BaseModel):
 
 
 class UsageGroupRow(BaseModel):
-    """One breakdown row (a model, a user, or an API key).
+    """One breakdown row (a model, a user, an API key, a session, ...).
 
     ``key`` is None both for the synthesized fold row (``is_other=True``) and for a
     real group whose column was NULL (e.g. usage from a since-deleted user, with
@@ -385,7 +432,12 @@ class UsageSeriesPoint(BaseModel):
 
 
 class UsageSummary(BaseModel):
-    """Aggregate spend/volume for the Usage & analytics page."""
+    """Aggregate spend/volume for the Usage & analytics page.
+
+    Every breakdown field is always present. One the caller excluded through
+    ``dimensions`` comes back as an empty list, the same shape a window with no
+    matching rows produces, so narrowing the selector never changes the schema.
+    """
 
     start_date: str
     end_date: str
@@ -395,6 +447,16 @@ class UsageSummary(BaseModel):
     by_user: list[UsageGroupRow]
     by_api_key: list[UsageGroupRow]
     by_source: list[UsageGroupRow]
+    # Session/project attribution for agent traffic: a handful of long-running
+    # sessions routinely account for most of a workload's tokens, so this is the
+    # dimension that turns "spend went up" into "this task went wrong". Gateway
+    # rows carry no label, so they group under a single null key.
+    by_source_label: list[UsageGroupRow]
+    # API surface (/v1/chat/completions vs /v1/messages vs /v1/responses) and
+    # upstream provider: the two splits a gateway operator needs and that no
+    # other endpoint reports.
+    by_endpoint: list[UsageGroupRow]
+    by_provider: list[UsageGroupRow]
     series: list[UsageSeriesPoint]
 
 
@@ -552,7 +614,9 @@ async def _summary_context(
     status: str | None,
     model: str | None,
     endpoint: str | None,
+    provider: str | None = None,
     source: str | None = None,
+    source_label: str | None = None,
     api_key_id: str | None = None,
     priced: bool | None = None,
     counts_toward_budget: bool | None = None,
@@ -569,7 +633,9 @@ async def _summary_context(
         status=status,
         model=model,
         endpoint=endpoint,
+        provider=provider,
         source=source,
+        source_label=source_label,
         api_key_id=api_key_id,
         priced=priced,
         counts_toward_budget=counts_toward_budget,
@@ -629,18 +695,27 @@ async def usage_summary(
     status: str | None = Query(default=None, description=_STATUS_DESC),
     model: str | None = Query(default=None, description=_MODEL_DESC),
     endpoint: str | None = Query(default=None, description=_ENDPOINT_DESC),
+    provider: str | None = Query(default=None, description=_PROVIDER_DESC),
     source: str | None = Query(default=None, description=_SOURCE_DESC),
+    source_label: str | None = Query(default=None, description=_SOURCE_LABEL_DESC),
     api_key_id: str | None = Query(default=None, description=_API_KEY_DESC),
     priced: bool | None = Query(default=None, description=_PRICED_DESC),
     counts_toward_budget: bool | None = Query(default=None, description=_COUNTS_DESC),
     bucket: Bucket = Query(default="day", description="Time-series granularity: 'hour' or 'day'"),
+    dimensions: list[SummaryDimension] | None = Query(default=None, description=_DIMENSIONS_DESC),
 ) -> UsageSummary:
     """Aggregate spend, tokens, and request volume for the dashboard Usage page.
 
     Range-bounded (default last 30 days, hard-capped): unlike the raw ``/v1/usage``
     list, every aggregate is scoped to a bounded window so it stays served by the
-    timestamp index. Returns grand totals, breakdowns by model / user / API key
-    (top rows plus a reconciling ``other`` fold), and a UTC-bucketed time series.
+    timestamp index. Returns grand totals, breakdowns by model / user / API key /
+    source / session (``source_label``) / endpoint / provider (top rows plus a
+    reconciling ``other`` fold), and a UTC-bucketed time series.
+
+    Each breakdown is its own ``GROUP BY`` pass, so a caller that reads only the
+    totals or the series should narrow ``dimensions`` rather than pay for all seven
+    (the dashboard's tiles, timeline context, and model typeahead all do). Omitting
+    the parameter keeps the full set.
     """
     start, end, conditions, totals = await _summary_context(
         db,
@@ -650,15 +725,21 @@ async def usage_summary(
         status=status,
         model=model,
         endpoint=endpoint,
+        provider=provider,
         source=source,
+        source_label=source_label,
         api_key_id=api_key_id,
         priced=priced,
         counts_toward_budget=counts_toward_budget,
     )
-    by_model = await _breakdown(db, UsageLog.model, conditions, totals, limit=_BREAKDOWN_TOP_N)
-    by_user = await _breakdown(db, UsageLog.user_id, conditions, totals, limit=_BREAKDOWN_TOP_N)
-    by_api_key = await _breakdown(db, UsageLog.api_key_id, conditions, totals, limit=_BREAKDOWN_TOP_N)
-    by_source = await _breakdown(db, UsageLog.source, conditions, totals, limit=_BREAKDOWN_TOP_N)
+    # ``none`` is dropped rather than rejected: it exists only so a caller can send
+    # an empty selection, and it never contributes a dimension of its own.
+    requested: set[str] = set(_SUMMARY_DIMENSIONS) if dimensions is None else {d for d in dimensions if d != "none"}
+    breakdowns = {
+        name: await _breakdown(db, column, conditions, totals, limit=cap)
+        for name, (column, cap) in _SUMMARY_DIMENSIONS.items()
+        if name in requested
+    }
 
     expr = _bucket_expr(_dialect_name(db), bucket)
     series_rows = (
@@ -682,10 +763,13 @@ async def usage_summary(
         end_date=end.isoformat(),
         bucket=bucket,
         totals=totals,
-        by_model=by_model,
-        by_user=by_user,
-        by_api_key=by_api_key,
-        by_source=by_source,
+        by_model=breakdowns.get("model", []),
+        by_user=breakdowns.get("user", []),
+        by_api_key=breakdowns.get("api_key", []),
+        by_source=breakdowns.get("source", []),
+        by_source_label=breakdowns.get("source_label", []),
+        by_endpoint=breakdowns.get("endpoint", []),
+        by_provider=breakdowns.get("provider", []),
         series=series,
     )
 
@@ -694,6 +778,10 @@ async def usage_summary(
 # with one is prefixed with a single quote so opening the CSV in Excel/Sheets can
 # never execute attacker-influenced text (model / user ids are caller-supplied).
 _CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+# The export names a dimension the way an operator reads it where that differs from
+# the column name the API selector uses.
+_CSV_DIMENSION_LABELS = {"source_label": "session"}
 
 
 def _csv_safe(value: str) -> str:
@@ -711,17 +799,21 @@ async def usage_summary_csv(
     status: str | None = Query(default=None, description=_STATUS_DESC),
     model: str | None = Query(default=None, description=_MODEL_DESC),
     endpoint: str | None = Query(default=None, description=_ENDPOINT_DESC),
+    provider: str | None = Query(default=None, description=_PROVIDER_DESC),
     source: str | None = Query(default=None, description=_SOURCE_DESC),
+    source_label: str | None = Query(default=None, description=_SOURCE_LABEL_DESC),
     api_key_id: str | None = Query(default=None, description=_API_KEY_DESC),
     priced: bool | None = Query(default=None, description=_PRICED_DESC),
     counts_toward_budget: bool | None = Query(default=None, description=_COUNTS_DESC),
 ) -> Response:
-    """Download the per-model / per-user / per-key / per-source breakdown as CSV.
+    """Download every breakdown the summary reports, as one CSV.
 
-    A dedicated route rather than a ``format=csv`` flag on ``/summary`` so that
-    endpoint keeps a single JSON response model and a clean OpenAPI schema. The
-    export is **uncapped** (no top-N fold): finance wants every row. Kept separate
-    from the bare-array ``/v1/usage`` contract, which is untouched.
+    One row per (dimension, key): model, user, API key, source, session
+    (``source_label``), endpoint, and provider. A dedicated route rather than a
+    ``format=csv`` flag on ``/summary`` so that endpoint keeps a single JSON
+    response model and a clean OpenAPI schema. The export is **uncapped** (no
+    top-N fold): finance wants every row. Kept separate from the bare-array
+    ``/v1/usage`` contract, which is untouched.
     """
     _start, _end, conditions, totals = await _summary_context(
         db,
@@ -731,17 +823,19 @@ async def usage_summary_csv(
         status=status,
         model=model,
         endpoint=endpoint,
+        provider=provider,
         source=source,
+        source_label=source_label,
         api_key_id=api_key_id,
         priced=priced,
         counts_toward_budget=counts_toward_budget,
     )
-    dimensions = (
-        ("model", await _breakdown(db, UsageLog.model, conditions, totals, limit=None)),
-        ("user", await _breakdown(db, UsageLog.user_id, conditions, totals, limit=None)),
-        ("api_key", await _breakdown(db, UsageLog.api_key_id, conditions, totals, limit=None)),
-        ("source", await _breakdown(db, UsageLog.source, conditions, totals, limit=None)),
-    )
+    # Driven off the same dimension table as ``/summary`` so a new breakdown lands
+    # in the export without a second edit here.
+    dimensions = [
+        (_CSV_DIMENSION_LABELS.get(name, name), await _breakdown(db, column, conditions, totals, limit=None))
+        for name, (column, _cap) in _SUMMARY_DIMENSIONS.items()
+    ]
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)

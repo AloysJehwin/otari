@@ -1,8 +1,10 @@
 import { Button, Spinner } from "@heroui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
 import {
+  NO_BREAKDOWNS,
   useDeleteUsage,
   useKeys,
   useSetUsagePrice,
@@ -12,12 +14,14 @@ import {
   useUsers,
 } from "@/api/hooks";
 import type {
+  SummaryDimension,
   UsageBucket,
   UsageEntry,
   UsageFilters,
   UsageGroupRow,
   UsageMutationSelection,
   UsageSeriesPoint,
+  UsageSummary,
 } from "@/api/types";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
 import { BulkActionBar } from "@/components/BulkActionBar";
@@ -68,6 +72,12 @@ interface BreakdownProps {
   // Turns a row key into the Activity-page filter to drill into (model vs user).
   onDrill: (key: string) => void;
   loading: boolean;
+  // How a real group whose column was NULL reads. The default suits an id that
+  // has gone missing (a deleted user); a dimension where NULL is a normal state
+  // (gateway rows carry no session label) passes its own wording.
+  unknownLabel?: string;
+  // Optional control rendered beside the heading (the dimension picker).
+  action?: ReactNode;
 }
 
 // One breakdown (by model / by user). Rows are spend-ranked with an inline
@@ -84,6 +94,8 @@ function BreakdownTable({
   emptyLabel,
   onDrill,
   loading,
+  unknownLabel = "(unknown)",
+  action,
 }: BreakdownProps) {
   const [showAll, setShowAll] = useState(false);
   const visible = showAll ? rows : rows.slice(0, TABLE_TOP_N);
@@ -106,7 +118,7 @@ function BreakdownTable({
               {row.is_other
                 ? `Other (${row.requests.toLocaleString()} req)`
                 : row.key === null
-                  ? "(unknown)"
+                  ? unknownLabel
                   : row.key}
             </span>
             <span className="h-1 w-full overflow-hidden rounded-full bg-[var(--otari-line)]">
@@ -125,7 +137,10 @@ function BreakdownTable({
 
   return (
     <div className="flex flex-col gap-2">
-      <h2 className="text-sm font-semibold text-[var(--otari-ink)]">{title}</h2>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-[var(--otari-ink)]">{title}</h2>
+        {action}
+      </div>
       <DataTable
         ariaLabel={title}
         columns={columns}
@@ -152,6 +167,45 @@ function BreakdownTable({
       ) : null}
     </div>
   );
+}
+
+// ---------- secondary breakdown dimensions ----------
+
+// Model and user get their own always-visible tables (the two questions asked on
+// every visit). The rest share one panel behind a picker: each answers a real
+// question, but only one at a time, and six stacked tables would bury the trend.
+// Every key doubles as the Activity-log filter to drill into, so a picked row
+// scopes the request log to exactly the group that was clicked.
+type BreakdownDimension = "source_label" | "endpoint" | "provider" | "source";
+
+const DIMENSION_TABS: { key: BreakdownDimension; label: string; unknownLabel: string }[] = [
+  // Sessions first: for agent traffic a few long-running sessions carry most of
+  // the spend, so this is usually the row that explains a bill.
+  { key: "source_label", label: "Session", unknownLabel: "(no session)" },
+  { key: "endpoint", label: "Endpoint", unknownLabel: "(unknown)" },
+  { key: "provider", label: "Provider", unknownLabel: "(unknown)" },
+  { key: "source", label: "Source", unknownLabel: "(unknown)" },
+];
+
+// The breakdowns this page renders, and only those: the two fixed tables plus
+// every dimension the picker can switch to. All four picker dimensions ship in one
+// response so flipping tabs is instant instead of another round trip, while
+// `api_key` stays out because no table here shows it. Derived from the tab list, so
+// a new tab is requested automatically.
+const PAGE_BREAKDOWNS: SummaryDimension[] = ["model", "user", ...DIMENSION_TABS.map((tab) => tab.key)];
+
+// The typeahead's own summary drops the model filter, so it only needs by_model.
+const MODEL_BREAKDOWN: SummaryDimension[] = ["model"];
+
+function dimensionRows(data: UsageSummary | undefined, dimension: BreakdownDimension): UsageGroupRow[] {
+  if (!data) return [];
+  return dimension === "source_label"
+    ? data.by_source_label
+    : dimension === "endpoint"
+      ? data.by_endpoint
+      : dimension === "provider"
+        ? data.by_provider
+        : data.by_source;
 }
 
 // ---------- chart ----------
@@ -417,6 +471,7 @@ export function UsagePage() {
   const [userFilter, setUserFilter] = useState("");
   const [apiKeyFilter, setApiKeyFilter] = useState("");
   const [metric, setMetric] = useState<ChartMetric>("cost");
+  const [dimension, setDimension] = useState<BreakdownDimension>("source_label");
 
   const winStart = customMode ? customStart : startDate;
   const winEnd = customMode ? customEnd : undefined;
@@ -457,8 +512,9 @@ export function UsagePage() {
     };
   }, [customMode, winStart, winEnd, filters, preset.seconds, startDate]);
 
-  const summary = useUsageSummary(filters, bucket);
-  const previous = useUsageSummary(previousFilters ?? filters, bucket, previousFilters !== null);
+  const summary = useUsageSummary(filters, bucket, PAGE_BREAKDOWNS);
+  // Deltas read `totals` only, so this second window skips every breakdown.
+  const previous = useUsageSummary(previousFilters ?? filters, bucket, NO_BREAKDOWNS, previousFilters !== null);
 
   // The timeline histogram spans the whole preset *extent* (independent of the
   // brushed sub-window), so the brush always has context to zoom back out into.
@@ -473,7 +529,8 @@ export function UsagePage() {
     }),
     [startDate, modelFilter, userFilter, apiKeyFilter],
   );
-  const contextSummary = useUsageSummary(contextFilters, preset.bucket);
+  // The histogram reads `series` only.
+  const contextSummary = useUsageSummary(contextFilters, preset.bucket, NO_BREAKDOWNS);
   const timelineSeries = (contextSummary.data?.series ?? []).map((p) => ({
     bucketStart: p.bucket_start,
     requests: p.requests,
@@ -488,7 +545,7 @@ export function UsagePage() {
   // omits the model filter, so the list stays complete when a model is selected,
   // and derived directly from query data rather than mirrored into state.
   const modelSuggestFilters: UsageFilters = useMemo(() => ({ ...filters, model: undefined }), [filters]);
-  const modelSuggest = useUsageSummary(modelSuggestFilters, bucket);
+  const modelSuggest = useUsageSummary(modelSuggestFilters, bucket, MODEL_BREAKDOWN);
   const modelOptions =
     modelSuggest.data?.by_model?.filter((r) => !r.is_other && r.key !== null).map((r) => r.key as string) ?? [];
 
@@ -581,6 +638,8 @@ export function UsagePage() {
   };
 
   const errorRate = totals && totals.request_count > 0 ? totals.error_count / totals.request_count : 0;
+
+  const activeDimension = DIMENSION_TABS.find((t) => t.key === dimension) ?? DIMENSION_TABS[0];
 
   // The bucketed series is already on the wire; reuse it for tile sparklines. A
   // single point has no trend to draw, so sparklines only appear with 2+ buckets.
@@ -741,6 +800,48 @@ export function UsagePage() {
             />
           </div>
 
+          {/* The remaining dimensions, one at a time behind a picker. Session is
+              the default: it is the grouping that names the work behind a bill. */}
+          <BreakdownTable
+            // Remount per dimension so an expanded "show all" does not carry over:
+            // sessions can run to 250 rows, and inheriting that on Provider reads
+            // as a broken table rather than a deliberate expansion.
+            key={dimension}
+            title={`Spend by ${activeDimension.label.toLowerCase()}`}
+            rows={dimensionRows(data, dimension)}
+            totalCost={totals?.cost ?? 0}
+            emptyLabel={anyFilter ? "No usage matches these filters." : "No usage recorded yet."}
+            unknownLabel={activeDimension.unknownLabel}
+            // Drilling keeps the entity filters, like the model/user tables do.
+            onDrill={(key) =>
+              drillTo({
+                [dimension]: key,
+                model: modelFilter.trim() || undefined,
+                user_id: userFilter || undefined,
+                api_key_id: apiKeyFilter || undefined,
+              })
+            }
+            loading={summary.isLoading}
+            action={
+              // aria-pressed, not just the variant: without it a screen reader
+              // hears four identically-named buttons and nothing about which
+              // dimension the table below is showing.
+              <div className="inline-flex gap-1.5">
+                {DIMENSION_TABS.map((tab) => (
+                  <Button
+                    key={tab.key}
+                    size="sm"
+                    variant={dimension === tab.key ? "primary" : "outline"}
+                    aria-pressed={dimension === tab.key}
+                    onPress={() => setDimension(tab.key)}
+                  >
+                    {tab.label}
+                  </Button>
+                ))}
+              </div>
+            }
+          />
+
           {/* Raw rows for the same window, with the imported-row bulk actions. */}
           <UsageRequests filters={filters} anyFilter={anyFilter} />
 
@@ -754,6 +855,7 @@ export function UsagePage() {
                     key={tab.key}
                     size="sm"
                     variant={metric === tab.key ? "primary" : "outline"}
+                    aria-pressed={metric === tab.key}
                     onPress={() => setMetric(tab.key)}
                   >
                     {tab.label}
