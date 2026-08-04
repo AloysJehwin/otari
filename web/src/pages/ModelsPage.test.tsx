@@ -261,6 +261,35 @@ describe("ModelsPage", () => {
 
   // -- model list ----------------------------------------------------------
 
+  it("copies the provider-qualified model id, which the visible name omits", async () => {
+    // The Model column drops the provider prefix, and a selectable row cannot be
+    // highlighted, so the id a caller sends as `model` is otherwise unreachable
+    // from this table (#478).
+    mockApi();
+    const user = userEvent.setup();
+
+    renderWithClient(<ModelsPage />);
+    await screen.findByText("openai:gpt-4o");
+
+    await user.click(within(tableRow("openai:gpt-4o")).getByRole("button", { name: "Copy model id" }));
+
+    expect(await navigator.clipboard.readText()).toBe("openai:gpt-4o");
+  });
+
+  it("keeps the screen-reader-only key out of a hand-made selection", async () => {
+    // `sr-only` is clipped, not hidden, so its text joins a range selection and a
+    // drag across this cell used to yield "gpt-4oopenai:gpt-4o". Its own
+    // `select-none` outranks the inherited `user-select: text`.
+    mockApi();
+    renderWithClient(<ModelsPage />);
+    await screen.findByText("openai:gpt-4o");
+
+    const srOnly = within(tableRow("openai:gpt-4o")).getByText("openai:gpt-4o", {
+      selector: "span.sr-only",
+    });
+    expect(srOnly.className).toContain("select-none");
+  });
+
   it("does not show a context column in the model table", async () => {
     mockApi();
 
