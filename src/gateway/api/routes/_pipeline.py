@@ -214,6 +214,14 @@ class ProviderErrorMapping(NamedTuple):
     detail: str
 
 
+class _PendingUsageReport(NamedTuple):
+    attempt_id: str
+    outcome: str
+    usage: Any
+    error_class: str | None
+    is_final_attempt: bool
+
+
 def _upstream_error_param(exc: BaseException) -> str | None:
     """Pull the offending request field off an upstream exception, if it names one.
 
@@ -2038,6 +2046,7 @@ def build_streaming_response(
                     outcome="success",
                     usage=usage_data,
                     session_label=session_label,
+                    is_final_attempt=True,
                 ),
                 platform_correlation_id,
             )
@@ -2061,8 +2070,23 @@ def build_streaming_response(
             await reconcile_reservation(db, reservation, actual_cost or 0.0)
 
     async def _on_no_usage() -> None:
-        # Stream completed but the provider sent no usage data. Settle the
+        # Stream completed but the provider sent no usage data. Report the
+        # terminal success upstream in hybrid mode; standalone settles the
         # reservation per stream_missing_usage_policy instead of billing $0.
+        if platform_active:
+            assert platform_correlation_id is not None
+            _schedule_usage_report(
+                _report_platform_usage(
+                    config=config,
+                    correlation_id=platform_correlation_id,
+                    outcome="success",
+                    usage=None,
+                    session_label=session_label,
+                    is_final_attempt=True,
+                ),
+                platform_correlation_id,
+            )
+            return
         if db is None or log_writer is None or reservation is None:
             return
         policy = config.stream_missing_usage_policy
@@ -2111,6 +2135,7 @@ def build_streaming_response(
                     outcome="error",
                     usage=None,
                     session_label=session_label,
+                    is_final_attempt=True,
                 ),
                 platform_correlation_id,
             )
@@ -2339,7 +2364,7 @@ async def run_single_attempt_stream(
 
 async def _flush_pending_usage_reports(
     config: GatewayConfig,
-    pending_error_reports: list[tuple[str, str, Any, str | None]],
+    pending_error_reports: list[_PendingUsageReport],
     request_id: str,
     session_label: str | None = None,
 ) -> None:
@@ -2364,8 +2389,16 @@ async def _flush_pending_usage_reports(
         results = await asyncio.wait_for(
             asyncio.gather(
                 *(
-                    _report_platform_usage(config, attempt_id, outcome, usage, error_class, session_label)
-                    for attempt_id, outcome, usage, error_class in pending_error_reports
+                    _report_platform_usage(
+                        config,
+                        report.attempt_id,
+                        report.outcome,
+                        report.usage,
+                        report.error_class,
+                        session_label,
+                        is_final_attempt=report.is_final_attempt,
+                    )
+                    for report in pending_error_reports
                 ),
                 return_exceptions=True,
             ),
@@ -2468,7 +2501,7 @@ async def run_streaming_with_fallback(
     # for the success path (it flushes once the SSE response completes), but
     # also stash the error reports so they can be flushed inline on the
     # all-failed path below.
-    pending_error_reports: list[tuple[str, str, Any, str | None]] = []
+    pending_error_reports: list[_PendingUsageReport] = []
 
     async def _on_attempt_failed(attempt: ResolvedAttempt, failure: StreamingAttemptFailure) -> None:
         background_tasks.add_task(
@@ -2479,8 +2512,17 @@ async def run_streaming_with_fallback(
             None,
             failure.error_class,
             session_label,
+            is_final_attempt=failure.is_final_attempt,
         )
-        pending_error_reports.append((attempt.attempt_id, "error", None, failure.error_class))
+        pending_error_reports.append(
+            _PendingUsageReport(
+                attempt_id=attempt.attempt_id,
+                outcome="error",
+                usage=None,
+                error_class=failure.error_class,
+                is_final_attempt=failure.is_final_attempt,
+            )
+        )
         record_abandoned_attempt(attempt.provider, attempt.model, failure.reason, attempt.position)
         logger.warning(
             "Streaming attempt failed request_id=%s position=%d provider=%s model=%s error=%s",
@@ -2630,13 +2672,14 @@ async def run_platform_non_stream(
     # can't fire its fallback-exhausted accounting. Keep the background task for
     # the success-response path (non-blocking), but also stash the error reports
     # so they can be flushed inline if the request ends in an exception.
-    pending_error_reports: list[tuple[str, str, Any, str | None]] = []
+    pending_error_reports: list[_PendingUsageReport] = []
 
     def _report_attempt_outcome(
         attempt: ResolvedAttempt,
         outcome: str,
         usage: Any,
         error_class: str | None,
+        is_final_attempt: bool,
     ) -> None:
         background_tasks.add_task(
             _report_platform_usage,
@@ -2646,9 +2689,18 @@ async def run_platform_non_stream(
             usage,
             error_class,
             session_label,
+            is_final_attempt=is_final_attempt,
         )
         if outcome != "success":
-            pending_error_reports.append((attempt.attempt_id, outcome, usage, error_class))
+            pending_error_reports.append(
+                _PendingUsageReport(
+                    attempt_id=attempt.attempt_id,
+                    outcome=outcome,
+                    usage=usage,
+                    error_class=error_class,
+                    is_final_attempt=is_final_attempt,
+                )
+            )
 
     def _on_attempt_success(attempt: ResolvedAttempt) -> None:
         response.headers["X-Correlation-ID"] = attempt.attempt_id

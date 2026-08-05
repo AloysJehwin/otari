@@ -256,7 +256,8 @@ Content-Type: application/json
 {
   "correlation_id": "01HX1...",       // = the attempt_id from the resolve response
   "status": "success" | "error",
-  "usage": {                           // present on success only
+  "is_final_attempt": true,            // no later planned fallback will run
+  "usage": {                           // present on success when usage is available
     "prompt_tokens": 13,
     "completion_tokens": 7,
     "total_tokens": 20,
@@ -270,6 +271,10 @@ Content-Type: application/json
                                        // label (see below). Omitted when absent.
 }
 ```
+
+A successful attempt that completes without provider usage data still sends a
+final report, but omits `usage` so the platform can record it as unavailable
+rather than as an explicit zero-token result.
 
 `session_label` is an optional caller-supplied label for cost attribution (per
 run, experiment, or conversation). A caller sets it on the request body
@@ -306,6 +311,13 @@ dropping it. See companion issue mozilla-ai/otari-ai#1168.
 A multi-attempt request that iterates two attempts produces two usage reports,
 one per attempt, sharing the same `request_id` (recoverable via the original
 resolve response). The platform is responsible for correlating them.
+
+`is_final_attempt` tells the platform that the gateway will not try another
+planned fallback. It is `false` for a retryable failure followed by another
+attempt, and `true` for success, fallback exhaustion, a non-retryable failure,
+or a failure after a tool loop has locked in to one provider. The marker lets
+the platform ignore later planned attempts that were never tried instead of
+waiting forever for usage reports that will never arrive.
 
 `error_class` is a short tag describing why the attempt was abandoned:
 

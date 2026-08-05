@@ -142,6 +142,7 @@ def test_hybrid_mode_sets_correlation_id_and_reports_usage(
         {
             "correlation_id": "7af2c39d-4eb8-4b3f-8242-46a97f7d5e68",
             "status": "success",
+            "is_final_attempt": True,
             "usage": {
                 "prompt_tokens": 10,
                 "completion_tokens": 7,
@@ -1002,6 +1003,9 @@ def test_hybrid_mode_streaming_reports_every_attempt_when_all_fail(
         ("att-a", "error", "http_500"),
         ("att-b", "error", "http_500"),
     ]
+    reports_by_id = {report["correlation_id"]: report for report in usage_reports}
+    assert reports_by_id["att-a"]["is_final_attempt"] is False
+    assert reports_by_id["att-b"]["is_final_attempt"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1636,6 +1640,7 @@ def test_hybrid_mode_streaming_multi_attempt_classifies_non_retryable_invalid_re
     """A non-retryable invalid request (400) short-circuits the streaming
     fallback and is surfaced as a classified 400 even with multiple attempts,
     matching the non-streaming path rather than the aggregate 502."""
+    usage_reports: list[dict[str, Any]] = []
 
     async def fake_post_platform(
         url: str,
@@ -1671,6 +1676,7 @@ def test_hybrid_mode_streaming_multi_attempt_classifies_non_retryable_invalid_re
                     ],
                 },
             )
+        usage_reports.append(body)
         return httpx.Response(204)
 
     calls: list[dict[str, Any]] = []
@@ -1698,6 +1704,8 @@ def test_hybrid_mode_streaming_multi_attempt_classifies_non_retryable_invalid_re
     }
     # Non-retryable: the fallback must short-circuit after the first attempt.
     assert len(calls) == 1
+    assert len(usage_reports) == 1
+    assert usage_reports[0]["is_final_attempt"] is True
 
 
 class _FakeSandboxBackend:
@@ -1908,6 +1916,8 @@ def test_platform_mode_sandbox_unreachable_returns_502(
     from gateway.api.routes._pipeline import SANDBOX_UNREACHABLE_DETAIL
     from gateway.services.sandbox_backend import SandboxNotReachableError
 
+    usage_reports: list[dict[str, Any]] = []
+
     async def fake_post_platform(
         url: str, headers: dict[str, str], body: dict[str, Any], timeout_seconds: float
     ) -> httpx.Response:
@@ -1915,6 +1925,7 @@ def test_platform_mode_sandbox_unreachable_returns_502(
             return _single_attempt_resolve_response(request_id="sbx-down")
         if url.endswith("/gateway/code-execution/resolve"):
             return httpx.Response(200, json={"enabled": True})
+        usage_reports.append(body)
         return httpx.Response(204)
 
     class _DownSandboxBackend:
@@ -1942,6 +1953,13 @@ def test_platform_mode_sandbox_unreachable_returns_502(
 
     assert response.status_code == 502
     assert response.json() == {"detail": SANDBOX_UNREACHABLE_DETAIL}
+    assert usage_reports == [
+        {
+            "correlation_id": "sbx-down",
+            "status": "error",
+            "is_final_attempt": True,
+        }
+    ]
 
 
 def test_platform_mode_web_search_unreachable_returns_502(
@@ -1955,6 +1973,8 @@ def test_platform_mode_web_search_unreachable_returns_502(
     from gateway.api.routes._pipeline import WEB_SEARCH_UNREACHABLE_DETAIL
     from gateway.services.web_search_backend import WebSearchNotReachableError
 
+    usage_reports: list[dict[str, Any]] = []
+
     async def fake_post_platform(
         url: str, headers: dict[str, str], body: dict[str, Any], timeout_seconds: float
     ) -> httpx.Response:
@@ -1962,6 +1982,7 @@ def test_platform_mode_web_search_unreachable_returns_502(
             return _single_attempt_resolve_response(request_id="ws-down")
         if url.endswith("/gateway/web-search/resolve"):
             return httpx.Response(200, json={"enabled": True})
+        usage_reports.append(body)
         return httpx.Response(204)
 
     class _DownWebSearchBackend:
@@ -1989,3 +2010,10 @@ def test_platform_mode_web_search_unreachable_returns_502(
 
     assert response.status_code == 502
     assert response.json() == {"detail": WEB_SEARCH_UNREACHABLE_DETAIL}
+    assert usage_reports == [
+        {
+            "correlation_id": "ws-down",
+            "status": "error",
+            "is_final_attempt": True,
+        }
+    ]
