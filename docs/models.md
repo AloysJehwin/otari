@@ -219,6 +219,10 @@ An alias is a display name that maps to a real selector, so you can expose a
 friendly, stable model name and keep the underlying provider/model hidden.
 Aliases are configured in a top-level `aliases` map (display name to target):
 
+> An alias is the one-target case of a [routing policy](routing.md). Everything
+> below still applies; reach for a policy when you want failover, a
+> budget-based tier-down, or a guardrail the caller cannot skip.
+
 ```yaml
 aliases:
   myopusmodel: anthropic:claude-opus-4
@@ -256,6 +260,16 @@ never puts the hidden name back in the listing. Whether real models are listed i
 governed by `model_discovery` alone. With discovery on, aliases appear alongside
 the discovered models, including any target you aliased.
 
+A [routing policy](routing.md) withholds its targets from the listing the same way
+an alias does, and with a wider reach: a policy can name up to five selectors (its
+head plus an `on_failure` chain), and **every** one of them is withheld, not just
+the default. So a model you can still call directly can disappear from
+`GET /v1/models` because an unrelated policy lists it as a fallback. That is
+deliberate, since the listing is the wrong place to publish where a policy sends
+traffic, but it does mean the catalogue is not a complete inventory of what is
+callable. `otari routing explain` and the dashboard's Routing page show the
+targets to an operator.
+
 Constraints, checked at startup: a target must be of the form `instance:model` or
 `provider:model` whose prefix is a configured instance or a known provider; an
 alias name must not contain `:` or `/` (a selector-shaped name would silently
@@ -269,7 +283,8 @@ map does not apply.
 ### Runtime aliases, and scoping one to a user
 
 Aliases can also be created without a restart, through `/v1/aliases` (master key
-only) or the dashboard's Aliases page. A runtime alias means the same thing to a
+only) or the dashboard's Routing page, which lists and manages aliases alongside
+[routing policies](routing.md). A runtime alias means the same thing to a
 request as a configured one; it is stored in the database rather than in
 `config.yml`, and the listing tells you which is which (`source: config` or
 `source: stored`).
@@ -281,11 +296,13 @@ applies to that user alone:
 # Global: everyone resolves "fast" to gpt-5-mini.
 curl -X POST http://localhost:8000/v1/aliases \
   -H "Authorization: Bearer <master-key>" \
+  -H "Content-Type: application/json" \
   -d '{"name": "fast", "target": "openai:gpt-5-mini"}'
 
 # Scoped: alice alone resolves "fast" to a local model instead.
 curl -X POST http://localhost:8000/v1/aliases \
   -H "Authorization: Bearer <master-key>" \
+  -H "Content-Type: application/json" \
   -d '{"name": "fast", "target": "home_lab:qwen3", "user_id": "alice"}'
 ```
 

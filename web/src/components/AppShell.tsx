@@ -196,13 +196,15 @@ const NAV: NavItem[] = [
     ),
   },
   {
-    to: "/aliases",
+    to: "/routing",
     section: "catalog",
-    label: "Aliases",
+    label: "Routing",
     icon: (
       <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5 shrink-0">
-        <path d="M20.6 13.4L13.4 20.6a2 2 0 0 1-2.8 0l-7-7A2 2 0 0 1 3 12.2V5a2 2 0 0 1 2-2h7.2a2 2 0 0 1 1.4.6l7 7a2 2 0 0 1 0 2.8z" strokeLinejoin="round" />
-        <circle cx="7.5" cy="7.5" r="1.5" />
+        <path d="M4 5h4l4 7 4-7h4" strokeLinejoin="round" />
+        <path d="M4 19h4l4-7" strokeLinejoin="round" />
+        <circle cx="19" cy="19" r="2" />
+        <circle cx="19" cy="5" r="2" />
       </svg>
     ),
   },

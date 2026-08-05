@@ -1,7 +1,7 @@
 # Admin dashboard
 
 Otari ships with a web admin dashboard for operators. It browses the model
-catalogue, sets model pricing, manages aliases, adds and edits provider API
+catalogue, sets model pricing, manages routing policies, adds and edits provider API
 keys, manages users, keys, and budgets, and toggles runtime settings, all
 against the local management API using the master key.
 
@@ -160,8 +160,14 @@ gateway.
 
 - **Activity**: the per-request log of what the gateway served, with filters.
   Use it to inspect individual requests, their models, and their outcomes.
-  Requests the gateway refused are logged too, so filtering to the `error`
-  status shows what is being dropped: no pricing under `require_pricing`, a
+  The **Routing** column names the policy a caller asked for, if any, plus which
+  attempt in its plan this row is ("attempt 2/2") and why that candidate was
+  chosen. A row with the `absorbed` status is an attempt a policy recovered from
+  by trying the next candidate: the request itself was served, so an absorbed row
+  is deliberately not counted as an error and not counted as an extra request.
+  That is what keeps a working fallback chain from reading as an outage in the
+  error rate. Requests the gateway refused are logged too, so filtering to the
+  `error` status shows what is being dropped: no pricing under `require_pricing`, a
   model outside a key's allow-list, a blocked or over-budget user, a `user`
   field that does not match the key, and a selector that no longer resolves to a
   configured provider. Those rows carry no cost, so they never move spend. Not
@@ -217,12 +223,19 @@ hand.
   cache rates, the 1-hour cache rate, and long-context tiers. The same form
   re-prices a model that is already listed, so a key that already has a price
   replaces it.
-- **Aliases**: friendly names that resolve to a real provider model. Callers
-  use the alias; the underlying model stays private to the gateway. The copy
-  controls in a row copy the alias name and its target id. "Applies to"
-  is the scope: an alias for every caller, or one scoped to a single user, which
-  lets the same name resolve to a different model per person and takes precedence
-  over a global alias of that name. See [Model aliases](models.md#model-aliases).
+- **Routing**: every named model your callers can send, in one place. A simple
+  one-target name (what used to be called an alias) still works exactly as
+  before; a policy adds what to try when the first model fails, a tier-down to a
+  cheaper model as a budget fills up, and guardrails a caller cannot skip.
+  Aliases were folded into this page: stored ones were moved into policies by a
+  migration, and any left in `config.yml` are listed here, read-only, tagged
+  `alias`. "Serves" summarises the chain, and
+  a `Dynamic` chip marks a policy whose choice depends on the request (so it has
+  no single price). **Dry run** compiles the policy and shows the plan without
+  sending anything to a provider or billing anything; it lists the candidates
+  that were *dropped* as well as the ones kept, which is how you catch a fallback
+  chain that has quietly filtered down to a single attempt. A policy from
+  `config.yml` is read-only here. See [Routing policies](routing.md).
 
 ### Access
 
