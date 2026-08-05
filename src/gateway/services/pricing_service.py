@@ -327,6 +327,93 @@ def flat_request_cost(pricing: ModelPricing | None) -> float:
     return pricing.input_price_per_million / 1_000_000
 
 
+GATEWAY_TOOL_PRICING_PROVIDER = "otari"
+
+
+def gateway_tool_pricing_key(tool: str) -> str:
+    """The ``ModelPricing.model_key`` an operator prices a gateway-run tool under.
+
+    ``model_key`` is a free-form ``provider:model`` string, so a tool the gateway
+    runs itself is priced as ``otari:<tool>`` (for example ``otari:web_search``).
+    Note this is a different key from the one ``POST /v1/search`` uses for the same
+    search: that endpoint prices ``<search-provider>:<tool>`` because it knows which
+    commercial API it called, while the tool loop only knows the operator-configured
+    backend URL.
+    """
+    return f"{GATEWAY_TOOL_PRICING_PROVIDER}:{tool}"
+
+
+async def price_tool_calls(
+    db: AsyncSession,
+    billable_calls: dict[str, int],
+    *,
+    as_of: datetime | None = None,
+) -> tuple[float, list[dict[str, float | int | str]], list[str]]:
+    """Price a request's successful gateway-run tool calls.
+
+    Returns the total USD cost, one auditable charge line per tool, and the names
+    of the tools that had no pricing row. Charge lines use the same shape
+    ``calculate_metered_cost`` produces so both kinds share
+    ``UsageLog.pricing_breakdown`` and the dashboard's renderer, except that a tool
+    line carries ``unit_rate`` (USD per call) where a token line carries
+    ``rate_per_million``. That key is what tells a reader, and the UI, which unit
+    convention applies.
+
+    A tool with no pricing row contributes units at a zero rate, so the work stays
+    on the row and in the audit trail even when the operator has not priced it.
+    Lookups pass ``use_defaults=False``: MCP tool names come from a caller-supplied
+    server, and the genai-prices fallback matches on a bare name, so a tool named
+    after a real model would otherwise be billed at that model's
+    per-million-token rate divided by a million.
+    """
+    tools = [tool for tool in sorted(billable_calls) if billable_calls[tool] > 0]
+    if not tools:
+        return 0.0, [], []
+    rates = await _tool_rates(db, tools, as_of=as_of)
+
+    total = 0.0
+    lines: list[dict[str, float | int | str]] = []
+    unpriced: list[str] = []
+    for tool in tools:
+        units = billable_calls[tool]
+        pricing = rates.get(tool)
+        if pricing is None:
+            unpriced.append(tool)
+        unit_rate = flat_request_cost(pricing)
+        cost = units * unit_rate
+        total += cost
+        lines.append({"meter": f"{tool}_calls", "units": units, "unit_rate": unit_rate, "cost": cost})
+    return total, lines, unpriced
+
+
+async def _tool_rates(
+    db: AsyncSession,
+    tools: list[str],
+    *,
+    as_of: datetime | None,
+) -> dict[str, ModelPricing]:
+    """Latest-as-of pricing for several gateway tools, in one query.
+
+    One statement rather than a lookup per tool: an MCP pool can put up to
+    ``MAX_TOOL_NAMES`` distinct names on a single request, and this runs on the
+    settlement path. Rows come back oldest-first so the newest effective row for a key
+    wins the dict assignment, the same "latest as of" rule :func:`find_model_pricing`
+    applies one key at a time. The genai-prices fallback is deliberately not consulted
+    (see the note in :func:`price_tool_calls`).
+    """
+    lookup_time = normalize_effective_at(as_of)
+    keys = {f"{GATEWAY_TOOL_PRICING_PROVIDER}:{tool}": tool for tool in tools}
+    stmt = (
+        select(ModelPricing)
+        .where(ModelPricing.model_key.in_(keys), ModelPricing.effective_at <= lookup_time)
+        .order_by(ModelPricing.effective_at)
+    )
+    found: dict[str, ModelPricing] = {}
+    for row in (await db.execute(stmt)).scalars():
+        found[keys[row.model_key]] = row
+    return found
+
+
 def per_image_cost(n_images: int, pricing: ModelPricing) -> float:
     """USD cost of ``n_images`` generated images.
 

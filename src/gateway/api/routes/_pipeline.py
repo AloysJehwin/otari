@@ -52,6 +52,7 @@ from any_llm.types.completion import (
 )
 from fastapi import BackgroundTasks, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api.deps import verify_api_key_or_master_key
@@ -118,8 +119,11 @@ from gateway.services.metered_pricing import calculate_metered_cost
 from gateway.services.model_access import is_model_allowed, model_not_allowed_detail, resolve_request_allowlist
 from gateway.services.policy_store import resolve_effective_policy
 from gateway.services.pricing_service import (
+    GATEWAY_TOOL_PRICING_PROVIDER,
     find_model_pricing,
+    gateway_tool_pricing_key,
     no_pricing_error_detail,
+    price_tool_calls,
     pricing_required_but_missing,
 )
 from gateway.services.provider_kwargs import ResolvedProvider, resolve_provider_selector
@@ -130,9 +134,19 @@ from gateway.services.routing import (
     compile_policy,
     needs_budget_state,
 )
-from gateway.services.sandbox_backend import SandboxBackend, SandboxNotReachableError
+from gateway.services.sandbox_backend import (
+    CODE_EXECUTION_TOOL_NAME,
+    SandboxBackend,
+    SandboxNotReachableError,
+)
+from gateway.services.tool_usage import (
+    MAX_TOOL_NAMES,
+    OVERFLOW_TOOL_NAME,
+    TOOL_METER_NAMESPACE,
+    ToolUsageTally,
+)
 from gateway.services.url_safety import UnsafeURLError, validate_mcp_url
-from gateway.services.web_search_backend import WebSearchNotReachableError
+from gateway.services.web_search_backend import WEB_SEARCH_TOOL_NAME, WebSearchNotReachableError
 from gateway.streaming import (
     StreamFormat,
     StreamingAttemptFailure,
@@ -190,8 +204,20 @@ WEB_SEARCH_CONFLICT_DETAIL = (
 WEB_SEARCH_NOT_ENABLED_DETAIL = "web search is not enabled for this workspace"
 SANDBOX_NOT_ENABLED_DETAIL = "code execution is not enabled for this workspace"
 MALFORMED_CODE_EXEC_POLICY_DETAIL = "Authorization service returned a malformed code-execution policy"
-SANDBOX_UNREACHABLE_DETAIL = "code_execution sandbox unreachable — check OTARI_SANDBOX_URL"
-WEB_SEARCH_UNREACHABLE_DETAIL = "web_search backend unreachable — check OTARI_WEB_SEARCH_URL"
+SANDBOX_UNREACHABLE_DETAIL = (
+    "code_execution sandbox unreachable. Check the sandbox URL in the dashboard's "
+    "Tools settings, or OTARI_SANDBOX_URL, and that the container is running."
+)
+WEB_SEARCH_UNREACHABLE_DETAIL = (
+    "web_search backend unreachable. Check the search URL in the dashboard's Tools "
+    "settings, or OTARI_WEB_SEARCH_URL, and that the backend is running."
+)
+UNPRICED_TOOL_DETAIL_TEMPLATE = (
+    "The gateway tool '{tool}' has no pricing, and this gateway runs with "
+    "require_pricing enabled, so it will not run work it cannot bill. Set a "
+    "per-request price for model_key '{key}' (POST /v1/pricing, or the dashboard's "
+    "Tools & Guardrails screen), or set require_pricing to false to serve it unpriced."
+)
 
 
 class ErrorKind(Enum):
@@ -517,6 +543,13 @@ class RequestContext:
         self.user_id = user_id
         self.rate_limit_info = rate_limit_info
         self.reservation = reservation
+        # USD already written onto a failure row for gateway-run tool calls. A
+        # request whose plan is exhausted still owes for the searches it ran, and
+        # ``log_exhausted_plan`` writes that onto the row without settling. Recording
+        # it here lets the single release site reconcile it instead of refunding,
+        # which is what keeps ``users.spend`` matching the row: ``refund_reservation``
+        # releases the hold *without* writing spend.
+        self.tool_charge: float = 0.0
         # Monotonic clock reading taken at the very start of the handler
         # preamble; used to compute the usage log's latency_ms at settlement.
         self.started_at = started_at
@@ -552,8 +585,7 @@ class RequestContext:
 def unresolvable_model_detail(model_selector: str) -> str:
     """Human-readable 400 detail for a selector the gateway cannot resolve."""
     return (
-        f"Unknown or unsupported model {model_selector!r}. "
-        "Use the format 'provider:model' with a configured provider."
+        f"Unknown or unsupported model {model_selector!r}. Use the format 'provider:model' with a configured provider."
     )
 
 
@@ -1169,9 +1201,7 @@ async def resolve_request_context(
         # provider-call settlement does not cover.
         if normalize_messages is not None:
             try:
-                post_chars, vision_usage = await normalize_messages(
-                    user_id, gate_impl, gate_model, gate_instance
-                )
+                post_chars, vision_usage = await normalize_messages(user_id, gate_impl, gate_model, gate_instance)
                 # Bill the vision describe side-call before the reservation
                 # top-up: its cost is already incurred by normalize_messages,
                 # so a 402 from the top-up below must not skip it (the refund
@@ -1275,6 +1305,14 @@ class ToolContext:
         self.remaining_user_tools = remaining_user_tools
         self.max_tool_iterations = max_tool_iterations
         self.tools_header = tools_header
+        # One tally per request, handed to whichever backend runs. It lives here
+        # rather than on the backend because the streaming path tears the backend
+        # down while the response is still settling (``_eager_backend_stream``'s
+        # ``finally`` runs during stream exhaustion, and ``streaming_generator``
+        # only awaits ``on_complete`` afterwards), and because a multi-attempt
+        # request shares one tally across attempts: every executed call was paid
+        # for, whether or not its attempt won.
+        self.tally = ToolUsageTally()
 
     @property
     def tools_extracted(self) -> bool:
@@ -1285,9 +1323,7 @@ class ToolContext:
         return bool(self.mcp_server_configs) or self.use_sandbox or self.use_web_search
 
 
-async def _validate_mcp_server_urls(
-    adapter: FormatAdapter[Any, Any], mcp_servers: list[McpServerConfig]
-) -> None:
+async def _validate_mcp_server_urls(adapter: FormatAdapter[Any, Any], mcp_servers: list[McpServerConfig]) -> None:
     """SSRF/scheme safety check for every MCP server URL in this request.
 
     Covers both request-body-supplied servers and platform-resolved ones
@@ -1510,6 +1546,10 @@ async def prepare_gateway_tools(
                         if isinstance(request_options, dict)
                         else workspace_options
                     )
+
+        # Inside the try so a rejection releases the budget reservation the
+        # request already took, like every other admission failure here.
+        await _require_tool_pricing(adapter, ctx, use_sandbox=use_sandbox, use_web_search=use_web_search)
     except HTTPException:
         await release_reservation(ctx)
         raise
@@ -1534,6 +1574,63 @@ async def prepare_gateway_tools(
         ),
         tools_header=tools_header,
     )
+
+
+async def _require_tool_pricing(
+    adapter: FormatAdapter[Any, Any],
+    ctx: RequestContext,
+    *,
+    use_sandbox: bool,
+    use_web_search: bool,
+) -> None:
+    """Reject a request whose gateway-run tool cannot be billed.
+
+    Same posture ``require_pricing`` already applies to an unpriced model: the
+    gateway does not perform work it cannot meter, because a budget cap cannot
+    restrain a charge that is never recorded. Checked here, at admission, rather
+    than mid-loop, so the caller pays nothing for a request that was never going
+    to settle, and next to the missing-URL 400 so both misconfigurations surface
+    from the same place.
+
+    MCP tools are deliberately not covered: their names come from a caller-supplied
+    server, are unbounded, and are not something an operator can pre-price.
+
+    A budget-exempt key is skipped for the same reason the model gate skips it: the
+    gate exists because an unrecorded charge cannot be restrained by a budget, and a
+    key that is never debited has no budget to protect. Serving an unpriced model but
+    refusing an unpriced tool on the same key would be arbitrary.
+    """
+    if ctx.db is None or not ctx.config.require_pricing:
+        return
+    if ctx.reservation is not None and not ctx.reservation.counts_toward_budget:
+        return
+    tools = [CODE_EXECUTION_TOOL_NAME] if use_sandbox else []
+    if use_web_search:
+        tools.append(WEB_SEARCH_TOOL_NAME)
+    for tool in tools:
+        pricing = await find_model_pricing(ctx.db, GATEWAY_TOOL_PRICING_PROVIDER, tool, use_defaults=False)
+        if pricing is None:
+            key = gateway_tool_pricing_key(tool)
+            detail = UNPRICED_TOOL_DETAIL_TEMPLATE.format(tool=tool, key=key)
+            logger.warning("Rejecting request: gateway tool '%s' has no pricing under '%s'", tool, key)
+            # Logged for the same reason the model gate logs its 402: an operator who
+            # turns require_pricing on has to be able to see that live traffic is
+            # being dropped, and by what.
+            await log_gateway_rejection(
+                db=ctx.db,
+                log_writer=ctx.log_writer,
+                api_key_id=ctx.api_key_id,
+                user_id=ctx.user_id,
+                model=key,
+                provider=GATEWAY_TOOL_PRICING_PROVIDER,
+                endpoint=adapter.endpoint,
+                detail=detail,
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                started_at=ctx.started_at,
+            )
+            # Same kind the model gate uses for its own 402, so both no-pricing
+            # rejections map to one wire shape per format.
+            raise adapter.error(402, detail, ErrorKind.INVALID_REQUEST)
 
 
 # ---------------------------------------------------------------------------
@@ -1575,12 +1672,27 @@ async def log_usage(
     latency_ms: int | None = None,
     counts_toward_budget: bool = True,
     attribution: RoutingAttribution | None = None,
+    tool_tally: ToolUsageTally | None = None,
 ) -> float | None:
     """Log API usage to the database and return the computed cost.
 
     Spend is not written here; the budget reservation reconcile path owns
     ``users.spend``. This returns the cost it computed so the caller can
     reconcile the reservation with the actual amount.
+
+    ``tool_tally`` carries the request's gateway-run tool calls. Their cost is
+    added *after* ``cost_override`` and independently of whether the model itself
+    resolved pricing, because the two are separate charges: a request against an
+    unpriced model can still owe for three searches, and a stream that reported no
+    usage still ran the searches it ran.
+
+    The tally is per *request*, not per attempt, so a request that failed over
+    through a routing policy records every attempt's tool work on the row that
+    settled it. Absorbed rows are written without a tally on purpose
+    (:func:`log_absorbed_attempt` passes none): they describe an attempt that did
+    not serve, and they never settle a reservation, so a charge placed there would
+    be visible on the row and absent from ``users.spend``. One row owning the tool
+    ledger also keeps the per-tool breakdown from counting the same search twice.
 
     Args:
         db: Database session
@@ -1650,7 +1762,6 @@ async def log_usage(
             usage_log.cost = cost
             usage_log.billing_meters = meters
             usage_log.pricing_breakdown = breakdown
-            record_cost(str(provider or ""), model, cost)
         else:
             model_ref = f"{provider}:{model}" if provider else model
             logger.warning("No pricing configured for '%s'. Usage will be tracked without cost.", model_ref)
@@ -1661,8 +1772,85 @@ async def log_usage(
     if cost_override is not None:
         usage_log.cost = cost_override
 
+    # Gateway-run tool calls are a separate charge from the model's tokens, so they
+    # are folded in last: after the token branch (which may not have run at all) and
+    # after cost_override (which replaces the token cost, not the whole bill).
+    await _apply_tool_charges(db, usage_log, tool_tally)
+
+    # Emitted once here rather than inside the pricing branch so the cost metric
+    # tracks the row's total, including tool charges on an unpriced model. A priced
+    # row that happens to cost 0 still reports, matching the previous behavior; only
+    # a row with no cost at all (None) is skipped.
+    if usage_log.cost is not None:
+        record_cost(str(provider or ""), model, usage_log.cost)
+
     await log_writer.put(usage_log)
     return usage_log.cost
+
+
+async def _apply_tool_charges(
+    db: AsyncSession,
+    usage_log: UsageLog,
+    tally: ToolUsageTally | None,
+) -> None:
+    """Fold a request's gateway-run tool calls onto its usage row.
+
+    Writes the counts under the reserved ``tools`` meter namespace, appends one
+    charge line per priced tool, and adds their cost to the row's total.
+
+    Never raises. Settlement must not turn an accounting problem into a failed
+    response; the precedent is :func:`log_gateway_rejection`. A pricing lookup that
+    fails still leaves the counts on the row, so the work stays visible even when
+    it could not be priced.
+    """
+    if tally is None or tally.is_empty():
+        return
+
+    tool_meters = tally.meters()
+    if tally.overflowed:
+        logger.warning(
+            "Tool usage tally exceeded %d distinct tool names; the remainder is recorded under '%s'.",
+            MAX_TOOL_NAMES,
+            OVERFLOW_TOOL_NAME,
+        )
+
+    def commit_meters() -> None:
+        meters = dict(usage_log.billing_meters or {})
+        meters[TOOL_METER_NAMESPACE] = tool_meters
+        usage_log.billing_meters = meters
+
+    billable = tally.billable_calls()
+    if not billable:
+        commit_meters()
+        return
+    try:
+        tool_cost, lines, unpriced = await price_tool_calls(db, billable, as_of=usage_log.timestamp)
+    except SQLAlchemyError:
+        logger.exception("Failed to price gateway tool calls; counts recorded without cost")
+        commit_meters()
+        return
+
+    # The rate is stored per row, not just the cost, so per-tool spend stays
+    # aggregatable in SQL (the row's own ``cost`` mixes tokens and tools) and a
+    # historical row keeps the rate it was billed at after a price change.
+    for line in lines:
+        tool_name = str(line["meter"]).removesuffix("_calls")
+        if tool_name in tool_meters:
+            tool_meters[tool_name]["unit_rate"] = float(line["unit_rate"])
+    commit_meters()
+
+    if lines:
+        usage_log.pricing_breakdown = list(usage_log.pricing_breakdown or []) + lines
+    if tool_cost:
+        usage_log.cost = (usage_log.cost or 0.0) + tool_cost
+    for tool in unpriced:
+        logger.warning(
+            "Gateway tool '%s' ran %d time(s) but has no pricing; recorded without cost. "
+            "Price it with POST /v1/pricing using model_key '%s'.",
+            tool,
+            billable[tool],
+            gateway_tool_pricing_key(tool),
+        )
 
 
 def _handle_counts_toward_budget(reservation: ReservationHandle | None) -> bool:
@@ -1682,9 +1870,19 @@ async def release_reservation(ctx: RequestContext) -> None:
     :func:`resolve_request_context` pre-debited the estimate; otherwise the
     held amount shrinks the user's budget until the next reset (or forever,
     for budgets without a reset period).
+
+    When ``ctx.tool_charge`` is set, the request already ran gateway-run tool calls
+    that were written onto its failure row, so the reservation is *reconciled* to
+    that amount rather than refunded: a refund releases the hold without recording
+    spend, which would leave the charge visible in the activity log and missing from
+    the budget it should have consumed.
     """
-    if ctx.db is not None and ctx.reservation is not None:
-        await refund_reservation(ctx.db, ctx.reservation)
+    if ctx.db is None or ctx.reservation is None:
+        return
+    if ctx.tool_charge:
+        await reconcile_reservation(ctx.db, ctx.reservation, ctx.tool_charge)
+        return
+    await refund_reservation(ctx.db, ctx.reservation)
 
 
 def throttle_early_rejection(raw_request: Request, user_id: str) -> bool:
@@ -1810,6 +2008,7 @@ async def _log_failure_and_refund(
     error: str,
     status_code: int | None = None,
     attribution: RoutingAttribution | None = None,
+    tool_tally: ToolUsageTally | None = None,
 ) -> None:
     """Record a request-level failure and release its reservation.
 
@@ -1817,10 +2016,15 @@ async def _log_failure_and_refund(
     request is precisely when an operator most needs to know which policy was
     involved and how far down its chain the request got, so leaving it off would
     blank out the attribution on the rows that matter most.
+
+    When gateway-run tool calls happened before the failure, their cost is
+    reconciled rather than refunded: ``refund_reservation`` releases the hold
+    *without* writing spend, which would leave the cost visible on the row and
+    absent from ``users.spend``.
     """
     if ctx.db is None:
         return
-    await log_usage(
+    cost = await log_usage(
         db=ctx.db,
         log_writer=ctx.log_writer,
         api_key_id=ctx.api_key_id,
@@ -1833,9 +2037,13 @@ async def _log_failure_and_refund(
         latency_ms=_elapsed_ms(ctx.started_at),
         counts_toward_budget=_handle_counts_toward_budget(ctx.reservation),
         attribution=attribution,
+        tool_tally=tool_tally,
     )
     if ctx.reservation is not None:
-        await refund_reservation(ctx.db, ctx.reservation)
+        if cost:
+            await reconcile_reservation(ctx.db, ctx.reservation, cost)
+        else:
+            await refund_reservation(ctx.db, ctx.reservation)
 
 
 # ---------------------------------------------------------------------------
@@ -1858,7 +2066,7 @@ async def dispatch_non_stream(
         return await adapter.call_provider(call_kwargs)
 
     if tool_ctx.mcp_server_configs:
-        async with MCPClientPool(tool_ctx.mcp_server_configs) as pool:
+        async with MCPClientPool(tool_ctx.mcp_server_configs, tally=tool_ctx.tally) as pool:
             kwargs = adapter.inject_hints(call_kwargs, pool.purpose_hints(), header=tool_ctx.tools_header)
             return await adapter.run_tool_loop(kwargs, pool, tool_ctx.max_tool_iterations, on_first_response)
 
@@ -1866,7 +2074,10 @@ async def dispatch_non_stream(
         assert tool_ctx.sandbox_url is not None  # guaranteed past the missing-URL 400 in prepare_gateway_tools
         sandbox_hint = _resolve_sandbox_purpose_hint(tool_ctx.sandbox_tool_entry, tool_ctx.config)
         async with SandboxBackend(
-            sandbox_url=tool_ctx.sandbox_url, purpose_hint=sandbox_hint, auth_token=tool_ctx.sandbox_auth_token
+            sandbox_url=tool_ctx.sandbox_url,
+            purpose_hint=sandbox_hint,
+            auth_token=tool_ctx.sandbox_auth_token,
+            tally=tool_ctx.tally,
         ) as backend:
             kwargs = adapter.inject_hints(call_kwargs, backend.purpose_hints(), header=tool_ctx.tools_header)
             return await adapter.run_tool_loop(kwargs, backend, tool_ctx.max_tool_iterations, on_first_response)
@@ -1879,6 +2090,7 @@ async def dispatch_non_stream(
         tool_entry=tool_ctx.web_search_tool_entry,
         auth_token=tool_ctx.web_search_auth_token,
         config=tool_ctx.config,
+        tally=tool_ctx.tally,
     ) as web_backend:
         kwargs = adapter.inject_hints(call_kwargs, web_backend.purpose_hints(), header=tool_ctx.tools_header)
         return await adapter.run_tool_loop(kwargs, web_backend, tool_ctx.max_tool_iterations, on_first_response)
@@ -1893,7 +2105,7 @@ async def _lazy_mcp_stream(
     # The MCP pool is entered lazily inside the generator: a dial failure
     # surfaces once the client starts pulling events. Sandbox / web_search use
     # the eager-open path below for a pre-200 HTTP error instead.
-    async with MCPClientPool(configs) as pool:
+    async with MCPClientPool(configs, tally=tool_ctx.tally) as pool:
         hinted = adapter.inject_hints(kwargs, pool.purpose_hints(), header=tool_ctx.tools_header)
         async for event in adapter.open_tool_loop_stream(hinted, pool, tool_ctx.max_tool_iterations):
             yield event
@@ -1941,7 +2153,10 @@ async def open_stream(
         assert tool_ctx.sandbox_url is not None  # guaranteed past the missing-URL 400 in prepare_gateway_tools
         sandbox_hint = _resolve_sandbox_purpose_hint(tool_ctx.sandbox_tool_entry, tool_ctx.config)
         sandbox_backend = SandboxBackend(
-            sandbox_url=tool_ctx.sandbox_url, purpose_hint=sandbox_hint, auth_token=tool_ctx.sandbox_auth_token
+            sandbox_url=tool_ctx.sandbox_url,
+            purpose_hint=sandbox_hint,
+            auth_token=tool_ctx.sandbox_auth_token,
+            tally=tool_ctx.tally,
         )
         await sandbox_backend.__aenter__()  # may raise SandboxNotReachableError
         return _eager_backend_stream(adapter, kwargs, sandbox_backend, tool_ctx)
@@ -1954,6 +2169,7 @@ async def open_stream(
         tool_entry=tool_ctx.web_search_tool_entry,
         auth_token=tool_ctx.web_search_auth_token,
         config=tool_ctx.config,
+        tally=tool_ctx.tally,
     )
     await web_search_backend.__aenter__()  # may raise WebSearchNotReachableError
     return _eager_backend_stream(adapter, kwargs, web_search_backend, tool_ctx)
@@ -2013,6 +2229,7 @@ def build_streaming_response(
     session_label: str | None = None,
     display_model: str | None = None,
     attribution: RoutingAttribution | None = None,
+    tool_tally: ToolUsageTally | None = None,
 ) -> StreamingResponse:
     """Wrap an already-opened upstream stream in an SSE response.
 
@@ -2065,6 +2282,7 @@ def build_streaming_response(
             latency_ms=_elapsed_ms(started_at),
             counts_toward_budget=_handle_counts_toward_budget(reservation),
             attribution=attribution,
+            tool_tally=tool_tally,
         )
         if reservation is not None:
             await reconcile_reservation(db, reservation, actual_cost or 0.0)
@@ -2091,7 +2309,7 @@ def build_streaming_response(
             return
         policy = config.stream_missing_usage_policy
         if policy == "allow_free":
-            await log_usage(
+            tool_cost = await log_usage(
                 db=db,
                 log_writer=log_writer,
                 api_key_id=api_key_id,
@@ -2102,14 +2320,20 @@ def build_streaming_response(
                 latency_ms=_elapsed_ms(started_at),
                 counts_toward_budget=reservation.counts_toward_budget,
                 attribution=attribution,
+                tool_tally=tool_tally,
             )
-            await refund_reservation(db, reservation)
+            # "Free" is about the tokens the provider never reported, not about
+            # tool calls the gateway definitely ran and owes for.
+            if tool_cost:
+                await reconcile_reservation(db, reservation, tool_cost)
+            else:
+                await refund_reservation(db, reservation)
             return
         # 'estimate' and 'fail' both charge the up-front estimate; 'fail' also
         # records the request as errored. status_code stays NULL: the stream
         # itself completed (the caller got a 200), so no HTTP status classifies
         # this, and stamping one would fake a rejection that never happened.
-        await log_usage(
+        settled_cost = await log_usage(
             db=db,
             log_writer=log_writer,
             api_key_id=api_key_id,
@@ -2122,8 +2346,11 @@ def build_streaming_response(
             latency_ms=_elapsed_ms(started_at),
             counts_toward_budget=reservation.counts_toward_budget,
             attribution=attribution,
+            tool_tally=tool_tally,
         )
-        await reconcile_reservation(db, reservation, reservation.estimate)
+        # The estimate covers the unreported tokens; log_usage adds any tool cost on
+        # top of it, so reconcile against the row's total rather than the estimate.
+        await reconcile_reservation(db, reservation, settled_cost or reservation.estimate)
 
     async def _on_error(exc: BaseException) -> None:
         if platform_active:
@@ -2142,7 +2369,7 @@ def build_streaming_response(
             return
         if db is None or log_writer is None:
             return
-        await log_usage(
+        failed_cost = await log_usage(
             db=db,
             log_writer=log_writer,
             api_key_id=api_key_id,
@@ -2155,14 +2382,45 @@ def build_streaming_response(
             latency_ms=_elapsed_ms(started_at),
             counts_toward_budget=_handle_counts_toward_budget(reservation),
             attribution=attribution,
+            tool_tally=tool_tally,
         )
         if reservation is not None:
-            await refund_reservation(db, reservation)
+            # A stream that died after running searches still owes for them, and a
+            # refund would release the hold without recording that spend. This is
+            # also where the streaming tool-iteration cap lands, since the cap is
+            # raised inside the generator.
+            if failed_cost:
+                await reconcile_reservation(db, reservation, failed_cost)
+            else:
+                await refund_reservation(db, reservation)
 
     async def _on_incomplete() -> None:
         # Client disconnected mid-stream: release the reservation.
+        #
+        # Tool work already done is still owed. Without this, disconnecting after the
+        # searches have run is an unlimited supply of unbilled, unrecorded searches,
+        # which is the abuse this metering exists to close. A row is written only when
+        # there was tool work, so an abandoned stream that ran no tools keeps its
+        # existing behavior of leaving no trace.
         if db is None or reservation is None:
             return
+        if log_writer is not None and tool_tally is not None and not tool_tally.is_empty():
+            abandoned_cost = await log_usage(
+                db=db,
+                log_writer=log_writer,
+                api_key_id=api_key_id,
+                model=model,
+                provider=provider,
+                endpoint=adapter.endpoint,
+                user_id=user_id,
+                error="client disconnected before the stream completed",
+                latency_ms=_elapsed_ms(started_at),
+                counts_toward_budget=_handle_counts_toward_budget(reservation),
+                tool_tally=tool_tally,
+            )
+            if abandoned_cost:
+                await reconcile_reservation(db, reservation, abandoned_cost)
+                return
         await refund_reservation(db, reservation)
 
     # StreamingResponse builds its own response object, so headers we want on
@@ -2310,7 +2568,9 @@ async def run_single_attempt_stream(
                     on_terminal=stopped_on.append,
                 )
             except HTTPException as exhausted:
-                await log_exhausted_plan(ctx, adapter, exhausted, stopped_on[0] if stopped_on else None)
+                await log_exhausted_plan(
+                    ctx, adapter, exhausted, stopped_on[0] if stopped_on else None, tool_tally=tool_ctx.tally
+                )
                 raise
             provider, model, display_model = chosen.instance, chosen.model, chosen.display_model
             stream_attribution = _attribution_for(ctx, chosen)
@@ -2359,6 +2619,7 @@ async def run_single_attempt_stream(
         session_label=session_label,
         display_model=display_model,
         attribution=stream_attribution,
+        tool_tally=tool_ctx.tally,
     )
 
 
@@ -2455,13 +2716,18 @@ async def run_streaming_with_fallback(
     pool_for_loop: Any = None
     try:
         if tool_ctx.mcp_server_configs:
-            pool_for_loop = await backend_stack.enter_async_context(MCPClientPool(tool_ctx.mcp_server_configs))
+            pool_for_loop = await backend_stack.enter_async_context(
+                MCPClientPool(tool_ctx.mcp_server_configs, tally=tool_ctx.tally)
+            )
         elif tool_ctx.use_sandbox:
             assert tool_ctx.sandbox_url is not None  # guaranteed past the missing-URL 400 in prepare_gateway_tools
             sandbox_hint = _resolve_sandbox_purpose_hint(tool_ctx.sandbox_tool_entry, tool_ctx.config)
             pool_for_loop = await backend_stack.enter_async_context(
                 SandboxBackend(
-                    sandbox_url=tool_ctx.sandbox_url, purpose_hint=sandbox_hint, auth_token=tool_ctx.sandbox_auth_token
+                    sandbox_url=tool_ctx.sandbox_url,
+                    purpose_hint=sandbox_hint,
+                    auth_token=tool_ctx.sandbox_auth_token,
+                    tally=tool_ctx.tally,
                 ),
             )
         elif tool_ctx.use_web_search:
@@ -2473,6 +2739,7 @@ async def run_streaming_with_fallback(
                     tool_entry=tool_ctx.web_search_tool_entry,
                     auth_token=tool_ctx.web_search_auth_token,
                     config=tool_ctx.config,
+                    tally=tool_ctx.tally,
                 ),
             )
     except BaseException:
@@ -2551,9 +2818,7 @@ async def run_streaming_with_fallback(
         # if the flush raises or is interrupted.
         try:
             if not isinstance(exc, asyncio.CancelledError):
-                await _flush_pending_usage_reports(
-                    config, pending_error_reports, route.request_id, session_label
-                )
+                await _flush_pending_usage_reports(config, pending_error_reports, route.request_id, session_label)
         finally:
             await backend_stack.aclose()
         raise
@@ -2779,6 +3044,7 @@ async def log_exhausted_plan(
     adapter: FormatAdapter[Any, Any],
     exc: HTTPException,
     stopped_on: Attempt | None = None,
+    tool_tally: ToolUsageTally | None = None,
 ) -> None:
     """Record the failure of a plan whose every candidate failed.
 
@@ -2788,11 +3054,18 @@ async def log_exhausted_plan(
     invisible in the activity log, while the same failure on a plain model is
     recorded. This writes the row and deliberately does **not** refund, so the
     caller's existing single refund site stays the only one.
+
+    ``tool_tally`` is what makes an exhausted plan still owe for the searches it
+    ran, including the case that cannot fail over at all: once a tool loop has
+    produced an assistant message the plan locks to that provider (see
+    ``_attempts``), so a failure inside the loop is terminal and this is the only
+    row the request gets. The charge is recorded on ``ctx`` for the caller's single
+    release site to reconcile.
     """
     if ctx.db is None or ctx.plan is None:
         return
     last = stopped_on or ctx.plan.attempts[-1]
-    await log_usage(
+    cost = await log_usage(
         db=ctx.db,
         log_writer=ctx.log_writer,
         api_key_id=ctx.api_key_id,
@@ -2805,7 +3078,9 @@ async def log_exhausted_plan(
         latency_ms=_elapsed_ms(ctx.started_at),
         counts_toward_budget=_handle_counts_toward_budget(ctx.reservation),
         attribution=_failure_attribution(ctx, last),
+        tool_tally=tool_tally,
     )
+    ctx.tool_charge = cost or 0.0
 
 
 async def log_absorbed_attempt(
@@ -2822,6 +3097,10 @@ async def log_absorbed_attempt(
     Failures here are swallowed. Losing an audit row is bad; turning a request the
     gateway is about to serve successfully into a 500 because the audit write failed
     is worse.
+
+    Deliberately passes no ``tool_tally``: gateway-run tool calls are billed once,
+    on the row that settles the request's reservation, so this row carries the
+    attempt's tokens and none of the tool ledger. See :func:`log_usage`.
     """
     if ctx.db is None:
         return
@@ -2919,7 +3198,9 @@ async def run_standalone_non_stream(
                     on_terminal=stopped_on.append,
                 )
             except HTTPException as exhausted:
-                await log_exhausted_plan(ctx, adapter, exhausted, stopped_on[0] if stopped_on else None)
+                await log_exhausted_plan(
+                    ctx, adapter, exhausted, stopped_on[0] if stopped_on else None, tool_tally=tool_ctx.tally
+                )
                 raise
             provider, model, display_model = chosen.instance, chosen.model, chosen.display_model
             attribution = _attribution_for(ctx, chosen)
@@ -2935,7 +3216,10 @@ async def run_standalone_non_stream(
         if ctx.db is not None:
             usage_data = adapter.extract_usage(result)
             actual_cost: float | None = None
-            if usage_data is not None or adapter.log_success_without_usage:
+            # A request whose provider reported no usage still owes for the tool
+            # calls it ran, so a non-empty tally forces the row that
+            # ``log_success_without_usage = False`` would otherwise suppress.
+            if usage_data is not None or adapter.log_success_without_usage or not tool_ctx.tally.is_empty():
                 actual_cost = await log_usage(
                     db=ctx.db,
                     log_writer=ctx.log_writer,
@@ -2948,6 +3232,7 @@ async def run_standalone_non_stream(
                     latency_ms=_elapsed_ms(ctx.started_at),
                     counts_toward_budget=_handle_counts_toward_budget(ctx.reservation),
                     attribution=attribution,
+                    tool_tally=tool_ctx.tally,
                 )
             if ctx.reservation is not None:
                 await reconcile_reservation(ctx.db, ctx.reservation, actual_cost or 0.0)
@@ -2969,6 +3254,7 @@ async def run_standalone_non_stream(
             str(e),
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             attribution=_failure_attribution(ctx),
+            tool_tally=tool_ctx.tally,
         )
         raise adapter.error(422, str(e), ErrorKind.INVALID_REQUEST) from e
     except SandboxNotReachableError as e:
@@ -2984,7 +3270,14 @@ async def run_standalone_non_stream(
         raise adapter.error(502, WEB_SEARCH_UNREACHABLE_DETAIL, ErrorKind.API) from e
     except Exception as e:
         await _log_failure_and_refund(
-            ctx, adapter, provider, model, str(e), failure_status_code(e), attribution=_failure_attribution(ctx)
+            ctx,
+            adapter,
+            provider,
+            model,
+            str(e),
+            failure_status_code(e),
+            attribution=_failure_attribution(ctx),
+            tool_tally=tool_ctx.tally,
         )
         logger.error("Provider call failed for %s:%s: %s", provider, model, e)
         raise adapter.provider_error(e) from e

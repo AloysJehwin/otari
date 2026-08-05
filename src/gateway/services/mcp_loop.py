@@ -111,6 +111,39 @@ def _accumulate_tool_call_deltas(slots: dict[int, dict[str, Any]], deltas: list[
                 slot["function"]["arguments"] += fn.arguments
 
 
+def _with_tool_calls(event: ChatCompletionChunk, tool_calls: list[Any] | None) -> ChatCompletionChunk | None:
+    """Return ``event`` with its delta's ``tool_calls`` replaced, or ``None`` on failure.
+
+    Used to strip gateway-owned fragments out of a chunk that also carries content or
+    foreign fragments, so the client sees only what it can act on.
+
+    ``None`` means the rewrite failed and the caller must drop the chunk rather than
+    forward it. Forwarding the original would hand the client a gateway tool call it
+    can never receive a result for, and one the gateway is about to execute itself, so
+    losing a delta is the safer failure: the terminal chunk still carries the finish
+    reason, and the caller's own tool calls survive in the following chunks.
+    """
+    try:
+        choice = event.choices[0]
+        new_delta = choice.delta.model_copy(update={"tool_calls": tool_calls})
+        new_choice = choice.model_copy(update={"delta": new_delta})
+        return event.model_copy(update={"choices": [new_choice]})
+    except (AttributeError, TypeError, IndexError):
+        logger.warning("Could not strip gateway tool_calls from a streamed chunk; dropping it")
+        return None
+
+
+def _stripped_tool_calls(event: ChatCompletionChunk) -> ChatCompletionChunk:
+    """``event`` with its tool_calls removed, or unchanged if that cannot be built.
+
+    Last resort for a terminal chunk whose rewrite failed: the finish reason has to
+    reach the client, and a terminal carrying no tool_calls is a valid stream, while
+    one carrying the gateway's own call is not.
+    """
+    stripped = _with_tool_calls(event, None)
+    return stripped if stripped is not None else event
+
+
 def _finalize_tool_calls(slots: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
     return [slots[i] for i in sorted(slots)]
 
@@ -187,6 +220,13 @@ class _ChatStreamState:
         self.finish_reason: str | None = None
         self.pending_terminal: ChatCompletionChunk | None = None
         self.mcp_calls: list[dict[str, Any]] = []
+        # Upstream tool_call index -> the index the client sees. Gateway-owned calls
+        # are dropped from the stream, so the surviving foreign calls have to be
+        # renumbered into a gapless sequence: an SDK accumulator indexes its snapshot
+        # array by the index it is handed, and a first fragment numbered 1 makes the
+        # official OpenAI client raise IndexError.
+        self.visible_tool_index: dict[int, int] = {}
+        self.next_visible_tool_index = 0
 
 
 class _ChatToolLoopStrategy:
@@ -259,9 +299,7 @@ class _ChatToolLoopStrategy:
         # back on the next request.
         choice = result.choices[0]
         sdk_calls = choice.message.tool_calls or []
-        foreign_sdk_calls = [
-            tc for tc in sdk_calls if hasattr(tc, "function") and not pool.owns_tool(tc.function.name)
-        ]
+        foreign_sdk_calls = [tc for tc in sdk_calls if hasattr(tc, "function") and not pool.owns_tool(tc.function.name)]
         try:
             choice.message.tool_calls = foreign_sdk_calls or None
         except (AttributeError, TypeError):
@@ -278,6 +316,7 @@ class _ChatToolLoopStrategy:
         result: ChatCompletion,
         owned: list[Any],
         pool: ToolBackend,
+        acc: Any = None,
     ) -> None:
         transcript.append({"role": "assistant", "tool_calls": owned})
         transcript.extend(await _execute_mcp_calls(pool, owned))
@@ -297,13 +336,42 @@ class _ChatToolLoopStrategy:
         # accounting happens downstream in `streaming_generator`.
         return None
 
-    def observe(self, state: _ChatStreamState, event: ChatCompletionChunk) -> StreamAction:
+    def observe(
+        self,
+        state: _ChatStreamState,
+        event: ChatCompletionChunk,
+        pool: ToolBackend,
+        acc: None,
+    ) -> tuple[StreamAction, ChatCompletionChunk]:
         chunk_is_terminal = False
+        hide = False
+        visible = event
         if event.choices:
             choice = event.choices[0]
             delta = getattr(choice, "delta", None)
             if delta is not None and getattr(delta, "tool_calls", None):
                 _accumulate_tool_call_deltas(state.slots, delta.tool_calls)
+                # Fragments for a gateway-owned call are not forwarded: the client
+                # can never be sent the matching ``tool`` message, because the
+                # gateway consumes the result itself. A fragment carrying only
+                # arguments has no name of its own, so ownership is resolved from
+                # the accumulated slot for its index.
+                foreign = [tc for tc in delta.tool_calls if not self._owned_fragment(state, pool, tc)]
+                renumbered = [self._renumbered(state, tc) for tc in foreign]
+                rewritten: ChatCompletionChunk | None = None
+                if len(foreign) != len(delta.tool_calls):
+                    if foreign or getattr(delta, "content", None):
+                        rewritten = _with_tool_calls(event, renumbered or None)
+                        hide = rewritten is None
+                    else:
+                        hide = True
+                elif any(tc is not original for tc, original in zip(renumbered, foreign, strict=True)):
+                    # No owned call in this chunk, but an earlier one shifted the
+                    # numbering, so the survivors still need rewriting.
+                    rewritten = _with_tool_calls(event, renumbered)
+                    hide = rewritten is None
+                if rewritten is not None:
+                    visible = rewritten
             if choice.finish_reason:
                 # Sticky-tool-calls: a trailing ``stop`` chunk from
                 # Anthropic must not override ``tool_calls`` we've
@@ -312,28 +380,76 @@ class _ChatToolLoopStrategy:
                     state.finish_reason = choice.finish_reason
                 chunk_is_terminal = True
         if chunk_is_terminal:
-            state.pending_terminal = event
-            return StreamAction.DEFER
-        return StreamAction.FORWARD
+            # The rewritten chunk, not the upstream one: a provider that packs
+            # tool_calls and finish_reason into a single chunk would otherwise leak
+            # the gateway's own call through the deferred terminal, undoing the hiding
+            # above for exactly the providers any-llm synthesizes streaming for. If
+            # the rewrite failed, the terminal still has to reach the client (it
+            # carries the finish reason), so send it with no tool_calls at all.
+            state.pending_terminal = visible if not hide else _stripped_tool_calls(event)
+            return StreamAction.DEFER, state.pending_terminal
+        if hide:
+            return StreamAction.DEFER, event
+        return StreamAction.FORWARD, visible
+
+    @staticmethod
+    def _renumbered(state: _ChatStreamState, fragment: Any) -> Any:
+        """Return ``fragment`` with its client-visible tool_call index.
+
+        Identity is returned when the index already matches, so a stream with no
+        hidden calls forwards byte-identical fragments.
+        """
+        index = getattr(fragment, "index", None)
+        if not isinstance(index, int):
+            return fragment
+        if index not in state.visible_tool_index:
+            state.visible_tool_index[index] = state.next_visible_tool_index
+            state.next_visible_tool_index += 1
+        visible = state.visible_tool_index[index]
+        if visible == index or not hasattr(fragment, "model_copy"):
+            return fragment
+        return fragment.model_copy(update={"index": visible})
+
+    @staticmethod
+    def _owned_fragment(state: _ChatStreamState, pool: ToolBackend, fragment: Any) -> bool:
+        """Whether a streamed tool_call fragment belongs to a gateway-run tool.
+
+        A fragment that carries only arguments has no name of its own, so ownership
+        is resolved from the accumulated slot for its index.
+        """
+        index = getattr(fragment, "index", None)
+        if not isinstance(index, int):
+            return False
+        slot = state.slots.get(index)
+        name = (slot or {}).get("function", {}).get("name") or ""
+        return bool(name) and pool.owns_tool(name)
 
     def stream_exiting(self, state: _ChatStreamState, pool: ToolBackend) -> bool:
         if state.finish_reason != "tool_calls":
             return True
         tool_calls = _finalize_tool_calls(state.slots)
         state.mcp_calls, has_foreign = _execute_split(tool_calls, pool)
-        # Mixed (has_foreign with mcp_calls) is handled the same as
-        # all-foreign here: the terminal chunk is forwarded so the
-        # client sees the full tool_calls set, and any MCP-owned calls
-        # in a mixed batch are left for a follow-up turn (the
-        # non-streaming variant filters them out; rewriting deltas
-        # mid-stream is too invasive to do here).
+        # A mixed batch exits so the caller can dispatch its own tools, and the
+        # gateway's calls were filtered out of the stream, so the client only ever
+        # sees what it can act on. Those owned calls are still executed, in
+        # ``finalize_exit``, which is the same "execute for side effects, return only
+        # the foreign calls" contract the non-streaming loop applies.
         return has_foreign or not state.mcp_calls
+
+    async def finalize_exit(self, state: _ChatStreamState, pool: ToolBackend) -> None:
+        if state.mcp_calls:
+            await _execute_mcp_calls(pool, state.mcp_calls)
 
     def terminal_events(self, state: _ChatStreamState, acc: None) -> list[ChatCompletionChunk]:
         return [state.pending_terminal] if state.pending_terminal is not None else []
 
     def accumulate_stream_usage(self, acc: None, state: _ChatStreamState) -> None:
         return None
+
+    def synthetic_events(self, state: _ChatStreamState, acc: None) -> list[Any]:
+        # This format has no native vocabulary for a server-side tool call, so the
+        # gateway's calls stay invisible on the wire. Documented in docs/tools.md.
+        return []
 
     async def advance_stream_transcript(
         self,

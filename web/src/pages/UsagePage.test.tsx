@@ -53,6 +53,7 @@ function summary(overrides: Partial<UsageSummary> = {}): UsageSummary {
       { key: "openai", cost: 880, tokens: 7_000_000, requests: 45_100, is_other: false },
       { key: "anthropic", cost: 360.5, tokens: 5_400_000, requests: 38_900, is_other: false },
     ],
+    by_tool: [],
     series: [
       { bucket_start: "2026-07-19T00:00:00Z", cost: 400, tokens: 4_000_000, requests: 28_000 },
       { bucket_start: "2026-07-20T00:00:00Z", cost: 840.5, tokens: 8_400_000, requests: 56_000 },
@@ -653,5 +654,54 @@ describe("UsagePage", () => {
 
     // The picked key shows as a chip with a remove control.
     expect(await screen.findByRole("button", { name: "Remove API key filter" })).toBeInTheDocument();
+  });
+});
+
+describe("UsagePage gateway-run tools", () => {
+  it("hides the tools card while the window has no gateway-run tool calls", async () => {
+    mockApi(summary());
+    renderPage(<UsagePage />);
+    await screen.findByText("$1,240.50");
+
+    // A gateway that runs no tools should not be shown an empty table asking to be
+    // explained, which is why the card is conditional rather than always present.
+    expect(screen.queryByText("Gateway-run tools")).not.toBeInTheDocument();
+  });
+
+  it("shows calls, failures, and spend per tool", async () => {
+    mockApi(
+      summary({
+        by_tool: [
+          { tool: "web_search", calls: 249, errors: 13, requests: 105, cost: 2.49 },
+          { tool: "code_execution", calls: 65, errors: 6, requests: 28, cost: 0 },
+        ],
+      }),
+    );
+    renderPage(<UsagePage />);
+
+    await screen.findByText("Gateway-run tools");
+    const row = screen.getByText("web search").closest("tr")!;
+    // Calls count tool calls, not requests: one request can search several times.
+    expect(within(row).getByText("249")).toBeInTheDocument();
+    expect(within(row).getByText("13")).toBeInTheDocument();
+    expect(within(row).getByText("105")).toBeInTheDocument();
+    expect(within(row).getByText("$2.49")).toBeInTheDocument();
+  });
+
+  it("drills into the Activity log filtered on the clicked tool", async () => {
+    const user = userEvent.setup();
+    mockApi(
+      summary({
+        by_tool: [{ tool: "web_search", calls: 12, errors: 0, requests: 7, cost: 0.12 }],
+      }),
+    );
+    renderPage(<UsagePage />);
+
+    const row = (await screen.findByText("web search")).closest("tr")!;
+    await user.click(row);
+
+    const loc = screen.getByRole("status", { name: "Current location" }).textContent ?? "";
+    expect(loc.startsWith("/activity")).toBe(true);
+    expect(loc).toContain("tool=web_search");
   });
 });

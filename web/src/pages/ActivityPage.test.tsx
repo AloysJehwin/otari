@@ -173,8 +173,9 @@ describe("ActivityPage", () => {
 
   it("asks the summary endpoint only for the breakdowns it reads", async () => {
     // Two summary reads back this page: the model typeahead (by_model) and the
-    // timeline histogram (series only). Each breakdown is a separate GROUP BY over
-    // the window server-side, so neither may request the full set.
+    // timeline histogram (series, plus by_tool so the Tool filter knows whether this
+    // window has any gateway-run tool calls to offer). Each breakdown is a separate
+    // GROUP BY over the window server-side, so neither may request the full set.
     const { calls } = mockApi({ rows: [entry()] });
     renderPage(<ActivityPage />);
 
@@ -182,7 +183,7 @@ describe("ActivityPage", () => {
     const summaryCalls = calls.filter((c) => c.url.includes("/v1/usage/summary")).map((c) => c.url);
     expect(summaryCalls.length).toBeGreaterThan(0);
     expect(summaryCalls.some((url) => url.includes("dimensions=model"))).toBe(true);
-    expect(summaryCalls.some((url) => url.includes("dimensions=none"))).toBe(true);
+    expect(summaryCalls.some((url) => url.includes("dimensions=tool"))).toBe(true);
     // No caller here reads a session/provider/user breakdown.
     expect(summaryCalls.some((url) => url.includes("dimensions=source_label"))).toBe(false);
     expect(summaryCalls.every((url) => url.includes("dimensions="))).toBe(true);
@@ -956,5 +957,83 @@ describe("ActivityPage", () => {
     renderPage(<ActivityPage />);
 
     expect(await screen.findByText("default")).toBeInTheDocument();
+  });
+});
+
+describe("ActivityPage gateway-run tools", () => {
+  it("marks a row that ran tools and keeps its token bar", async () => {
+    // A row can carry tool meters while its tokens were never metered (an unpriced
+    // model still owes for the searches it ran). Keying the token split off the
+    // presence of `billing_meters` rather than each key made the bar vanish here.
+    mockApi({
+      rows: [
+        entry({
+          prompt_tokens: 1200,
+          completion_tokens: 300,
+          total_tokens: 1500,
+          billing_meters: { tools: { web_search: { billed: 3, errors: 1, unit_rate: 0.01 } } },
+        }),
+      ],
+    });
+    renderPage(<ActivityPage />);
+
+    const row = (await screen.findByText("gpt-4o")).closest("tr")!;
+    // 3 billed + 1 failed = 4 calls, and the detail is on the accessible name.
+    const pill = within(row).getByLabelText(/Gateway tools/);
+    expect(pill).toHaveTextContent("4 tools");
+    expect(pill).toHaveAccessibleName("Gateway tools: web search ×3, 1 failed");
+    // The bar still renders from the raw columns.
+    expect(within(row).getByRole("img", { name: /Token composition/ })).toBeInTheDocument();
+  });
+
+  it("shows tool counts and cost in the request detail", async () => {
+    mockApi({
+      rows: [
+        entry({
+          cost: 0.05,
+          billing_meters: { tools: { web_search: { billed: 3, errors: 0, unit_rate: 0.01 } } },
+          pricing_breakdown: [{ meter: "web_search_calls", units: 3, unit_rate: 0.01, cost: 0.03 }],
+        }),
+      ],
+    });
+    renderPage(<ActivityPage />);
+
+    await userEvent.click(await screen.findByText("gpt-4o"));
+    expect(await screen.findByText("Tools")).toBeInTheDocument();
+    expect(screen.getByText("web search ×3")).toBeInTheDocument();
+    // Per-call charge lines read "N at $X each", not the token form "$X / 1M".
+    expect(screen.getByText(/3 at \$0\.01 each, \$0\.03/)).toBeInTheDocument();
+  });
+
+  it("labels an unpriced tool instead of reporting it as free", async () => {
+    // A tool with no rate records units at cost 0. Rendering that as "$0.0000"
+    // would read as "this is free" when it means "nobody set a price".
+    mockApi({
+      rows: [entry({ billing_meters: { tools: { web_search: { billed: 2, errors: 0 } } } })],
+    });
+    renderPage(<ActivityPage />);
+
+    await userEvent.click(await screen.findByText("gpt-4o"));
+    expect(await screen.findByText("Tool cost")).toBeInTheDocument();
+    expect(screen.getByText("unpriced")).toBeInTheDocument();
+  });
+});
+
+describe("ActivityPage filter serialization", () => {
+  it("sends every active filter to the server, not just the chip", async () => {
+    // Regression: `tool` was added to the URL state, the chip, and the bulk-mutation
+    // body, but not to the query serializer every request shares. The page then
+    // looked filtered (chip, URL) while the list, the count, and the timeline all
+    // went out unfiltered, so the table showed rows that did not match.
+    const { calls } = mockApi({ rows: [entry()] });
+    renderPage(<ActivityPage />, "/activity?tool=web_search&range=24h");
+
+    await screen.findByText("gpt-4o");
+    const requested = calls.map((c) => c.url);
+    for (const path of ["/v1/usage?", "/v1/usage/count", "/v1/usage/summary"]) {
+      const hit = requested.find((url) => url.includes(path));
+      expect(hit, `no request to ${path}`).toBeDefined();
+      expect(hit, `${path} dropped the tool filter`).toContain("tool=web_search");
+    }
   });
 });
