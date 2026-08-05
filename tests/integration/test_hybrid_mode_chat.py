@@ -154,6 +154,147 @@ def test_hybrid_mode_sets_correlation_id_and_reports_usage(
     ]
 
 
+def _bedrock_resolve_response(request_id: str, api_key: str, extra_params: dict[str, str]) -> dict[str, Any]:
+    return {
+        "request_id": request_id,
+        "fallback_enabled": False,
+        "attempts": [
+            {
+                "attempt_id": f"{request_id}-att",
+                "position": 0,
+                "provider": "bedrock",
+                "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                "api_key": api_key,
+                "api_base": None,
+                "managed": False,
+                "extra_params": extra_params,
+            }
+        ],
+    }
+
+
+def _bedrock_chat_request() -> dict[str, Any]:
+    return {
+        "model": "bedrock:anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+
+def _fake_bedrock_chat_completion() -> ChatCompletion:
+    return ChatCompletion(
+        id="chatcmpl-bedrock",
+        object="chat.completion",
+        created=1700000000,
+        model="anthropic.claude-3-5-sonnet-20241022-v2:0",
+        choices=[
+            Choice(
+                index=0,
+                message=ChatCompletionMessage(role="assistant", content="hello"),
+                finish_reason="stop",
+            )
+        ],
+        usage=CompletionUsage(prompt_tokens=10, completion_tokens=7, total_tokens=17),
+    )
+
+
+def test_hybrid_mode_forwards_bedrock_classic_key_pair_via_client_args(
+    platform_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Bedrock attempt using the classic IAM access-key/secret-key shape
+    reaches the ``acompletion()`` call under ``client_args`` (not flat), with
+    the secret aliased to ``aws_secret_access_key``: the shape any-llm's
+    Bedrock provider actually reads when building its boto3 client. Without
+    this, boto3 raises ``NoRegionError`` ("You must specify a region.") even
+    though the gateway received the right values."""
+
+    async def fake_post_platform(
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        timeout_seconds: float,
+    ) -> httpx.Response:
+        if url.endswith("/gateway/provider-keys/resolve"):
+            return httpx.Response(
+                200,
+                json=_bedrock_resolve_response(
+                    "bedrock-classic-req",
+                    "secret-access-key",
+                    {"region_name": "us-east-1", "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE"},
+                ),
+            )
+        return httpx.Response(204)
+
+    async def fake_acompletion(**kwargs: Any) -> ChatCompletion:
+        assert kwargs["model"] == "bedrock:anthropic.claude-3-5-sonnet-20241022-v2:0"
+        assert kwargs["api_key"] == "secret-access-key"
+        assert "region_name" not in kwargs
+        assert "aws_access_key_id" not in kwargs
+        assert kwargs["client_args"] == {
+            "region_name": "us-east-1",
+            "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+            "aws_secret_access_key": "secret-access-key",
+        }
+        return _fake_bedrock_chat_completion()
+
+    monkeypatch.setattr("gateway.api.routes._platform._post_platform", fake_post_platform)
+    monkeypatch.setattr("gateway.api.routes.chat.acompletion", fake_acompletion)
+
+    response = platform_client.post(
+        "/v1/chat/completions",
+        json=_bedrock_chat_request(),
+        headers={"Authorization": "Bearer user_test_token"},
+    )
+
+    assert response.status_code == 200
+
+
+def test_hybrid_mode_forwards_bedrock_bearer_token_via_client_args(
+    platform_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Bedrock attempt using the bearer-token ("Bedrock API key") shape (no
+    aws_access_key_id in extra_params) gets a pre-built, unsigned boto3
+    client under client_args["client"] instead of plain credential kwargs,
+    since this boto3 version has no native bearer-token support."""
+
+    async def fake_post_platform(
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        timeout_seconds: float,
+    ) -> httpx.Response:
+        if url.endswith("/gateway/provider-keys/resolve"):
+            return httpx.Response(
+                200,
+                json=_bedrock_resolve_response(
+                    "bedrock-bearer-req",
+                    "bearer-token-value",
+                    {"region_name": "us-west-2"},
+                ),
+            )
+        return httpx.Response(204)
+
+    async def fake_acompletion(**kwargs: Any) -> ChatCompletion:
+        assert kwargs["model"] == "bedrock:anthropic.claude-3-5-sonnet-20241022-v2:0"
+        assert kwargs["api_key"] == "bearer-token-value"
+        client_args = kwargs["client_args"]
+        assert client_args["region_name"] == "us-west-2"
+        assert client_args["client"].meta.region_name == "us-west-2"
+        return _fake_bedrock_chat_completion()
+
+    monkeypatch.setattr("gateway.api.routes._platform._post_platform", fake_post_platform)
+    monkeypatch.setattr("gateway.api.routes.chat.acompletion", fake_acompletion)
+
+    response = platform_client.post(
+        "/v1/chat/completions",
+        json=_bedrock_chat_request(),
+        headers={"Authorization": "Bearer user_test_token"},
+    )
+
+    assert response.status_code == 200
+
+
 def test_hybrid_mode_forwards_session_label_and_strips_it_upstream(
     platform_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -660,6 +801,38 @@ def test_hybrid_mode_maps_resolve_validation_error_to_bad_gateway(
 
     assert response.status_code == 502
     assert response.json() == {"detail": "Authorization service unavailable"}
+
+
+def test_hybrid_mode_forwards_resolve_400_detail(
+    platform_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 400 from the platform resolve endpoint (a deliberate, caller-safe
+    rejection such as a Bedrock BYO key using an auth shape that can't be
+    forwarded through a gateway) is forwarded verbatim, not collapsed into
+    the generic 502 "Authorization service unavailable" that 422/5xx get."""
+
+    async def fake_post_platform(
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        timeout_seconds: float,
+    ) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"detail": "This Bedrock provider key uses a bearer-token credential."},
+        )
+
+    monkeypatch.setattr("gateway.api.routes._platform._post_platform", fake_post_platform)
+
+    response = platform_client.post(
+        "/v1/chat/completions",
+        json={"model": "bedrock:anthropic.claude-haiku-4-5", "messages": [{"role": "user", "content": "hi"}]},
+        headers={"Authorization": "Bearer user_test_token"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "This Bedrock provider key uses a bearer-token credential."}
 
 
 # ---------------------------------------------------------------------------

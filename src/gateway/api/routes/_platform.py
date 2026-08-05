@@ -31,6 +31,7 @@ from gateway.core.usage import cache_read_tokens_of, cache_write_tokens_of
 from gateway.log_config import logger
 from gateway.metrics import record_abandoned_attempt
 from gateway.models.mcp import McpServerConfig
+from gateway.services.bedrock_gateway_auth import build_bedrock_client_args
 from gateway.services.mcp_loop import MaxToolIterationsExceeded
 from gateway.services.sandbox_backend import SandboxNotReachableError
 from gateway.services.web_search_backend import WebSearchNotReachableError
@@ -136,6 +137,11 @@ class ResolvedAttempt(BaseModel):
     api_base: str | None = None
     api_key: str
     managed: bool
+    extra_params: dict[str, str] | None = None
+    """Provider-specific extra client kwargs beyond api_key/api_base (e.g. AWS
+    Bedrock's ``region_name``/``aws_access_key_id``). Sourced only from the
+    trusted platform peer, never from the caller's request body. See
+    ``default_attempt_kwargs``, which merges these in non-overridably."""
 
 
 class ResolvedRoute(BaseModel):
@@ -153,20 +159,60 @@ class _AttemptFailure(NamedTuple):
     error_class: str
 
 
+def build_attempt_client_args(attempt: ResolvedAttempt) -> dict[str, Any] | None:
+    """Build the ``client_args`` any-llm needs to construct this attempt's
+    provider client, or ``None`` when the attempt carries no ``extra_params``.
+
+    This *must* be a separate ``client_args`` dict, not merged flat into the
+    completion kwargs: any-llm's ``acompletion()`` only forwards a
+    ``client_args`` mapping to the provider's client constructor
+    (``AnyLLM.create(provider, api_key=..., api_base=..., **client_args)``);
+    every other keyword argument goes to the completion *call* instead. A
+    provider-specific credential field passed flat (e.g. Bedrock's
+    ``region_name``) never reaches ``boto3.client()`` that way and is instead
+    silently forwarded into the raw provider API call, which is how an
+    earlier version of this forwarding path still hit ``NoRegionError``
+    despite carrying the right value.
+
+    Bedrock gets dedicated handling (see :mod:`gateway.services.bedrock_gateway_auth`)
+    because it also needs its secret aliased to a different boto3 kwarg name
+    and, for the bearer-token ("Bedrock API key") credential shape, a custom
+    pre-built client. Every other provider's ``extra_params`` is forwarded
+    as-is.
+    """
+    if not attempt.extra_params:
+        return None
+    if LLMProvider(attempt.provider) == LLMProvider.BEDROCK:
+        return build_bedrock_client_args(attempt.api_key, attempt.extra_params)
+    return dict(attempt.extra_params)
+
+
 def default_attempt_kwargs(
     attempt: ResolvedAttempt,
     base_request_fields: dict[str, Any],
 ) -> dict[str, Any]:
-    """Standard platform-attempt kwargs: credentials + ``provider:model`` selector."""
+    """Standard platform-attempt kwargs: credentials + ``provider:model`` selector.
+
+    ``client_args`` (built from the attempt's ``extra_params``, see
+    :func:`build_attempt_client_args`) is merged in *after*
+    ``base_request_fields`` (and after the forced ``model`` key) so a
+    provider-specific credential field the platform returns can never be
+    shadowed by a same-named field in the caller's own request body,
+    matching how ``api_key``/``model`` are already non-overridable.
+    """
     attempt_provider = LLMProvider(attempt.provider)
     kwargs: dict[str, Any] = {"api_key": attempt.api_key}
     if attempt.api_base:
         kwargs["api_base"] = attempt.api_base
-    return {
+    merged = {
         **kwargs,
         **base_request_fields,
         "model": f"{attempt_provider.value}:{attempt.model}",
     }
+    client_args = build_attempt_client_args(attempt)
+    if client_args is not None:
+        merged["client_args"] = client_args
+    return merged
 
 
 def _provider_failure_http_exc(exc: BaseException, *, fallback_detail: str) -> HTTPException:
@@ -434,11 +480,15 @@ async def _post_resolve(
 
     Owns the pieces every resolve helper shares: the base_url guard, the
     gateway/user token headers, the bounded POST, and the status-code ladder.
-    A 200 returns the parsed payload; client errors (401/402/403/404/429) are
-    forwarded with the platform's detail when it is a safe string (falling back
-    to ``client_error_detail``), keeping Retry-After on a 429; timeouts,
+    A 200 returns the parsed payload; client errors (400/401/402/403/404/429)
+    are forwarded with the platform's detail when it is a safe string (falling
+    back to ``client_error_detail``), keeping Retry-After on a 429; timeouts,
     network errors, the platform's server-side failures, and any unexpected
-    status collapse to a 502.
+    status collapse to a 502. 400 is included here (unlike 422, which stays
+    collapsed) because this backend's own 400s are deliberately hand-written,
+    caller-safe rejections (e.g. a Bedrock BYO key using an auth shape that
+    cannot be forwarded through a gateway), not raw framework validation
+    errors that might otherwise leak internal request-shape detail.
     """
     platform_base_url = config.platform.get("base_url")
     if not platform_base_url:
@@ -470,7 +520,7 @@ async def _post_resolve(
     if response.status_code == 200:
         return response.json()
 
-    if response.status_code in {401, 402, 403, 404, 429}:
+    if response.status_code in {400, 401, 402, 403, 404, 429}:
         detail = _safe_detail_from_platform(response, client_error_detail)
         response_headers: dict[str, str] | None = None
         if response.status_code == 429 and response.headers.get("Retry-After"):
@@ -527,6 +577,7 @@ def _parse_resolve_payload(payload: dict[str, Any]) -> ResolvedRoute:
                 api_base=att.get("api_base"),
                 api_key=str(att["api_key"]),
                 managed=bool(att.get("managed", False)),
+                extra_params=att.get("extra_params"),
             )
             for att in attempts_payload
         ]
@@ -549,6 +600,7 @@ def _parse_resolve_payload(payload: dict[str, Any]) -> ResolvedRoute:
                 api_base=payload.get("api_base"),
                 api_key=str(payload["api_key"]),
                 managed=bool(payload.get("managed", False)),
+                extra_params=payload.get("extra_params"),
             )
         ],
     )
