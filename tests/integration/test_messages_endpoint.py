@@ -3,6 +3,7 @@
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from any_llm.types.messages import (
     MessageResponse,
     MessageUsage,
@@ -266,6 +267,100 @@ def test_messages_endpoint_claude_code_shape(
 
     assert response.status_code == 200
     assert response.json()["type"] == "message"
+
+
+# What Claude Code actually sends: client telemetry, not a user id, so it can
+# never equal an Otari user id and no provisioned user makes it match.
+_CLAUDE_CODE_TELEMETRY_USER_ID = '{"device_id":"9f2c","account_uuid":"","session_id":"7b1e-4a"}'
+
+
+def test_messages_telemetry_user_id_rejected_by_default(
+    client: TestClient,
+    api_key_obj: dict[str, Any],
+) -> None:
+    """Strict default: a key naming a different 'user' is rejected (403)."""
+    body = _claude_code_request_body()
+    body["metadata"] = {"user_id": _CLAUDE_CODE_TELEMETRY_USER_ID}
+
+    with patch("gateway.api.routes.messages.amessages", new_callable=AsyncMock, return_value=_make_message_response()):
+        response = client.post(
+            "/v1/messages",
+            json=body,
+            headers={API_KEY_HEADER: f"Bearer {api_key_obj['key']}"},
+        )
+
+    assert response.status_code == 403
+
+
+def test_messages_telemetry_user_id_allowed_by_per_key_override(
+    client: TestClient,
+    master_key_header: dict[str, str],
+) -> None:
+    """A key overriding reject_user_mismatch to false completes while the
+    deployment stays strict.
+
+    The deployment-wide reject_user_mismatch is left at its default, so this is the
+    per-key exception rather than a deployment-wide relaxation (issue #493).
+    """
+    created = client.post(
+        "/v1/keys",
+        json={"key_name": "claude-code", "user_id": "cc-user", "reject_user_mismatch": False},
+        headers=master_key_header,
+    )
+    assert created.status_code == 200
+    lenient_key = created.json()["key"]
+
+    body = _claude_code_request_body()
+    body["metadata"] = {"user_id": _CLAUDE_CODE_TELEMETRY_USER_ID}
+
+    with patch("gateway.api.routes.messages.amessages", new_callable=AsyncMock, return_value=_make_message_response()):
+        response = client.post(
+            "/v1/messages",
+            json=body,
+            headers={API_KEY_HEADER: f"Bearer {lenient_key}"},
+        )
+
+    assert response.status_code == 200, response.text
+
+    # A second, unflagged key on the same deployment is still rejected.
+    strict = client.post("/v1/keys", json={"key_name": "strict"}, headers=master_key_header)
+    assert strict.status_code == 200, strict.text
+    with patch("gateway.api.routes.messages.amessages", new_callable=AsyncMock, return_value=_make_message_response()):
+        strict_response = client.post(
+            "/v1/messages",
+            json=body,
+            headers={API_KEY_HEADER: f"Bearer {strict.json()['key']}"},
+        )
+    assert strict_response.status_code == 403
+
+
+def test_messages_per_key_override_re_tightens_a_lenient_deployment(
+    client: TestClient,
+    master_key_header: dict[str, str],
+    test_config: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The override works in both directions: a key pinned strict is still rejected
+    on a deployment that relaxed the check globally."""
+    monkeypatch.setattr(test_config, "reject_user_mismatch", False)
+    created = client.post(
+        "/v1/keys",
+        json={"key_name": "pinned-strict", "reject_user_mismatch": True},
+        headers=master_key_header,
+    )
+    assert created.status_code == 200, created.text
+
+    body = _claude_code_request_body()
+    body["metadata"] = {"user_id": _CLAUDE_CODE_TELEMETRY_USER_ID}
+
+    with patch("gateway.api.routes.messages.amessages", new_callable=AsyncMock, return_value=_make_message_response()):
+        response = client.post(
+            "/v1/messages",
+            json=body,
+            headers={API_KEY_HEADER: f"Bearer {created.json()['key']}"},
+        )
+
+    assert response.status_code == 403
 
 
 def test_count_tokens_basic(
