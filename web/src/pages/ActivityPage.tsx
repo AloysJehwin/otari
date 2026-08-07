@@ -4,16 +4,20 @@ import type { ReactNode } from "react";
 
 import {
   useDeleteUsage,
-  useKeys,
   useSetPricing,
   useSetUsagePrice,
   useRequestGroups,
   useUsageCount,
   useUsageLogs,
   useUsageSummary,
-  useUsers,
 } from "@/api/hooks";
-import type { SummaryDimension, UsageEntry, UsageFilters, UsageMutationSelection } from "@/api/types";
+import type {
+  SummaryDimension,
+  UsageEntry,
+  UsageFilters,
+  UsageGroupRow,
+  UsageMutationSelection,
+} from "@/api/types";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
 import { BulkActionBar } from "@/components/BulkActionBar";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -165,6 +169,12 @@ const DEFAULT_PAGE_SIZE = 50;
 // the same query's `by_source` while no source is picked (see the source
 // suggestion note below), so both breakdowns ride one request.
 const MODEL_AND_SOURCE_BREAKDOWNS: SummaryDimension[] = ["model", "source"];
+
+// The user and key pickers read these two. by_user and by_api_key carry each
+// entity's display name, resolved server-side in the same GROUP BY, so naming an
+// option costs nothing beyond the breakdown itself. The alternative, and what
+// this replaced, was paging the whole users and api_keys tables on every visit.
+const ENTITY_BREAKDOWNS: SummaryDimension[] = ["user", "api_key"];
 const SOURCE_BREAKDOWN: SummaryDimension[] = ["source"];
 
 // All filter + pagination state, with defaults, kept in the URL.
@@ -756,14 +766,6 @@ function RequestDetail({ entry, onPriceModel }: { entry: UsageEntry; onPriceMode
 // ---------- page ----------
 
 export function ActivityPage() {
-  const users = useUsers();
-  const keys = useKeys();
-  const keyLabels = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const k of keys.data ?? []) map.set(k.id, k.key_name ?? `${k.id.slice(0, 8)}…`);
-    return map;
-  }, [keys.data]);
-
   // Filter + pagination state lives in the URL, so a filtered view is shareable
   // and survives the back button. `patch` batches related changes into one entry.
   const url = useUrlState(URL_DEFAULTS);
@@ -904,12 +906,27 @@ export function ActivityPage() {
       toolFilter,
     ],
   );
-  // Only `by_model` and `by_source` are read (typeahead + source picker), so
-  // only those breakdowns are requested: no use for the other five GROUP BYs.
+  // Two breakdowns are read here (model typeahead, source picker); the rest are
+  // not requested.
   const modelSummary = useUsageSummary(modelSuggestFilters, "day", MODEL_AND_SOURCE_BREAKDOWNS);
-  const modelOptions =
-    modelSummary.data?.by_model?.filter((r) => !r.is_other && r.key !== null).map((r) => r.key as string) ?? [];
-  const keyOptions = (keys.data ?? []).map((k) => ({ value: k.id, label: k.key_name ?? `${k.id.slice(0, 8)}…` }));
+  const realGroups = (rows: UsageGroupRow[] | undefined) =>
+    (rows ?? []).filter((r) => !r.is_other && r.key !== null);
+  const modelOptions = realGroups(modelSummary.data?.by_model).map((r) => r.key as string);
+
+  // The user and key pickers need their own window: each must keep offering the
+  // *other* values of its own dimension, so both entity filters come off. That
+  // cannot share the model/source query above, which has to keep them applied,
+  // or filtering Activity to one user would make the typeahead suggest only the
+  // models other users called and picking one would return an empty table.
+  const entitySuggestFilters: UsageFilters = useMemo(
+    () => ({ ...filters, user_id: undefined, api_key_id: undefined }),
+    [filters],
+  );
+  const entitySummary = useUsageSummary(entitySuggestFilters, "day", ENTITY_BREAKDOWNS);
+  const keyOptions = realGroups(entitySummary.data?.by_api_key).map((r) => ({
+    value: r.key as string,
+    label: r.label ?? `${(r.key as string).slice(0, 8)}…`,
+  }));
 
   // Source options: the sources with usage in the window. Like the model
   // suggestions, this must ignore the source filter itself, or picking Claude Code
@@ -1058,9 +1075,9 @@ export function ActivityPage() {
   // it is not a chip). Values show the human label where one exists.
   const labelFrom = (options: { value: string; label: string }[], value: string) =>
     options.find((o) => o.value === value)?.label ?? value;
-  const userOptionsList = (users.data ?? []).map((u) => ({
-    value: u.user_id,
-    label: u.alias ? `${u.alias} (${u.user_id})` : u.user_id,
+  const userOptionsList = realGroups(entitySummary.data?.by_user).map((r) => ({
+    value: r.key as string,
+    label: r.label ? `${r.label} (${r.key})` : (r.key as string),
   }));
   const clearEntityFilters = () =>
     url.patch({
@@ -1237,6 +1254,7 @@ export function ActivityPage() {
     void count.refetch();
     void contextSummary.refetch();
     void modelSummary.refetch();
+    void entitySummary.refetch();
     // Guarded because refetch() ignores `enabled`: without a picked source the
     // query is disabled by design and refetching it would fire a pointless
     // extra summary request.
@@ -1266,8 +1284,8 @@ export function ActivityPage() {
   // both themselves memoized) so DataTable's per-row cache holds: a fresh array
   // every render would rebuild all rows per click.
   const columns = useMemo<DataTableColumn<UsageEntry>[]>(() => {
-    const apiKeyLabel = (id: string | null): string =>
-      id === null ? "—" : (keyLabels.get(id) ?? `${id.slice(0, 8)}…`);
+    const apiKeyLabel = (entry: UsageEntry): string =>
+      entry.api_key_id === null ? "—" : (entry.api_key_name ?? `${entry.api_key_id.slice(0, 8)}…`);
     return [
       {
         id: "time",
@@ -1315,13 +1333,13 @@ export function ActivityPage() {
         // additive: together they answer "what did I ask for, and what served it".
         cell: (e) => <RoutingCell entry={e} outcome={groupOutcomes.get(e.request_group_id ?? "") ?? null} />,
       },
-      { id: "api_key", header: "API key", cell: (e) => <span className="text-[var(--otari-muted)]">{apiKeyLabel(e.api_key_id)}</span> },
+      { id: "api_key", header: "API key", cell: (e) => <span className="text-[var(--otari-muted)]">{apiKeyLabel(e)}</span> },
       { id: "tokens", header: "Tokens", align: "end", cell: (e) => <TokenBar entry={e} /> },
       { id: "cost", header: "Cost", align: "end", cell: (e) => formatUSD(e.cost) },
       { id: "latency", header: "Total time", align: "end", cell: (e) => formatLatency(e.latency_ms) },
       { id: "status", header: "Status", cell: (e) => <StatusPill status={e.status} /> },
     ];
-  }, [keyLabels, groupOutcomes]);
+  }, [groupOutcomes]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -1390,10 +1408,16 @@ export function ActivityPage() {
               ))}
             </FilterSelect>
           ) : null}
+          {/* allowsCustom on all three: the options are the in-window top spenders
+              (a breakdown capped at 100), so an entity that exists but ranks below
+              that, or has no traffic in the window, is not offered. Enter commits a
+              pasted id anyway, the way the Model box already accepts a name the
+              suggestions do not cover. */}
           <FilterMultiComboBox
             label="API key"
             values={apiKeyFilters}
             onChange={(values) => url.patch({ api_key_id: values })}
+            allowsCustom
             placeholder="All keys"
             options={keyOptions}
           />
@@ -1401,6 +1425,7 @@ export function ActivityPage() {
             label="User"
             values={userFilters}
             onChange={(values) => url.patch({ user_id: values })}
+            allowsCustom
             placeholder="All users"
             options={userOptionsList}
           />

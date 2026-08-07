@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiError, apiFetch } from "@/api/client";
+import { ApiError, apiFetch, longRequestSignal } from "@/api/client";
 import { isoAgo } from "@/lib/timeRange";
 import type {
   AliasResponse,
@@ -90,8 +90,20 @@ const BUILD_POLL_MS = 60_000;
 // automatic probe infrequent; operators can still force an immediate re-check.
 export const PROVIDER_HEALTH_REFRESH_MS = 60 * 60_000;
 
+// The four queries below are backed by provider or models.dev fan-out
+// gateway-side. That is cached and refreshed in the background now, so they are
+// normally fast, but they are the ones that go slow when a provider does. The
+// global default retries a failed query twice (see provider.tsx), which would
+// turn one slow failure into three sequential ones and hold a browser
+// connection slot for the whole time; on HTTP/1.1 (6 sockets per origin) enough
+// of those queue every other request behind them, including the POST an
+// operator just clicked. Failing once and showing the error is the honest
+// behavior, and it frees the socket.
+const NO_RETRY = { retry: false } as const;
+
 export function useModels() {
   return useQuery({
+    ...NO_RETRY,
     queryKey: [MODELS],
     queryFn: () => apiFetch<ModelListResponse>("/v1/models"),
     staleTime: 60_000,
@@ -124,6 +136,7 @@ export function useDashboardBuild() {
 // reach does not move minute to minute.
 export function useDiscoverableModels() {
   return useQuery({
+    ...NO_RETRY,
     queryKey: [DISCOVERABLE],
     queryFn: () => apiFetch<DiscoverableModelsResponse>("/v1/models/discoverable"),
     staleTime: 5 * 60_000,
@@ -175,6 +188,7 @@ export function useProviderDetail(providerId: string) {
 // (issue #302).
 export function useProviderHealth() {
   return useQuery({
+    ...NO_RETRY,
     queryKey: [PROVIDER_HEALTH],
     queryFn: () => apiFetch<ProviderHealthResponse>("/v1/providers/health"),
     staleTime: PROVIDER_HEALTH_REFRESH_MS,
@@ -250,7 +264,10 @@ export function useReencryptProviderCredentials() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () =>
-      apiFetch<ReencryptProviderCredentialsResult>("/v1/provider-credentials/reencrypt", { method: "POST" }),
+      apiFetch<ReencryptProviderCredentialsResult>("/v1/provider-credentials/reencrypt", {
+        method: "POST",
+        signal: longRequestSignal(),
+      }),
     onSuccess: () => invalidateProviderViews(queryClient),
   });
 }
@@ -280,6 +297,7 @@ export function useTestProviderCredentials() {
 // it, so this is cheap; kept fresh for a session since the catalog barely moves.
 export function useModelMetadata() {
   return useQuery({
+    ...NO_RETRY,
     queryKey: [METADATA],
     queryFn: () => apiFetch<ModelMetadataResponse>("/v1/models/metadata"),
     staleTime: 10 * 60_000,
@@ -540,9 +558,12 @@ export function useDeletePricing() {
   });
 }
 
+// Long deadline: this fetches the upstream snapshot and diffs it against every
+// priced model, so it scales with the pricing table rather than with one hop.
 export function usePreviewPricingRefresh() {
   return useMutation({
-    mutationFn: () => apiFetch<PricingRefreshPreview>("/v1/pricing/refresh", { method: "POST" }),
+    mutationFn: () =>
+      apiFetch<PricingRefreshPreview>("/v1/pricing/refresh", { method: "POST", signal: longRequestSignal() }),
   });
 }
 
@@ -888,23 +909,36 @@ export function useRequestGroups(groupIds: readonly string[]) {
 // Delete imported usage rows by selection (ids or by_filter). Only rows the
 // server treats as imported (counts_toward_budget = false) are removed; every
 // usage view is invalidated so the list, count, and analytics refresh.
+//
+// Given the long deadline, not apiFetch's default: a by_filter delete is one
+// unbounded DELETE server-side, so its duration tracks the number of matched
+// rows. Timing out here would report failure for a delete that committed anyway.
 export function useDeleteUsage() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: UsageMutationSelection) =>
-      apiFetch<UsageDeleteResult>("/v1/usage", { method: "DELETE", body: JSON.stringify(body) }),
+      apiFetch<UsageDeleteResult>("/v1/usage", {
+        method: "DELETE",
+        body: JSON.stringify(body),
+        signal: longRequestSignal(),
+      }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: [USAGE] });
     },
   });
 }
 
-// Set the cost of imported usage rows from manual per-1M rates.
+// Set the cost of imported usage rows from manual per-1M rates. Long deadline
+// for the same reason as the delete: the server reprices every matched row.
 export function useSetUsagePrice() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: UsageSetPriceRequest) =>
-      apiFetch<UsageSetPriceResult>("/v1/usage/set-price", { method: "POST", body: JSON.stringify(body) }),
+      apiFetch<UsageSetPriceResult>("/v1/usage/set-price", {
+        method: "POST",
+        body: JSON.stringify(body),
+        signal: longRequestSignal(),
+      }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: [USAGE] });
     },

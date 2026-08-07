@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { ApiError } from "@/api/client";
-import { NO_BREAKDOWNS, useKeys, useUsageGroupedSeries, useUsageSummary, useUsers } from "@/api/hooks";
+import { NO_BREAKDOWNS, useUsageGroupedSeries, useUsageSummary } from "@/api/hooks";
 import type {
   SummaryDimension,
   UsageBucket,
@@ -309,8 +309,16 @@ const PAGE_BREAKDOWNS: SummaryDimension[] = [
   "tool",
 ];
 
-// The typeahead's own summary drops the model filter, so it only needs by_model.
+// The model typeahead drops only the model filter, so the other active filters
+// still narrow what it suggests. Dropping the entity filters here too would make
+// it offer models that, combined with the picked user, match nothing.
 const MODEL_BREAKDOWN: SummaryDimension[] = ["model"];
+
+// The user and key pickers drop both entity filters, so each keeps offering the
+// other values of its own dimension. by_user and by_api_key carry the entity's
+// display name (resolved server-side in the same GROUP BY), which is what lets
+// the pickers name their options without loading the users and api_keys tables.
+const ENTITY_BREAKDOWNS: SummaryDimension[] = ["user", "api_key"];
 
 // ---------- breakdown dimensions ----------
 
@@ -330,8 +338,6 @@ interface BreakdownDimensionDef {
 
 export function UsagePage() {
   const navigate = useNavigate();
-  const users = useUsers();
-  const keys = useKeys();
 
   const [preset, setPreset] = useState<RangePreset>(DEFAULT_PRESET);
   // Anchored start of the rolling preset window, snapshotted so a re-render does
@@ -413,21 +419,25 @@ export function UsagePage() {
   // omits the model filter, so the list stays complete when a model is selected,
   // and derived directly from query data rather than mirrored into state.
   const modelSuggestFilters: UsageFilters = useMemo(() => ({ ...filters, model: undefined }), [filters]);
-  // The typeahead reads only the model breakdown, so only it is requested.
   const modelSuggest = useUsageSummary(modelSuggestFilters, bucket, MODEL_BREAKDOWN);
-  const modelOptions =
-    modelSuggest.data?.by_model?.filter((r) => !r.is_other && r.key !== null).map((r) => r.key as string) ?? [];
+  const realGroups = (rows: UsageGroupRow[] | undefined) =>
+    (rows ?? []).filter((r) => !r.is_other && r.key !== null);
+  const modelOptions = realGroups(modelSuggest.data?.by_model).map((r) => r.key as string);
 
-  const userOptions = (users.data ?? []).map((u) => ({
-    value: u.user_id,
-    label: u.alias ? `${u.alias} (${u.user_id})` : u.user_id,
+  const entitySuggestFilters: UsageFilters = useMemo(
+    () => ({ ...filters, user_id: undefined, api_key_id: undefined }),
+    [filters],
+  );
+  const entitySuggest = useUsageSummary(entitySuggestFilters, bucket, ENTITY_BREAKDOWNS);
+  const userOptions = realGroups(entitySuggest.data?.by_user).map((r) => ({
+    value: r.key as string,
+    label: r.label ? `${r.label} (${r.key})` : (r.key as string),
   }));
   // API key options label by name (falling back to a short id), value is the id.
-  const keyOptions = (keys.data ?? []).map((k) => ({
-    value: k.id,
-    label: k.key_name ?? `${k.id.slice(0, 8)}…`,
+  const keyOptions = realGroups(entitySuggest.data?.by_api_key).map((r) => ({
+    value: r.key as string,
+    label: r.label ?? `${(r.key as string).slice(0, 8)}…`,
   }));
-  const keyLabel = (id: string) => keyOptions.find((o) => o.value === id)?.label ?? id;
   // Just the in-window models: a picked one needs no place in this list, because
   // the picker hides what is already selected and the chips carry the raw name.
   const modelOptionList = modelOptions.map((m) => ({ value: m, label: m }));
@@ -505,6 +515,7 @@ export function UsagePage() {
     }
     void summary.refetch();
     void modelSuggest.refetch();
+    void entitySuggest.refetch();
     if (previousFilters !== null) {
       void previous.refetch();
     }
@@ -599,7 +610,7 @@ export function UsagePage() {
           : row.key === null
             ? "(unknown)"
             : effectiveGroupBy === "api_key_id"
-              ? keyLabel(row.key)
+              ? (row.label ?? `${row.key.slice(0, 8)}…`)
               : row.key,
         color: row.is_other ? OTHER_COLOR : CAT_COLORS[index % CAT_COLORS.length],
       }));
@@ -653,9 +664,9 @@ export function UsagePage() {
         [metric]: metric === "cost" ? p.cost : metric === "tokens" ? pointBilled(p) : p.requests,
       })),
     };
-    // keyLabel is derived from query data; keys.data is the stable input.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [series, effectiveGroupBy, grouped.data, metric, hasComposition, hasErrors, keys.data]);
+    // Group labels now come from the server on `grouped.data`, so this memo has
+    // no input outside its dependency list and needs no exhaustive-deps escape.
+  }, [series, effectiveGroupBy, grouped.data, metric, hasComposition, hasErrors]);
 
   const formatValue = metricFormatter(metric);
   const chartLoading = summary.isLoading || (Boolean(effectiveGroupBy) && grouped.isLoading);
@@ -775,11 +786,15 @@ export function UsagePage() {
           </>
         }
       >
+        {/* allowsCustom because the options are the in-window top spenders (a
+            breakdown capped at 100): an entity below that rank, or with no traffic
+            in the window, is not offered, so Enter has to commit a pasted id. */}
         <FilterMultiComboBox
           label="User"
           values={userFilters}
           onChange={setUserFilters}
           options={userOptions}
+          allowsCustom
           placeholder="All users"
         />
         <FilterMultiComboBox
@@ -794,6 +809,7 @@ export function UsagePage() {
           values={apiKeyFilters}
           onChange={setApiKeyFilters}
           options={keyOptions}
+          allowsCustom
           placeholder="All keys"
         />
       </FilterChips>
