@@ -22,6 +22,7 @@ import type {
   DashboardBuild,
   DiscoverableModelsResponse,
   GatewaySettings,
+  InFlightResponse,
   KnownProvider,
   KnownProviderSummary,
   ModelListResponse,
@@ -840,6 +841,33 @@ export function useUsageCount(filters: UsageFilters, enabled = true) {
     enabled,
     placeholderData: keepPreviousData,
     staleTime: 10_000,
+  });
+}
+
+// How often the in-flight list re-reads. Tight, because it is the only view of a
+// request that has not settled yet and the reason to watch it is that something is
+// taking a while. TanStack does not poll a backgrounded tab
+// (`refetchIntervalInBackground` defaults to false), so an idle dashboard left open
+// costs nothing.
+const IN_FLIGHT_POLL_MS = 2_000;
+
+// Requests the gateway is serving right now, rendered as in-progress rows above
+// the activity log. The read takes no filters: a request in progress has no
+// outcome, cost, or token count for the log's filters to match on, so which of
+// them the current view may show is decided at the call site.
+//
+// Never cached across mounts (`staleTime: 0`) and never kept as placeholder data:
+// a stale in-flight list is worse than none, since it claims work is running that
+// finished a minute ago.
+export function useInFlightRequests() {
+  return useQuery({
+    queryKey: [USAGE, "in-flight"],
+    queryFn: () => apiFetch<InFlightResponse>("/v1/usage/in-flight"),
+    refetchInterval: IN_FLIGHT_POLL_MS,
+    staleTime: 0,
+    // Retrying a 404 cannot help: a gateway that does not serve this endpoint
+    // never will. Fail fast on it and add no rows rather than re-asking.
+    retry: (failureCount, error) => !(error instanceof ApiError && error.status === 404) && failureCount < 3,
   });
 }
 

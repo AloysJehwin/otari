@@ -2708,6 +2708,25 @@
           }
         },
         {
+          "name": "List In Flight",
+          "request": {
+            "description": "Requests the gateway is currently serving, longest-running first.\n\nA usage row is written when a request settles, so the log alone cannot answer\n\"is anything happening right now\": on a slow backend, a 30-second local model\ncall is invisible until it finishes. This reports what is in progress.\n\nRead from an in-memory registry, so it describes the process that answers this\ncall and not the deployment: behind a load balancer, consecutive polls reach\ndifferent otari processes, and there is no deployment-wide total to ask for.\n``total`` is the true in-flight count for the answering process even when\n``requests`` is capped.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "usage",
+                "in-flight"
+              ],
+              "raw": "{{baseUrl}}/v1/usage/in-flight"
+            }
+          }
+        },
+        {
           "name": "Usage Series",
           "request": {
             "description": "Time series split by one dimension, for the dashboard's stacked charts.\n\nSame filters and window bounds as ``/summary`` (kept in lockstep: the\ndashboard serializes one filter object for both, and a filter this endpoint\nsilently ignored would make the stacked chart disagree with the tiles beside\nit). The window's top groups by spend are returned as their own series;\neverything past the top eight folds into a single ``other`` series per\nbucket, so the stack always reconciles with the summary totals. Points are\nsparse (populated cells only); the bucket grid is bounded like ``/summary``'s\nseries, so an hourly bucket over a too-wide window is rejected rather than\nballooning the payload.",

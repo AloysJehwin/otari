@@ -160,6 +160,35 @@ gateway.
 
 - **Activity**: the per-request log of what the gateway served, with filters.
   Use it to inspect individual requests, their models, and their outcomes.
+  A usage row is written when a request settles, so the log would otherwise only
+  describe the past. Requests still running appear in the same table, pinned above
+  the settled rows with the status **in progress** and, in place of a total time, a
+  wait that ticks up as you watch. When the request lands, the row resolves in
+  place into the success or error row it became, so a 30-second call to a local
+  model reads as progress rather than as nothing happening. Completions,
+  embeddings, image generations, audio, and searches all appear, each from the
+  moment it clears the budget and access checks until its response has been fully
+  sent (a streamed answer stays listed for as long as it is still producing
+  tokens). Batches are the exception: the work runs on the provider's side after
+  the submission returns, so there is no in-flight window to show. A request
+  refused on budget, access, or model-resolution grounds never appears as in
+  progress: it was never running, and it lands in the log with its reason. A
+  completion refused later, by an input guardrail or a bad tool declaration, can be
+  listed for as long as that check takes, since the gateway really is working on it
+  by then. An in-progress row is not part of any page of the
+  log, so it is never counted in the paginator, never selectable for a bulk delete
+  or reprice, and has no request detail to open until it settles. It is dropped
+  from view rather than shown misleadingly whenever the current view could not
+  honestly include it: on page 2 onward, in a window that ends in the past, and
+  under any filter on something the request has not got yet (status, priced, tool,
+  source, session). The model, user, key, endpoint, and provider filters do apply
+  to it. The log refreshes on its own as requests land, at most every 10 seconds,
+  so a busy gateway does not re-query it continuously. Live rows are read from the
+  process that answers the poll, so a deployment running several otari processes
+  behind a load balancer shows one process's traffic at a time, and which one it
+  shows can change between polls. There is no deployment-wide total: the
+  `gateway_active_requests` Prometheus metric is close but not the same number, as
+  it counts every HTTP request a process is handling, dashboard polls included.
   The **Routing** column names the policy a caller asked for, if any, plus where
   this row sits in that policy's plan and how it turned out: "served on attempt 2
   of 2 (a fallback candidate)", or, on an attempt a fallback recovered from,

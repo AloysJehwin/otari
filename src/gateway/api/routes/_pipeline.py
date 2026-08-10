@@ -95,6 +95,7 @@ from gateway.api.routes._tools import (
 from gateway.core.config import GatewayConfig
 from gateway.core.env import otari_env
 from gateway.core.usage import cache_read_tokens_of, cache_write_1h_tokens_of, cache_write_tokens_of
+from gateway.inflight import track_request
 from gateway.log_config import logger
 from gateway.metrics import record_abandoned_attempt, record_cost, record_tokens
 from gateway.model_labeling import relabel_model
@@ -1300,6 +1301,29 @@ async def resolve_request_context(
                     "Failed to process request attachments",
                     ErrorKind.API,
                 ) from exc
+
+    # The request is authorized and about to be dispatched, so from here until the
+    # response has been fully sent it is genuinely in flight and the activity log
+    # can show it as such. Registered after the budget, access and model-resolution
+    # gates rather than at the top of the preamble: a request refused by one of
+    # those was never in progress, and it already leaves a usage row of its own. The
+    # caller-facing checks that run after this (`prepare_gateway_tools`: input
+    # guardrails, MCP id resolution, tool opt-ins) do list the request while they
+    # run, which is honest, since each of them can make a network call of its own.
+    # `model` and `provider` are the pair the
+    # usage row will carry (the resolved target, not the caller's selector and not
+    # the display alias), so a request does not appear to change model at the moment
+    # it settles. The raw selector is the fallback for the cases that resolve
+    # nothing locally: hybrid mode, and a selector the gate could not parse.
+    track_request(
+        raw_request,
+        endpoint=adapter.endpoint,
+        model=resolved_provider.model if resolved_provider else model,
+        provider=resolved_provider.instance if resolved_provider else None,
+        user_id=user_id,
+        api_key_id=api_key_id,
+        policy_name=plan.policy_name if plan else None,
+    )
 
     return RequestContext(
         config=config,

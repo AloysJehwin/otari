@@ -18,6 +18,22 @@ Read these together before changing request behavior, the flow spans several fil
 4. Dispatch: the provider/model is split with `AnyLLM.split_model_provider(...)` and the call is made via `acompletion(...)` from `any_llm`. Hybrid mode walks multiple resolved attempts with fallback (`src/gateway/api/routes/_platform.py`, streaming in `src/gateway/streaming.py`).
 5. Usage + budget reconciliation: standalone writes a `UsageLog` row via the log writer and reconciles spend; platform reports usage upstream.
 
+A usage row therefore only exists once a request has settled. What is *currently*
+running lives in `src/gateway/inflight.py`: an in-memory, per-process registry,
+populated once the budget, access and model-resolution gates have passed and the
+provider is about to be called (so a request refused by one of those never
+appears; a later guardrail or tool-declaration refusal does appear while that
+check runs) and emptied by `InFlightMiddleware`, read by
+`GET /v1/usage/in-flight` for the dashboard's Activity page. There are three
+registration points, one per dispatch scaffold: `resolve_request_context`
+(chat/messages/responses), `run_passthrough` (embeddings, images, audio, rerank,
+moderations), and `_dispatch_search`. A new provider-calling scaffold needs its
+own `track_request` call or it is invisible to the panel. Removal belongs to the
+middleware and not to any
+settlement path: a streaming response outlives its route handler, and the
+`finally` that wraps the whole ASGI call is the only place that runs exactly once
+per request (the same reason `gateway_active_requests` is instrumented there).
+
 ## Budget enforcement
 `src/gateway/services/budget_service.py` reserves an estimated cost before the call and reconciles/refunds after. Strategy is selectable (`for_update` row-lock, `cas` compare-and-swap, or `disabled`) via `OTARI_BUDGET_STRATEGY`. Per-period resets are driven by `next_budget_reset_at` on the user.
 
