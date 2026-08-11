@@ -1824,6 +1824,14 @@
             "title": "Router Candidates",
             "type": "array"
           },
+          "router_weights": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "For a weighted policy, the percentage of traffic each candidate receives, normalized over the candidates this caller may use. Empty for every other policy, and for a weighted policy whose whole split this caller may not use: a split over no candidate is not a split, and each filtered candidate is named in `dropped` instead. A weighted split needs no request state, so unlike a learned router's ranking it is knowable here: the plan above is the real ordering by share, not the decline path.",
+            "title": "Router Weights",
+            "type": "object"
+          },
           "selection_reason": {
             "title": "Selection Reason",
             "type": "string"
@@ -2588,7 +2596,7 @@
         "type": "object"
       },
       "LearnedPolicy": {
-        "description": "A policy whose selection depends on the router, for the status overview.",
+        "description": "A policy whose selection depends on routing memory, for the status overview.\n\nOnly a *learned* policy belongs here. A weighted policy names a router too, but\nits split is written in the policy document, so listing it under a warmth report\nwould tie it to a pool it never reads.",
         "properties": {
           "backend": {
             "title": "Backend",
