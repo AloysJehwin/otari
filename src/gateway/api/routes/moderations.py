@@ -12,7 +12,7 @@ from gateway.api.routes._passthrough import BillingMeters, run_passthrough
 from gateway.core.config import GatewayConfig
 from gateway.models.entities import APIKey, ModelPricing
 from gateway.services.log_writer import LogWriter
-from gateway.services.pricing_service import flat_request_cost
+from gateway.services.pricing_service import flat_request_cost, per_request_meters
 from gateway.services.provider_kwargs import ResolvedProvider
 from gateway.types.moderation import ModerationResponse
 
@@ -64,19 +64,15 @@ async def create_moderation(
     # Moderations is exempt from require_pricing: it is free at most providers
     # and is intentionally treated as $0 when unpriced (no "No pricing
     # configured" warning). Pricing, when present, is a flat per-request rate
-    # (see flat_request_cost); moderation has no token usage.
+    # (see flat_request_cost); moderation has no token usage. Only an explicitly
+    # configured rate counts (pricing_use_defaults=False below): genai-prices
+    # quotes per million tokens, so a moderation model whose name matches a chat
+    # model in that dataset would otherwise bill a token rate per request.
     def compute_cost(result: ModerationResponse, pricing: ModelPricing | None) -> float:
         return flat_request_cost(pricing)
 
     def compute_meters(result: ModerationResponse, pricing: ModelPricing | None, cost: float) -> BillingMeters | None:
-        # An unpriced moderation is $0 by design, which is the common case here, so
-        # record nothing rather than a zero charge line the dashboard would render
-        # as a "billed meters" block explaining a charge that never happened. One
-        # request is billed, so the per-request rate is the cost itself.
-        if not cost:
-            return None
-        breakdown = [{"meter": "request", "units": 1, "unit_rate": cost, "cost": cost}]
-        return {"requests": 1}, breakdown
+        return per_request_meters(cost)
 
     def usage_tokens(result: ModerationResponse) -> tuple[int | None, int | None, int | None]:
         return (None, 0, None)
@@ -102,6 +98,7 @@ async def create_moderation(
         model=request.model,
         user=request.user,
         call_provider=call_provider,
+        pricing_use_defaults=False,
         estimate=flat_request_cost,
         usage_tokens=usage_tokens,
         compute_cost=compute_cost,

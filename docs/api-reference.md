@@ -188,12 +188,27 @@ and counted as failures rather than only in the caller's own logs.
 |--------|------|-------------|------|
 | `POST` | `/v1/images/generations` | Generate images from text prompts. | API key or master key |
 
+Image generation bills per generated image, not per token, so a usage row carries
+zero tokens and an `images` meter. Unlike audio and moderations it is subject to
+`require_pricing`, so an unpriced image model is rejected with 402 under the
+default configuration. See
+[per-image pricing](configuration.md#per-image-pricing-image-generation) for how
+to set the rate.
+
 ### Audio
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
 | `POST` | `/v1/audio/transcriptions` | Transcribe audio to text (multipart upload). | API key or master key |
 | `POST` | `/v1/audio/speech` | Generate speech from text (TTS). | API key or master key |
+
+Audio bills per request rather than per token, under the same convention as
+[moderations](#moderations) and search, so a usage row carries zero tokens and a
+cost taken from the flat rate configured for the model. Like moderations, audio
+is exempt from `require_pricing`: with no rate configured the request is served
+and logged at $0 with no charge line. See
+[per-request pricing](configuration.md#per-request-pricing-audio-and-moderations)
+for how to set the rate.
 
 ### Files
 

@@ -132,6 +132,7 @@ async def run_passthrough(
     user: str | None,
     call_provider: Callable[[ResolvedProvider], Awaitable[ResultT]],
     lookup_pricing: bool = True,
+    pricing_use_defaults: bool = True,
     estimate: Callable[[ModelPricing | None], float] | None = None,
     enforce_require_pricing: bool = False,
     usage_tokens: Callable[[ResultT], tuple[int | None, int | None, int | None]] | None = None,
@@ -162,14 +163,25 @@ async def run_passthrough(
             ``HTTPException`` raised here (e.g. an upload size check) refunds
             the reservation and propagates unchanged.
         lookup_pricing: Whether to resolve :class:`ModelPricing` for the model.
-            Audio has no measurable cost unit yet and skips the lookup.
+            Audio resolves it for per-request charge lines but the reservation
+            estimate stays 0 (no measurable cost unit yet, so no pre-call spend).
+        pricing_use_defaults: Whether the pricing lookup may fall back to the
+            genai-prices dataset. A route whose billable unit is not a token
+            passes False for the reason :func:`find_model_pricing` documents:
+            those rates are USD per million *tokens*, so a per-request route
+            would charge them as USD per million *requests* and a per-image route
+            as USD per image, writing a charge line at the wrong unit for a rate
+            nobody configured.
         estimate: Maps the pricing row to the reservation estimate in USD.
             Defaults to 0.0, which still enforces per-user state (user exists,
             not blocked, not already over budget).
         enforce_require_pricing: When True and ``config.require_pricing`` is
             set, reject unpriced models with 402. The check runs after the
             reservation (so its 404/403 rejections take precedence) and the
-            reservation is refunded before raising.
+            reservation is refunded before raising. Honored only on the
+            resolve-first path: a ``reserve_before_resolve`` route resolves
+            pricing after its reservation and skips this gate, so setting both
+            silently serves an unpriced model. No route sets both today.
         usage_tokens: Maps the provider result to ``(prompt, completion,
             total)`` token counts for the usage log. Defaults to ``(0, 0, 0)``.
         compute_cost: Maps the result and pricing to the final USD cost, or
@@ -302,6 +314,22 @@ async def run_passthrough(
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
             _raise_for_unresolvable_model(model, exc)
+        if lookup_pricing:
+            # Unlike the branch below, the reservation is already held here, so a
+            # failed lookup must refund before propagating or the estimate leaks.
+            try:
+                pricing = await find_model_pricing(
+                    db, resolved.instance, resolved.model, use_defaults=pricing_use_defaults
+                )
+            except Exception:
+                # The realistic failure is a DB error, which leaves the session
+                # needing a rollback: without one the refund's own UPDATE raises
+                # PendingRollbackError, masking this exception and leaking the
+                # hold this block exists to release. ``reserve_budget`` already
+                # committed, so the rollback discards nothing of its own.
+                await db.rollback()
+                await refund_reservation(db, reservation)
+                raise
     else:
         try:
             resolved = resolve_provider_selector(config, model, user_id)
@@ -315,7 +343,9 @@ async def run_passthrough(
             )
             _raise_for_unresolvable_model(model, exc)
         if lookup_pricing:
-            pricing = await find_model_pricing(db, resolved.instance, resolved.model)
+            pricing = await find_model_pricing(
+                db, resolved.instance, resolved.model, use_defaults=pricing_use_defaults
+            )
         # Reserve first so user/blocked/budget rejections (404/403) precede the
         # missing-pricing rejection (402); refund if we then reject for no pricing.
         reservation = await _reserve(
