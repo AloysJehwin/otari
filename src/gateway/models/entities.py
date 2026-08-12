@@ -55,6 +55,11 @@ class APIKey(Base):
     # (Claude Code sends a per-session JSON blob); True lets a deployment that
     # relaxed the check globally keep an individual key strict.
     reject_user_mismatch: Mapped[bool | None] = mapped_column(default=None)
+    # Per-key override of the deployment-wide ``capture_agent_telemetry`` setting.
+    # NULL = inherit (the default), True = always store behavioral events from
+    # this key, False = always discard them. Usage capture/billing is unaffected
+    # either way; this only gates the content-free agent_telemetry row.
+    capture_agent_telemetry: Mapped[bool | None] = mapped_column(default=None)
     # Per-key model allow-list. NULL = unrestricted (default; every key predating
     # this column stays unrestricted), [] = deny all, a list = canonical
     # instance:model entries (with instance:* / instance:prefix* wildcards).
@@ -78,6 +83,7 @@ class APIKey(Base):
             "is_active": self.is_active,
             "exclude_from_budget": self.exclude_from_budget,
             "reject_user_mismatch": self.reject_user_mismatch,
+            "capture_agent_telemetry": self.capture_agent_telemetry,
             "allowed_models": self.allowed_models,
             "metadata": self.metadata_,
         }
@@ -542,6 +548,32 @@ class UsageLog(Base):
             "attempt_count": self.attempt_count,
             "request_group_id": self.request_group_id,
         }
+
+
+class AgentTelemetry(Base):
+    """Content-free outcome metrics and behavioral events from coding agents."""
+
+    __tablename__ = "agent_telemetry"
+    __table_args__ = (
+        UniqueConstraint("source", "dedup_key", name="uq_agent_telemetry_source_dedup"),
+        Index("ix_agent_telemetry_user_id_timestamp", "user_id", "timestamp"),
+    )
+
+    id: Mapped[str] = mapped_column(primary_key=True, default=lambda: str(uuid.uuid4()))
+    api_key_id: Mapped[str | None] = mapped_column(ForeignKey("api_keys.id", ondelete="SET NULL"), index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.user_id", ondelete="SET NULL"), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
+    name: Mapped[str] = mapped_column()
+    tool_name: Mapped[str | None] = mapped_column()
+    decision: Mapped[str | None] = mapped_column()
+    success: Mapped[bool | None] = mapped_column()
+    duration_ms: Mapped[int | None] = mapped_column()
+    status_code: Mapped[int | None] = mapped_column()
+    prompt_length: Mapped[int | None] = mapped_column()
+    source: Mapped[str] = mapped_column(index=True)
+    session_label: Mapped[str | None] = mapped_column()
+    dedup_key: Mapped[str] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
 
 class FileObject(Base):
