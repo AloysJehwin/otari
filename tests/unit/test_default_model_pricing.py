@@ -7,9 +7,11 @@ from types import SimpleNamespace
 import pytest
 from genai_prices.types import Tier, TieredPrices
 
+from gateway.core.config import GatewayConfig
 from gateway.services import pricing_service
 from gateway.services.pricing_service import (
     configure_default_pricing,
+    configure_provider_types,
     default_model_pricing,
     default_pricing_enabled,
 )
@@ -127,6 +129,124 @@ def test_default_pricing_unknown_provider_falls_back_to_model_match() -> None:
     # resolved via the provider-agnostic fallback.
     assert pricing.model_key == "self-hosted-proxy:gpt-4o"
     assert pricing.input_price_per_million > 0
+
+
+def test_default_pricing_falls_back_to_the_backing_implementation() -> None:
+    """A custom-named instance prices under the provider_type it dispatches to.
+
+    Pricing keys on the instance name, and genai-prices only recognizes an instance
+    name by accident (``bedrock-eu`` contains "bedrock"; ``aws-prod`` does not), so
+    without the implementation attempt every Bedrock-style model id under a
+    differently named instance went unpriced.
+    """
+    as_of = datetime.now(UTC)
+    configure_provider_types(lambda instance: "bedrock" if instance == "aws-prod" else instance)
+
+    pricing = default_model_pricing("aws-prod", "anthropic.claude-sonnet-5", as_of)
+
+    assert pricing is not None
+    assert pricing.model_key == "aws-prod:anthropic.claude-sonnet-5"
+    # The Bedrock rate, not Anthropic's own: the serving provider sets the price.
+    direct = default_model_pricing("bedrock", "anthropic.claude-sonnet-5", as_of)
+    assert direct is not None
+    assert pricing.input_price_per_million == direct.input_price_per_million
+
+
+def test_backing_implementation_beats_the_provider_agnostic_fallback() -> None:
+    """The serving provider's rate wins over the vendor's own listing.
+
+    ``claude-sonnet-5`` resolves under both ``aws`` and ``anthropic``, at different
+    rates, so the implementation attempt has to precede the provider-agnostic one:
+    otherwise a Bedrock instance the operator renamed bills at Anthropic's list
+    price. This is the one ordering in the ladder that changes an already-resolving
+    lookup rather than only rescuing a miss.
+    """
+    as_of = datetime.now(UTC)
+    configure_provider_types(lambda instance: "bedrock" if instance == "aws-prod" else instance)
+
+    pricing = default_model_pricing("aws-prod", "claude-sonnet-5", as_of)
+    bedrock = default_model_pricing("bedrock", "claude-sonnet-5", as_of)
+    vendor = default_model_pricing(None, "claude-sonnet-5", as_of)
+
+    assert pricing is not None
+    assert bedrock is not None
+    assert vendor is not None
+    # Guard the premise: without a real rate difference the assertion below is vacuous.
+    assert bedrock.input_price_per_million != vendor.input_price_per_million
+    assert pricing.input_price_per_million == bedrock.input_price_per_million
+
+
+def test_openai_compatible_instance_is_not_priced_as_openai() -> None:
+    """A self-hosted endpoint must not inherit OpenAI's rates from its protocol.
+
+    ``openai-compatible`` is how a vLLM, Ollama or LiteLLM endpoint is declared, and
+    such servers routinely expose OpenAI's model names verbatim so that OpenAI SDK
+    clients work unchanged. Resolving the alias for pricing would bill
+    ``text-embedding-3-small`` at OpenAI's rate on hardware the operator owns, so
+    the implementation attempt is skipped for these and the model stays unpriced
+    (``require_pricing`` and explicit config then decide, which is the point).
+    """
+    as_of = datetime.now(UTC)
+    config = GatewayConfig(providers={"local-vllm": {"provider_type": "openai-compatible"}})
+    configure_provider_types(config.provider_pricing_implementation)
+
+    assert default_model_pricing("local-vllm", "text-embedding-3-small", as_of) is None
+    # Guard the premise: the name is priced under OpenAI, so only the skipped
+    # implementation attempt keeps it from resolving here.
+    assert default_model_pricing("openai", "text-embedding-3-small", as_of) is not None
+
+
+def test_default_pricing_prefers_the_instance_over_the_implementation() -> None:
+    """A resolvable instance name wins, so the implementation is only a fallback."""
+    as_of = datetime.now(UTC)
+    configure_provider_types(lambda _instance: "bedrock")
+
+    pricing = default_model_pricing("anthropic", "claude-sonnet-5", as_of)
+    anthropic_direct = default_model_pricing(None, "claude-sonnet-5", as_of)
+
+    assert pricing is not None
+    assert anthropic_direct is not None
+    assert pricing.input_price_per_million == anthropic_direct.input_price_per_million
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["anthropic.claude-sonnet-5", "us.anthropic.claude-sonnet-5-v1:0"],
+)
+def test_default_pricing_vendor_prefixed_model_under_unknown_provider(model: str) -> None:
+    """A vendor-prefixed model id resolves even when the serving provider is unknown.
+
+    genai-prices files ``anthropic.claude-sonnet-5`` only under ``aws``, and its
+    provider-agnostic fallback picks ``anthropic`` from the "claude" in the name and
+    then finds no such id there. Splitting on the vendor prefix prices it instead of
+    leaving it unpriced under a provider genai-prices does not know at all.
+    """
+    pricing = default_model_pricing("sagemaker", model, datetime.now(UTC))
+
+    assert pricing is not None
+    assert pricing.model_key == f"sagemaker:{model}"
+    assert pricing.input_price_per_million > 0
+    assert pricing.output_price_per_million > 0
+
+
+@pytest.mark.parametrize("model", ["gpt-4.1", "claude-3.5-sonnet"])
+def test_dotted_version_numbers_are_not_read_as_vendor_prefixes(model: str) -> None:
+    """A dot inside a version number must not change how a model resolves."""
+    pricing = default_model_pricing(None, model, datetime.now(UTC))
+    scoped = default_model_pricing("openai" if model.startswith("gpt") else "anthropic", model, datetime.now(UTC))
+
+    assert pricing is not None
+    assert scoped is not None
+    assert pricing.input_price_per_million == scoped.input_price_per_million
+
+
+def test_vendor_prefix_attempts_walk_each_dot_boundary() -> None:
+    """Each dot boundary is offered, so a region prefix does not stop the search."""
+    assert pricing_service._vendor_prefixed_attempts("us.anthropic.claude-sonnet-5-v1:0") == [
+        ("us", "anthropic.claude-sonnet-5-v1:0"),
+        ("anthropic", "claude-sonnet-5-v1:0"),
+    ]
+    assert pricing_service._vendor_prefixed_attempts("gpt-5") == []
 
 
 def test_default_pricing_is_transient_not_a_session_object() -> None:
