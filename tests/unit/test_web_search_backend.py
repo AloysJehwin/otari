@@ -860,3 +860,141 @@ async def test_take_last_results_empty_for_an_empty_query(monkeypatch: pytest.Mo
     async with WebSearchBackend(base_url="http://searxng:8080", extract_content=False) as backend:
         await backend.call_tool(WEB_SEARCH_TOOL_NAME, {"query": "   "})
         assert backend.take_last_results() == []
+
+
+@pytest.mark.asyncio
+async def test_extraction_releases_free_heap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Parsing HTML strands memory in glibc's arenas; the search must hand it back."""
+    _patched_async_client(
+        {
+            ("searxng", "/search"): httpx.Response(200, json=SEARXNG_OK_BODY),
+            ("example.com", "/post-a"): httpx.Response(200, text="<html><body><p>A</p></body></html>"),
+            ("example.org", "/post-b"): httpx.Response(200, text="<html><body><p>B</p></body></html>"),
+        },
+        monkeypatch,
+    )
+    calls = 0
+
+    def counting_release() -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr("gateway.services.web_search_backend.release_free_heap", counting_release)
+    with patch("gateway.services.web_search_backend.trafilatura.extract", return_value="body"):
+        async with WebSearchBackend(base_url="http://searxng:8080", extract_content=True) as backend:
+            await backend.call_tool(WEB_SEARCH_TOOL_NAME, {"query": "claude code"})
+
+    assert calls == 1, "one release per search, after the whole batch of pages"
+
+
+@pytest.mark.asyncio
+async def test_free_heap_released_even_when_extraction_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The failure path allocated just the same, so it must release too."""
+    _patched_async_client(
+        {
+            ("searxng", "/search"): httpx.Response(200, json=SEARXNG_OK_BODY),
+            ("example.com", "/post-a"): httpx.Response(200, text="<html><body><p>A</p></body></html>"),
+            ("example.org", "/post-b"): httpx.Response(200, text="<html><body><p>B</p></body></html>"),
+        },
+        monkeypatch,
+    )
+    calls = 0
+
+    def counting_release() -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr("gateway.services.web_search_backend.release_free_heap", counting_release)
+    # _fetch_and_extract swallows extractor errors, so raise from the gather itself.
+    monkeypatch.setattr(
+        "gateway.services.web_search_backend.validate_outbound_fetch_url",
+        _raise_cancelled,
+    )
+    async with WebSearchBackend(base_url="http://searxng:8080", extract_content=True) as backend:
+        with pytest.raises(RuntimeError):
+            await backend.call_tool(WEB_SEARCH_TOOL_NAME, {"query": "claude code"})
+
+    assert calls == 1
+
+
+async def _raise_cancelled(_url: str) -> None:
+    raise RuntimeError("guard blew up")
+
+
+def test_extraction_is_serialized_across_threads() -> None:
+    """Concurrent trafilatura.extract corrupts the heap and aborts the process.
+
+    Asserts the observable contract (never two extractions in flight at once)
+    rather than the mechanism, so a different serialization strategy still passes.
+    """
+    import asyncio as _asyncio
+    import threading as _threading
+
+    from gateway.services.web_search_backend import _extract_markdown, _get_extract_executor
+
+    in_flight = 0
+    overlaps = 0
+    guard = _threading.Lock()
+
+    def tracking_extract(_html: str, **_: Any) -> str:
+        nonlocal in_flight, overlaps
+        with guard:
+            in_flight += 1
+            if in_flight > 1:
+                overlaps += 1
+        import time
+
+        time.sleep(0.02)
+        with guard:
+            in_flight -= 1
+        return "body"
+
+    async def main() -> None:
+        loop = _asyncio.get_running_loop()
+        await _asyncio.gather(
+            *(
+                loop.run_in_executor(_get_extract_executor(), _extract_markdown, f"<html>{i}</html>")
+                for i in range(8)
+            )
+        )
+
+    with patch("gateway.services.web_search_backend.trafilatura.extract", tracking_extract):
+        _asyncio.run(main())
+
+    assert overlaps == 0, "two extractions ran at once; this aborts the process under real load"
+
+
+def test_extraction_does_not_occupy_the_shared_executor() -> None:
+    """Queued extractions must not stall unrelated asyncio.to_thread work.
+
+    file_extractors' upload path shares the default executor, so a blocking wait
+    held there would put uploads behind the whole search queue.
+    """
+    import asyncio as _asyncio
+    import time as _time
+
+    from gateway.services.web_search_backend import _extract_markdown, _get_extract_executor
+
+    def slow_extract(_html: str, **_: Any) -> str:
+        _time.sleep(0.05)
+        return "body"
+
+    async def main() -> float:
+        loop = _asyncio.get_running_loop()
+        queued = [
+            _asyncio.ensure_future(
+                loop.run_in_executor(_get_extract_executor(), _extract_markdown, f"<html>{i}</html>")
+            )
+            for i in range(40)
+        ]
+        await _asyncio.sleep(0.1)
+        start = _time.perf_counter()
+        await _asyncio.to_thread(lambda: None)
+        elapsed = _time.perf_counter() - start
+        await _asyncio.gather(*queued)
+        return elapsed
+
+    with patch("gateway.services.web_search_backend.trafilatura.extract", slow_extract):
+        elapsed = _asyncio.run(main())
+
+    assert elapsed < 0.5, f"unrelated to_thread work waited {elapsed:.2f}s behind the extraction queue"

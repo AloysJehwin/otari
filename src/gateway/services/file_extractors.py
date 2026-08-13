@@ -19,10 +19,17 @@ import io
 import mimetypes
 import os
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from gateway.log_config import logger
+
+# The shared MarkItDown, built on first use by _get_converter. Typed loosely
+# because markitdown ships no stubs (see the mypy override in pyproject.toml).
+_converter: Any | None = None
+_converter_lock = threading.Lock()
 
 # MIME → file extension hints for formats markitdown keys off the suffix.
 _MIME_TO_EXT: dict[str, str] = {
@@ -59,10 +66,38 @@ def _resolve_extension(mime_type: str, filename: str | None) -> str:
     return mimetypes.guess_extension(mime) or ".bin"
 
 
+def _get_converter() -> Any | None:
+    """Return the process-wide MarkItDown, building it on first use.
+
+    Built once and shared. Constructing a ``MarkItDown`` initializes magika,
+    which loads an ONNX model and starts its own inference thread pool, costing
+    several megabytes and nine threads. The threads go back when the instance is
+    collected but the memory does not, so building one per call grew the resident
+    set without bound. The lock matters because extractions run concurrently in
+    the default executor: an unlocked check lets every racing caller build its
+    own before the first finishes, which is the leak this fixes.
+    """
+    global _converter
+    with _converter_lock:
+        if _converter is None:
+            try:
+                from markitdown import MarkItDown
+            except ImportError:
+                return None
+            _converter = MarkItDown(enable_plugins=False)
+    return _converter
+
+
 def _extract_sync(data: bytes, extension: str) -> ExtractionResult:
+    # Building the converter initializes magika (ONNX model load), which can fail
+    # for reasons other than a missing package. Keep that a failed extraction so
+    # the caller still gets its PDF-rasterize / vision fallback.
     try:
-        from markitdown import MarkItDown
-    except ImportError:
+        converter = _get_converter()
+    except Exception as exc:  # noqa: BLE001 — surface as a failed extraction, not a 500
+        logger.warning("markitdown converter unavailable: %s", exc)
+        return ExtractionResult("", False, f"extraction error: {exc}")
+    if converter is None:
         return ExtractionResult("", False, "markitdown not installed")
 
     # markitdown's stable API is path-based; write to a temp file with the right
@@ -73,7 +108,7 @@ def _extract_sync(data: bytes, extension: str) -> ExtractionResult:
     try:
         tmp.write(data)
         tmp.close()
-        result = MarkItDown(enable_plugins=False).convert(tmp.name)
+        result = converter.convert(tmp.name)
     except Exception as exc:  # noqa: BLE001 — surface as a failed extraction, not a 500
         logger.warning("markitdown extraction failed for %s: %s", extension, exc)
         return ExtractionResult("", False, f"extraction error: {exc}")
