@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { deleteSession, setUnauthorizedHandler } from "@/api/client";
@@ -13,6 +13,12 @@ const STORAGE_KEY = "otari.dashboard.hasSession";
 
 interface AuthContextValue {
   isAuthenticated: boolean;
+  // True while a sign-out's server-side revocation is still in flight. The
+  // sign-in screen uses this to refuse a new credential until the old
+  // session has finished tearing down, so a stalled DELETE cannot outlive a
+  // fresh sign-in and clobber its cookie with this call's expiring one
+  // (see #557).
+  isSigningOut: boolean;
   login: () => void;
   logout: () => void;
 }
@@ -31,10 +37,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
 
   const [isAuthenticated, setAuthenticated] = useState<boolean>(readStoredMarker);
+  const [isSigningOut, setSigningOut] = useState(false);
+  // logout() can fire more than once concurrently: a manual sign-out and a
+  // stray 401-triggered auto-logout (unauthorizedHandler) can both land
+  // close together, each starting its own deleteSession(). Counting the
+  // in-flight revocations, rather than a single finally() clearing the flag
+  // unconditionally, means isSigningOut only drops once every pending one has
+  // settled - not just whichever happens to resolve first.
+  const pendingSignOutsRef = useRef(0);
 
   const logout = useCallback(() => {
-    // Best-effort server-side revocation; local sign-out proceeds regardless.
-    void deleteSession();
+    // Local sign-out is unconditional and synchronous, exactly as before:
+    // the UI returns to the sign-in screen at once regardless of how the
+    // server-side revocation below turns out.
     setAuthenticated(false);
     // Drop any admin data cached under the old session so it can't render to a
     // later, possibly different, session in the same tab.
@@ -44,6 +59,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // Ignore storage errors (e.g. private mode); in-memory state still clears.
     }
+    // Best-effort server-side revocation, now bounded (see client.ts) and
+    // tracked: isSigningOut gates the sign-in form so a new session cannot
+    // be minted while any revocation might still land and clear its cookie.
+    pendingSignOutsRef.current += 1;
+    setSigningOut(true);
+    void deleteSession().finally(() => {
+      pendingSignOutsRef.current -= 1;
+      if (pendingSignOutsRef.current === 0) {
+        setSigningOut(false);
+      }
+    });
   }, [queryClient]);
 
   // Called after POST /v1/auth/session succeeded, i.e. the browser already
@@ -66,8 +92,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [logout]);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ isAuthenticated, login, logout }),
-    [isAuthenticated, login, logout],
+    () => ({ isAuthenticated, isSigningOut, login, logout }),
+    [isAuthenticated, isSigningOut, login, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
