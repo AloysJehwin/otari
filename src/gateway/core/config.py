@@ -89,7 +89,17 @@ ROUTER_GRANULARITIES = ("trace_sticky", "step")
 # Declared here rather than in the adapter module so startup validation can
 # reject an unknown ``search_tools.<name>.provider`` without the config layer
 # importing the service layer.
-SEARCH_PROVIDERS = ("exa",)
+SEARCH_PROVIDERS = ("exa", "searxng")
+# Providers that authenticate with an API key, so a tool declaring one of them
+# without a key is a misconfiguration. A SearXNG-shaped backend is normally
+# keyless (the bundled container, a self-hosted adapter), which is why the key
+# is per-provider rather than universally required.
+SEARCH_PROVIDERS_REQUIRING_API_KEY = ("exa",)
+# Providers with no endpoint of their own to default to, so the tool has to say
+# where the backend is. The only one today is ``searxng``, which speaks the same
+# wire contract as the in-loop otari_web_search backend and therefore inherits
+# ``web_search_url`` when the tool declares no ``api_base``.
+SEARCH_PROVIDERS_REQUIRING_API_BASE = ("searxng",)
 
 
 class _NonScalarField(Exception):
@@ -384,9 +394,10 @@ class GatewayConfig(BaseSettings):
         default_factory=dict,
         description=(
             "Search tools served by POST /v1/search, keyed by the name callers pass as "
-            "'search_tool_name' (or in the /v1/search/{tool} path). Each entry needs an "
-            "'api_key' and may declare a 'provider' (one of: exa; defaults to the tool "
-            "name), an 'api_base', a 'timeout' in seconds, and an 'options' mapping of "
+            "'search_tool_name' (or in the /v1/search/{tool} path). Each entry may declare a "
+            "'provider' (one of: exa, searxng; defaults to the tool name), an 'api_key' "
+            "(required for exa), an 'api_base' (required for searxng unless web_search_url is "
+            "set, which it then inherits), a 'timeout' in seconds, and an 'options' mapping of "
             "provider-native defaults. Standalone-mode only."
         ),
     )
@@ -1099,13 +1110,38 @@ class GatewayConfig(BaseSettings):
         """
         return {str(entry.get("provider") or name) for name, entry in self.search_tools.items()}
 
+    def search_tools_without_backend_url(self) -> list[str]:
+        """Search tools whose provider needs an ``api_base`` and has none to inherit.
+
+        Reported as a startup warning rather than raised by
+        :meth:`validate_search_tools`, because ``web_search_url`` (which a
+        ``searxng`` tool inherits) can also come from a dashboard-stored
+        override, and those are applied to the config after it loads. Failing at
+        load time would refuse to boot a gateway the operator has in fact
+        configured. Enforcement is per request instead: ``resolve_search_tool``
+        refuses such a tool with a 400, and the rest of the gateway serves.
+        """
+        if self.web_search_url:
+            return []
+        return [
+            name
+            for name, entry in self.search_tools.items()
+            if isinstance(entry, dict)
+            and str(entry.get("provider") or name) in SEARCH_PROVIDERS_REQUIRING_API_BASE
+            and not entry.get("api_base")
+        ]
+
     def validate_search_tools(self) -> None:
         """Validate the ``search_tools`` map at startup so misconfig fails fast.
 
-        Every supported provider authenticates with an API key, so a tool
-        without one is rejected here rather than at request time as an opaque
-        upstream 401. The tool name doubles as a ``/v1/search/{tool}`` path
-        segment, so it must not contain a slash.
+        A tool on a provider that authenticates with an API key is rejected here
+        without one, rather than at request time as an opaque upstream 401; a
+        keyless provider (a self-hosted SearXNG or an adapter fronting one) is
+        allowed to declare none. The tool name doubles as a
+        ``/v1/search/{tool}`` path segment, so it must not contain a slash.
+
+        A missing backend URL is deliberately not fatal here; see
+        :meth:`search_tools_without_backend_url`.
         """
         for name, entry in self.search_tools.items():
             if not name:
@@ -1124,8 +1160,8 @@ class GatewayConfig(BaseSettings):
                     f"(one of: {', '.join(SEARCH_PROVIDERS)})."
                 )
                 raise ValueError(msg)
-            if not entry.get("api_key"):
-                msg = f"search_tools.{name}.api_key is required."
+            if provider in SEARCH_PROVIDERS_REQUIRING_API_KEY and not entry.get("api_key"):
+                msg = f"search_tools.{name}.api_key is required for provider '{provider}'."
                 raise ValueError(msg)
             timeout = entry.get("timeout")
             if timeout is not None:
