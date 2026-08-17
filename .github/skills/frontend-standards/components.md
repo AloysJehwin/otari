@@ -16,7 +16,7 @@ wrong here.
 | Button intent | `color="danger"` | `variant="danger"` |
 | Disabled | `isLoading` for disabled | `isDisabled` / `isPending` |
 
-Real example from `components/ui.tsx`:
+Real example from `shared/components/ui.tsx`:
 
 ```tsx
 import { Button, Card } from "@heroui/react";
@@ -41,7 +41,7 @@ If a component exposes a prop for what you want (`variant`, `size`, `isDisabled`
 (`flex`, `gap-*`, `min-w-[…]`, responsive prefixes), not for re-skinning something HeroUI
 already styles.
 
-## Check `components/ui.tsx` before hand-rolling
+## Check `shared/components/ui.tsx` before hand-rolling
 
 Small shared primitives already exist. Reuse or extend them instead of duplicating markup:
 
@@ -54,9 +54,9 @@ Small shared primitives already exist. Reuse or extend them instead of duplicati
 | Destructive action without a modal | `ConfirmButton` (two-click arm/confirm) |
 | Filter over a small fixed option set | `FilterSelect` (token-styled native `<select>`) |
 | Filter over a large or open option set | `FilterMultiComboBox` (type-to-filter, holds a set of values; `allowsCustom` when the value space is not enumerable) |
-| Applied filters, each removable | `FilterChips` (`components/FilterChips.tsx`); one chip per value, and pass `clearLabel` so several chips of one dimension stay distinguishable |
-| Form field wrapper | `Field` (`components/Field.tsx`) |
-| Tabular data | `DataTable` (`components/DataTable.tsx`) |
+| Applied filters, each removable | `FilterChips` (`shared/components/FilterChips.tsx`); one chip per value, and pass `clearLabel` so several chips of one dimension stay distinguishable |
+| Form field wrapper | `Field` (`shared/components/Field.tsx`) |
+| Tabular data | `DataTable` (`shared/components/DataTable.tsx`) |
 
 `errorMessage(error)` centralizes turning an `ApiError`/`Error`/unknown into a display string;
 use it rather than reaching into `error.message` yourself.
@@ -68,4 +68,4 @@ use it rather than reaching into `error.message` yourself.
   widths for anything that should reflow (`min-w-[180px]` on a wrapping stat card is fine).
 - One component per file for pages and standalone components, colocated with its test. Small
   shared primitives are the exception: closely related ones live together in
-  `components/ui.tsx` (the primitives listed above), rather than a file each.
+  `shared/components/ui.tsx` (the primitives listed above), rather than a file each.

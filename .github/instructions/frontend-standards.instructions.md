@@ -26,7 +26,7 @@ examples grounded in this dashboard's code, lives in the skill:
    `InfoBanner`). See [design-tokens.md](../skills/frontend-standards/design-tokens.md).
 
 4. **Server state goes through TanStack Query + `apiFetch`.** Fetch via the hooks in
-   `web/src/api/hooks.ts`; keep query keys as module constants, set a deliberate `staleTime`,
+   `web/src/shared/api/hooks.ts`; keep query keys as module constants, set a deliberate `staleTime`,
    and invalidate only the keys a mutation changes. Don't call `fetch()` directly for
    authenticated management requests (the one exception is pre-auth `validateMasterKey`), and
    never mirror server state into `useState`. Bound every "fetch all" loop with a hard page
@@ -37,6 +37,15 @@ examples grounded in this dashboard's code, lives in the skill:
    derive from props/query data rather than duplicating into state. See
    [typescript-and-react.md](../skills/frontend-standards/typescript-and-react.md).
 
-6. **Tests for changed behavior.** Colocated Vitest tests (`Foo.tsx` → `Foo.test.tsx`) that
+6. **New code lands in a layer.** A domain's page and the parts only it uses go in
+   `web/src/features/<domain>/`; something no domain owns goes in `web/src/shared/`
+   (`components/`, `helpers/`, `api/`); test harnesses go in `web/src/tests/`; only
+   `web/src/app/` composes the tree. The layout mirrors `otari-ai/frontend/src`, so
+   prefer its names for a new directory. A feature may not
+   import `app/`, and `shared/` may not import `features/` or `app/`. `npm run lint` (Biome)
+   rejects both, so flag placement in review rather than leaving it to the lint to reject
+   after the fact. Adding a directory directly under `src/` needs a rule to go with it.
+
+7. **Tests for changed behavior.** Colocated Vitest tests (`Foo.tsx` → `Foo.test.tsx`) that
    query the way a user would (`getByRole`/`getByLabelText`/`getByText`, not `getByTestId`),
    render real providers, and mock only the network boundary (`apiFetch`), not the hooks.

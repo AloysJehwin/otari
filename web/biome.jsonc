@@ -1,0 +1,145 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+
+  // Biome is here for one job: to check the layer boundary that `src/` is laid out
+  // around, on every PR rather than in review. See AGENTS.md ("Layout").
+  //
+  // The formatter is off and the recommended rule set is off with it. Turning either
+  // on would rewrite or flag most of the tree in the same commit that moved it, which
+  // is a different change with a different risk profile; do that on its own if it is
+  // wanted. `noRestrictedImports` below is therefore the whole rule set, and a clean
+  // `npm run lint` means the layers hold, not that the code is otherwise blessed.
+  "formatter": { "enabled": false },
+
+  // globals.css is Tailwind v4, whose at-rules (@theme, @custom-variant) Biome
+  // refuses to parse unless told they are expected. No CSS rule is enabled, but an
+  // unparseable file is itself an error, so lint would fail on a file it has nothing
+  // to say about.
+  "css": { "parser": { "tailwindDirectives": true } },
+
+  "files": {
+    // Generated: the route tree (from src/routes/) and the API client (from
+    // docs/public/openapi.json). Both are committed, neither is edited by hand, and
+    // both are free to import across any line the generator chooses.
+    "includes": ["src/**", "!src/routeTree.gen.ts", "!src/client/schema.ts"]
+  },
+
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "none",
+      "style": {
+        // The overlay tree is not in this repo and is not meant to be: an overlay
+        // owns its own routes tree in otari-ai, composed onto this base at build
+        // time as a sibling of src/ (see ARCHITECTURE.md, and otari-ai's
+        // docs/architecture/frontend-extension.md). The rule is here before any
+        // such tree exists, because the moment one file reaches into it, Otari's
+        // core stops standing alone and the breakage shows up only in a build
+        // nobody here runs.
+        //
+        // Each group lists the alias form and the relative form, and each of those
+        // both with and without a trailing segment. Imports in this codebase all use
+        // `@/`, but a boundary rule that a `../../` dodges is not a boundary rule,
+        // and `@/app/**` alone does not match a bare `@/app` the day a layer grows
+        // an index.ts. The relative form is spelled `**/../app/**` rather than
+        // `**/app/**`, which would also flag a third-party specifier that merely
+        // has an `app` segment (`some-pkg/app/core`). This is the spelling
+        // otari-ai/frontend uses; the two configs are meant to stay recognizable
+        // as the same rules, since the pages there are coming here.
+        "noRestrictedImports": {
+          "level": "error",
+          "options": {
+            "patterns": [
+              {
+                "group": ["@/overlay", "@/overlay/**", "**/overlay", "**/overlay/**"],
+                "message": "Nothing in Otari's core may import the overlay tree. An overlay registers itself through the seams the core exposes (the nav registry, the container); the core never reaches the other way."
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+
+  // An override replaces a rule's options rather than merging with them, so each one
+  // below restates the overlay group. Deleting the repetition would silently exempt
+  // that layer from it; src/architecture.test.ts asserts all three still reject it.
+  "overrides": [
+    {
+      // A feature owns a domain (its pages, its components, its derivations) and is
+      // composed by app/, never the reverse. A feature that imports the composition
+      // root cannot be moved, gated behind an entitlement, or dropped from a build
+      // without dragging the shell along.
+      "includes": ["src/features/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@/app", "@/app/**", "**/../app", "**/../app/**"],
+                    "message": "A feature may not import the composition root (src/app). Anything a feature and the shell both need belongs in src/shared; anything the shell needs from a feature, the shell imports."
+                  },
+                  {
+                    "group": ["@/overlay", "@/overlay/**", "**/overlay", "**/overlay/**"],
+                    "message": "Nothing in Otari's core may import the overlay tree. An overlay registers itself through the seams the core exposes (the nav registry, the container); the core never reaches the other way."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      // shared/ is the bottom of the stack: transport, helpers, and UI primitives that
+      // know nothing about any one domain. It is imported by everything, so an import
+      // pointing up from here is a cycle waiting to be discovered, and it is what turns
+      // "a primitive" into "a primitive that only works if the usage page is loaded".
+      //
+      // routes/ is in the group as well, which is the one rule here otari-ai/frontend
+      // does not have. A route file names a feature's page, so `shared -> routes` is
+      // `shared -> features` with a step in between, and the group below would not see
+      // it. Nothing in either repo does this today, which is what makes it free to
+      // close: `tests/router.tsx` builds its own route tree rather than importing the
+      // generated one.
+      "includes": ["src/shared/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "@/app",
+                      "@/app/**",
+                      "**/../app",
+                      "**/../app/**",
+                      "@/features",
+                      "@/features/**",
+                      "**/../features",
+                      "**/../features/**",
+                      "@/routes",
+                      "@/routes/**",
+                      "**/../routes",
+                      "**/../routes/**"
+                    ],
+                    "message": "src/shared may not import src/app, src/features, or src/routes. Shared code is domain-agnostic by definition; if a helper needs a domain type, it belongs to that feature. A route is a feature page under another name, so importing one is the same crossing."
+                  },
+                  {
+                    "group": ["@/overlay", "@/overlay/**", "**/overlay", "**/overlay/**"],
+                    "message": "Nothing in Otari's core may import the overlay tree. An overlay registers itself through the seams the core exposes (the nav registry, the container); the core never reaches the other way."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
