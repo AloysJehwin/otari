@@ -9,7 +9,7 @@ import {
   useTools,
   useUpdateToolSettings,
 } from "@/api/hooks";
-import type { ManagedTool, ToolServiceName, ToolSettingField, UpdateToolSettingsRequest } from "@/api/types";
+import type { ManagedTool, ToolServiceName, ToolSettingField, UpdateToolSettingsRequest } from "@/client";
 import { SearchToolsCard } from "@/components/SearchToolsCard";
 import { ErrorBanner, FilterSelect, PageHeader, PageLoading, errorMessage } from "@/components/ui";
 

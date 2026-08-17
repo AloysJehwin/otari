@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { SearchProviderInfo, SearchToolsResponse } from "@/api/types";
+import type { SearchProviderInfo, SearchToolsResponse } from "@/client";
 import { SearchToolsCard } from "@/components/SearchToolsCard";
 
 const PROVIDERS: SearchProviderInfo[] = [

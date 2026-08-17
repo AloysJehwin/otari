@@ -8,7 +8,7 @@ import {
   useSearchTools,
   useUpdateSearchTool,
 } from "@/api/hooks";
-import type { ConfigSearchTool, SearchProviderInfo, StoredSearchTool } from "@/api/types";
+import type { ConfigSearchTool, SearchProviderInfo, StoredSearchTool } from "@/client";
 import { ConfirmButton, ErrorBanner, FilterSelect, errorMessage } from "@/components/ui";
 
 // Search tools are what POST /v1/search dispatches against. They used to be

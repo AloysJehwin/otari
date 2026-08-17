@@ -64,7 +64,7 @@ import type {
   UsageSummary,
   User,
   CreateUserRequest,
-} from "@/api/types";
+} from "@/client";
 
 const MODELS = "models";
 const PRICING = "pricing";

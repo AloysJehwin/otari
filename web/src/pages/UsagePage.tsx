@@ -12,7 +12,7 @@ import type {
   UsageGroupRow,
   UsageSeriesPoint,
   UsageSummary,
-} from "@/api/types";
+} from "@/client";
 import { ChartLegend, Sparkline, TrendChart, type SeriesDef, type StackedPoint } from "@/components/charts";
 import { ShareDialog } from "@/components/ShareDialog";
 import { DataTable, type DataTableColumn } from "@/components/DataTable";
@@ -1085,7 +1085,7 @@ export function UsagePage() {
               <ToolBreakdownTable
                 rows={toolRows}
                 totalCost={totals?.cost ?? 0}
-                onDrill={(tool) => drillTo({ tool: tool as NonNullable<UsageFilters["tool"]> })}
+                onDrill={(tool) => drillTo({ tool })}
                 loading={summary.isLoading}
               />
             </div>

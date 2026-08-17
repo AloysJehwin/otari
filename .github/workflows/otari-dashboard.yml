@@ -8,6 +8,11 @@ on:
       # The dashboard bundles this guide (web/src/pages/DocsPage.tsx), so a change
       # to it changes the built app; build and test it.
       - 'docs/dashboard.md'
+      # The committed API client is generated from the spec, so a spec change is a
+      # client change even when no file under web/ moved. Without this trigger the
+      # drift check below cannot fire on the PR it exists to catch: a backend PR
+      # that regenerates the spec and leaves web/src/client/schema.ts stale.
+      - 'docs/public/openapi.json'
       # Frontend paths only. The gateway side of serving the bundle is covered by
       # otari-dashboard-serving.yml, which is triggered by src/gateway/** and runs
       # the pytest half; these two jobs (vitest, and Playwright against a built
@@ -20,6 +25,11 @@ on:
       # The dashboard bundles this guide (web/src/pages/DocsPage.tsx), so a change
       # to it changes the built app; build and test it.
       - 'docs/dashboard.md'
+      # The committed API client is generated from the spec, so a spec change is a
+      # client change even when no file under web/ moved. Without this trigger the
+      # drift check below cannot fire on the PR it exists to catch: a backend PR
+      # that regenerates the spec and leaves web/src/client/schema.ts stale.
+      - 'docs/public/openapi.json'
       # Frontend paths only. The gateway side of serving the bundle is covered by
       # otari-dashboard-serving.yml, which is triggered by src/gateway/** and runs
       # the pytest half; these two jobs (vitest, and Playwright against a built
@@ -68,6 +78,14 @@ jobs:
     # person's `npm run typecheck`, which runs tsc alone and never regenerates.
     - name: Check the committed route tree is up to date
       run: git diff --exit-code -- src/routeTree.gen.ts
+
+    # Same contract for the API client, which is generated from
+    # docs/public/openapi.json (see AGENTS.md). `npm test` regenerates it, so this
+    # catches both a spec change nobody regenerated against and an edit made to the
+    # generated file by hand. Without it the runner would quietly use its own fresh
+    # copy and pass while the committed one described a different API.
+    - name: Check the committed API client is up to date
+      run: git diff --exit-code -- src/client/schema.ts
 
   e2e:
     # Browser end-to-end smoke: boot the gateway serving the freshly built bundle

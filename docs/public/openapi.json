@@ -738,6 +738,21 @@
         "title": "BatchRequestItem",
         "type": "object"
       },
+      "BillingMeters": {
+        "additionalProperties": true,
+        "description": "The meters a request was billed on.\n\nToken meters sit flat (``{\"input\": 1200}``), which is why extra keys are\nallowed: the names come from the provider and the endpoint, so the map is\ngenuinely open. Gateway-run tool counts are the one reserved key, nested\nunder ``tools`` because an MCP server can advertise a tool named after a\ntoken meter and a flat collision would corrupt the billed-token aggregates\nfor the whole window (see ``gateway.services.tool_usage``).\n\nA TypedDict for the reason above, and for one that cost a round trip to\nlearn: a model that suppressed its defaults with a ``model_serializer``\npublished an *empty* schema, because that serializer replaces the\nserialization JSON schema and that is the one FastAPI puts in the spec. The\nproperties below are the whole point, so they have to survive into\ndocs/public/openapi.json; ``tests/unit/test_billing_schemas.py`` asserts they\ndo.",
+        "properties": {
+          "tools": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ToolMeter"
+            },
+            "title": "Tools",
+            "type": "object"
+          }
+        },
+        "title": "BillingMeters",
+        "type": "object"
+      },
       "Body_create_file_v1_files_post": {
         "properties": {
           "file": {
@@ -4065,17 +4080,24 @@
           },
           "pricing_tiers": {
             "items": {
-              "additionalProperties": {
-                "anyOf": [
-                  {
-                    "type": "number"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/PricingTier"
+                },
+                {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
                   },
-                  {
-                    "type": "integer"
-                  }
-                ]
-              },
-              "type": "object"
+                  "type": "object"
+                }
+              ]
             },
             "title": "Pricing Tiers",
             "type": "array"
@@ -6272,6 +6294,74 @@
         "title": "TestServiceResponse",
         "type": "object"
       },
+      "TokenChargeLine": {
+        "additionalProperties": true,
+        "description": "A charge line billed per million tokens.\n\n``rate_per_million`` is the discriminator: its presence (rather than\n``unit_rate``) is what tells a reader, and a renderer, which unit convention\napplies. See ``gateway.services.pricing_service``.",
+        "properties": {
+          "cost": {
+            "description": "USD charged for this line.",
+            "title": "Cost",
+            "type": "number"
+          },
+          "meter": {
+            "description": "What was metered, e.g. 'input' or 'cache_read'.",
+            "title": "Meter",
+            "type": "string"
+          },
+          "rate_per_million": {
+            "description": "USD per million units.",
+            "title": "Rate Per Million",
+            "type": "number"
+          },
+          "units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "Tokens billed on this meter.",
+            "title": "Units"
+          }
+        },
+        "required": [
+          "meter",
+          "units",
+          "rate_per_million",
+          "cost"
+        ],
+        "title": "TokenChargeLine",
+        "type": "object"
+      },
+      "ToolMeter": {
+        "additionalProperties": true,
+        "description": "One gateway-run tool's call counts on a request.\n\nA TypedDict rather than a model, and every key optional, so a stored entry\nserializes back as it was written: a model with defaults would put\n``\"unit_rate\": null`` on every tool that has never been priced.",
+        "properties": {
+          "billed": {
+            "title": "Billed",
+            "type": "integer"
+          },
+          "errors": {
+            "title": "Errors",
+            "type": "integer"
+          },
+          "unit_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Rate"
+          }
+        },
+        "title": "ToolMeter",
+        "type": "object"
+      },
       "ToolSettingField": {
         "description": "One editable tool/guardrail field surfaced to the dashboard.",
         "properties": {
@@ -6374,6 +6464,47 @@
           "data"
         ],
         "title": "ToolsResponse",
+        "type": "object"
+      },
+      "UnitChargeLine": {
+        "additionalProperties": true,
+        "description": "A charge line billed per call, for gateway-run tools and per-request routes.\n\n``unit_rate`` is the discriminator, in the same sense as\n:class:`TokenChargeLine`'s ``rate_per_million``.",
+        "properties": {
+          "cost": {
+            "description": "USD charged for this line.",
+            "title": "Cost",
+            "type": "number"
+          },
+          "meter": {
+            "description": "What was metered, e.g. 'request' or 'web_search_calls'.",
+            "title": "Meter",
+            "type": "string"
+          },
+          "unit_rate": {
+            "description": "USD per call.",
+            "title": "Unit Rate",
+            "type": "number"
+          },
+          "units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "Calls billed on this meter.",
+            "title": "Units"
+          }
+        },
+        "required": [
+          "meter",
+          "units",
+          "unit_rate",
+          "cost"
+        ],
+        "title": "UnitChargeLine",
         "type": "object"
       },
       "UpdateBudgetRequest": {
@@ -7283,6 +7414,9 @@
           "billing_meters": {
             "anyOf": [
               {
+                "$ref": "#/components/schemas/BillingMeters"
+              },
+              {
                 "additionalProperties": true,
                 "type": "object"
               },
@@ -7400,20 +7534,18 @@
             "anyOf": [
               {
                 "items": {
-                  "additionalProperties": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "integer"
-                      },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "type": "object"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/TokenChargeLine"
+                    },
+                    {
+                      "$ref": "#/components/schemas/UnitChargeLine"
+                    },
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  ]
                 },
                 "type": "array"
               },
