@@ -76,8 +76,14 @@
   border-bottom: 1px solid var(--otari-line);
 }
 .otari-table .table__column,
-.otari-table [role="row"] > [role="presentation"]:first-of-type > .table__column,
-.otari-table [role="row"] > [role="presentation"]:last-of-type > .table__column {
+.otari-table
+  [role="row"]
+  > [role="presentation"]:first-of-type
+  > .table__column,
+.otari-table
+  [role="row"]
+  > [role="presentation"]:last-of-type
+  > .table__column {
   background-color: transparent;
   color: var(--otari-ink);
   font-weight: 600;
@@ -110,7 +116,9 @@
    pointer events on data cells where rows have a drill-in action). */
 .otari-table .table__row,
 .otari-table .table__row .table__cell {
+  /* biome-ignore lint/complexity/noImportantStyles: HeroUI sets user-select on the row; this has to win */
   user-select: text !important;
+  /* biome-ignore lint/complexity/noImportantStyles: same, for the WebKit prefix */
   -webkit-user-select: text !important;
 }
 
@@ -245,7 +253,8 @@
   margin: 0.25rem 0;
 }
 .otari-markdown code {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   font-size: 0.85em;
   background-color: var(--otari-brand-tint);
   color: var(--otari-brand-dark);
@@ -290,6 +299,7 @@
   font-size: 0.85rem;
 }
 .otari-markdown th,
+/* biome-ignore lint/style/noDescendingSpecificity: the earlier, more specific td rule is scoped to .otari-table, so these two never apply to the same cell */
 .otari-markdown td {
   border: 1px solid var(--otari-line);
   padding: 0.4rem 0.7rem;
@@ -316,5 +326,6 @@ body {
   margin: 0;
   background-color: var(--otari-bg);
   color: var(--otari-ink);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
