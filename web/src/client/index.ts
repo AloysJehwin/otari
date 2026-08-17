@@ -37,6 +37,21 @@ export type DeploymentBootstrap = Schemas["DeploymentBootstrap"]
 export type DeploymentType = DeploymentBootstrap["deployment_type"]
 export type SessionType = DeploymentBootstrap["session_type"]
 
+/**
+ * `GET /health`, which the hybrid landing page reads for its two status rows.
+ *
+ * A flat string map rather than a named schema, because the route returns one:
+ * `status` always, plus `mode` and `platform_reachable` ("yes" / "no") when the
+ * gateway is attached to a control plane. Derived from the operation rather than
+ * restated, but an index signature cannot police key names, so nothing here
+ * would notice one being renamed: what pins the keys is
+ * `test_hybrid_mode_health_reports_reachability`, which asserts the whole dict.
+ * Giving the route a response model is what would move that guarantee into the
+ * type.
+ */
+export type GatewayHealth =
+  operations["health_check_health_get"]["responses"][200]["content"]["application/json"]
+
 // ---------------------------------------------------------------------------
 // Usage and analytics
 // ---------------------------------------------------------------------------
