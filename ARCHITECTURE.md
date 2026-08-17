@@ -177,6 +177,12 @@ entitled("routing") AND flag("smart-model-selection-v2")
 
 A deployment entitled to `routing` still does not get `smart-model-selection-v2` while that flag is off in test. Do not fold one axis into the other: an entitlement is not "a flag that is on for some deployments", a flag is not "a cheap entitlement", and neither is "a deployment that happens to host this". They are different mechanisms with different scopes and different owners.
 
+In the dashboard all three meet on one nav entry, which is where the vocabulary earns its keep: `web/src/app/nav/registry.ts` declares a destination's `surface`, `capability`, and `flag`, and `useNavVisibility` composes them as AND, so any one of them hides the link and the shell answers the route behind it with a panel rather than a page. An overlay replaces `web/src/app/nav/overlaySections.ts` to register its own destinations, without editing a base source file.
+
+Be clear about how much of that is built. The surface axis is real and served: `GET /v1/bootstrap` answers it. **`EntitlementPort` is not implemented anywhere in `src/gateway/`, and no endpoint serves entitlements or flags**, so the other two axes resolve entirely in the browser, from the constant that is the default value of the context in `web/src/shared/hooks/useEntitlements.tsx`. It grants `BASE_CAPABILITIES` and reports everything else absent, which is the behavior the core adapter above describes, in the only place there is currently anything to put it. That constant is itself empty, because no base nav entry is gated on a capability: the one candidate is routing, whose split this document still marks provisional. An overlay answers both gates for real by rendering `EntitlementProvider`.
+
+That is sound while otari.ai owns the only real resolver, and it stops being sound for a paid self-hosted deployment, where the customer owns the process and an answer computed in their browser is an answer they can edit. Building that means a real port, an endpoint, verification the gateway can check but not mint, and enforcement on the routes themselves rather than only on the nav. Do not read the client-side gate as licensing, and do not let a surface built on top of it assume a resolver exists.
+
 ## Cardinal rules for contributors
 
 These are the rules that keep the boundary from eroding. They apply to anyone adding or moving code across the seam.
@@ -200,7 +206,7 @@ A step-by-step recipe for adding a capability without crossing the boundary. The
 3. **Route callers through the port.** Services depend on the port, resolved from the container; they never name a concrete adapter.
 4. **Ship a working core adapter.** Add a real lightweight implementation, or an honest Null Object, to the core adapters package. Verify the capability behaves correctly with only this adapter present.
 5. **Bind the default in the composition root.** Register `Port -> core factory` in the container built at startup in `create_app`, and resolve it through a dependency in `deps.py`.
-6. **If the capability has API or UI surface, add and gate it.** Add its router to the central additive router list and register its nav item into the nav registry (planned mechanisms), each gated by `EntitlementPort` (and optionally a feature flag). Do not swap anything on this side; add surface and make it conditional.
+6. **If the capability has API or UI surface, add and gate it.** Add its router to the central additive router list (a planned mechanism) and register its nav item into the nav registry (`web/src/app/nav/registry.ts`), each gated by an entitlement and optionally a feature flag. Do not swap anything on this side; add surface and make it conditional.
 7. **Verify Otari still stands alone.** It must boot standalone with only the core adapters bound (no overlay bootstrap configured) and pass its smoke suite, and the boundary check must pass. Both are automated: `uv run --frozen --no-dev python scripts/oss_edition_smoke.py` is the smoke suite (run by `.github/workflows/otari-oss-edition.yml` on any pull request that touches the app, the migrations, or dependency resolution), and `make check-architecture` is the boundary check.
 
 Once the seam exists, an overlay adds its own adapter by registering it through these same extension points, with zero edits to Otari's source. Building the seam is core work; using it is overlay work.
