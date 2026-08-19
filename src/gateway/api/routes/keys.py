@@ -7,13 +7,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 
 from gateway.api.deps import get_config, get_db, verify_master_key
 from gateway.auth.models import generate_api_key, hash_key, key_prefix
 from gateway.core.config import GatewayConfig
 from gateway.models.entities import APIKey, User
+from gateway.models.tenancy import Workspace
 from gateway.repositories.users_repository import get_or_create_default_user
 from gateway.services.model_access import is_allowlist_subset, validate_allowed_models
+from gateway.services.workspace_scope import default_workspace_id
 
 # A key inherits its user's default allow-list and may narrow it, never broaden
 # it, so a key list that is not a subset of the user's is rejected on write.
@@ -56,6 +59,12 @@ class CreateKeyRequest(BaseModel):
         "commits, pull requests, active time) from POST /v1/metrics. Usage capture and billing are "
         "unaffected either way.",
     )
+    workspace_id: uuid.UUID | None = Field(
+        default=None,
+        description="Workspace this key belongs to. Omitted means the deployment's default "
+        "workspace. A key belongs to exactly one workspace: requests on it are scoped and "
+        "billed there, so the workspace is read off the key rather than off a request header.",
+    )
     metadata: dict[str, Any] = Field(default_factory=dict, description="Optional metadata")
 
 
@@ -96,12 +105,14 @@ class KeyInfo(BaseModel):
     exclude_from_budget: bool
     reject_user_mismatch: bool | None
     capture_agent_telemetry: bool | None
+    workspace_id: uuid.UUID
     metadata: dict[str, Any]
 
     @classmethod
     def from_model(cls, key: APIKey) -> "KeyInfo":
         return cls(
             id=str(key.id),
+            workspace_id=key.workspace_id,
             key_prefix=str(key.key_prefix) if key.key_prefix else None,
             key_name=str(key.key_name) if key.key_name else None,
             user_id=str(key.user_id) if key.user_id else None,
@@ -192,8 +203,23 @@ async def create_key(
     if not is_allowlist_subset(allowed_models, user.allowed_models):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_KEY_EXCEEDS_USER_DETAIL)
 
+    # Checked rather than left to the foreign key: an id naming no workspace is
+    # a bad request, and letting it reach the constraint answered 500 "Database
+    # error" for a value the caller supplied and can fix.
+    if request.workspace_id is not None:
+        named = await db.execute(
+            select(col(Workspace.id)).where(col(Workspace.id) == request.workspace_id)
+        )
+        if named.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workspace '{request.workspace_id}' not found",
+            )
+    workspace_id = request.workspace_id or await default_workspace_id(db)
+
     db_key = APIKey(
         id=str(key_id),
+        workspace_id=workspace_id,
         key_hash=key_hash,
         key_prefix=key_prefix(api_key),
         key_name=request.key_name,
@@ -229,12 +255,17 @@ async def list_keys(
     db: Annotated[AsyncSession, Depends(get_db)],
     skip: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    workspace_id: Annotated[uuid.UUID | None, Query(description="Only keys in this workspace.")] = None,
 ) -> list[KeyInfo]:
     """List all API keys.
 
-    Requires master key authentication.
+    Requires master key authentication. An unset ``workspace_id`` lists every key
+    on the deployment, which keeps the pre-workspace view working unchanged.
     """
-    result = await db.execute(select(APIKey).offset(skip).limit(limit))
+    statement = select(APIKey)
+    if workspace_id is not None:
+        statement = statement.where(APIKey.workspace_id == workspace_id)
+    result = await db.execute(statement.offset(skip).limit(limit))
     keys = result.scalars().all()
 
     return [KeyInfo.from_model(key) for key in keys]

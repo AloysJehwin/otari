@@ -8,8 +8,9 @@ write is best-effort in both directions: a failure is swallowed, and a healthy
 writer still gets its row.
 """
 
+import uuid
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -44,11 +45,19 @@ class _RecordingWriter:
         pass
 
 
+def _result(value: Any) -> MagicMock:
+    return MagicMock(scalar_one_or_none=MagicMock(return_value=value))
+
+
 def _kwargs(log_writer: Any) -> dict[str, Any]:
-    # db is only touched when the row carries usage data, which a rejection row
-    # never does, so a bare mock is enough to exercise the real code path.
+    # Touched even for a rejection: every usage row carries a workspace. Two
+    # reads, stubbed in the order `workspace_for_key_id` issues them: the key
+    # resolves to nothing (the "deleted mid-flight" arm), so it falls back to the
+    # deployment's default workspace, which is found. The row is still built.
+    db = MagicMock()
+    db.execute = AsyncMock(side_effect=[_result(None), _result(uuid.uuid4())])
     return {
-        "db": MagicMock(),
+        "db": db,
         "log_writer": log_writer,
         "api_key_id": "key-1",
         "user_id": "user-1",

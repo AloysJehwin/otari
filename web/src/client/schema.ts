@@ -688,7 +688,8 @@ export interface paths {
          * List Keys
          * @description List all API keys.
          *
-         *     Requires master key authentication.
+         *     Requires master key authentication. An unset ``workspace_id`` lists every key
+         *     on the deployment, which keeps the pre-workspace view working unchanged.
          */
         get: operations["list_keys_v1_keys_get"];
         put?: never;
@@ -1650,6 +1651,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/scoped-budgets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Scoped Budgets
+         * @description List scoped budgets, optionally filtered to one scope.
+         */
+        get: operations["list_scoped_budgets_v1_scoped_budgets_get"];
+        put?: never;
+        /**
+         * Create Scoped Budget
+         * @description Create a scoped budget.
+         *
+         *     Answers 404 when the scope names nothing, rather than creating a ceiling
+         *     that can never bind.
+         */
+        post: operations["create_scoped_budget_v1_scoped_budgets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scoped-budgets/{budget_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Scoped Budget
+         * @description Get one scoped budget.
+         */
+        get: operations["get_scoped_budget_v1_scoped_budgets__budget_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Scoped Budget
+         * @description Delete a scoped budget.
+         *
+         *     A request holding a reservation against it settles into nothing afterwards,
+         *     which is the right outcome: the ceiling no longer exists to be credited.
+         */
+        delete: operations["delete_scoped_budget_v1_scoped_budgets__budget_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Scoped Budget
+         * @description Update a scoped budget's label, limit, or period length.
+         *
+         *     The scope and the provider narrowing are not editable: changing either would
+         *     move the ceiling to a different identity while carrying its spend, which is
+         *     a delete and a create, not an update.
+         */
+        patch: operations["update_scoped_budget_v1_scoped_budgets__budget_id__patch"];
+        trace?: never;
+    };
     "/v1/search": {
         parameters: {
             query?: never;
@@ -2428,6 +2491,8 @@ export interface components {
          *     that flow rehomes.
          */
         ActiveOrganizationMemberCreateResultPublic: {
+            /** Attribution User Id */
+            attribution_user_id?: string | null;
             /** Created At */
             created_at?: string | null;
             /** Email */
@@ -2461,8 +2526,20 @@ export interface components {
          *     ``email`` is nullable here (a local operator identity has no sign-in
          *     address), and ``invitation_id`` is always null until the invitation flow
          *     rehomes, which is what fills it.
+         *
+         *     ``attribution_user_id`` is the addition the platform has no counterpart for.
+         *     Keys, budgets, and usage attach to the gateway's string-keyed ``users`` row,
+         *     not to this UUID identity, so this carries the ``user_id`` a caller passes to
+         *     ``POST /v1/keys`` to give this member a key. It is null when no usable row
+         *     exists (nobody minted one, or it was soft-deleted through
+         *     ``DELETE /v1/users``), which is the signal not to offer this member as a key
+         *     owner: key creation would refuse. The two ids converge when the request plane
+         *     re-parents onto tenancy (M4), and this field is what lets that happen without
+         *     the dashboard changing.
          */
         ActiveOrganizationMemberPublic: {
+            /** Attribution User Id */
+            attribution_user_id?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -2990,6 +3067,28 @@ export interface components {
             user_count: number;
         };
         /**
+         * CallerWorkspaceMembershipPublic
+         * @description One workspace the caller belongs to, and their role in it.
+         *
+         *     Carried on the membership context so the shell can populate its workspace
+         *     switcher and choose a default from the first authenticated call, rather than
+         *     listing workspaces and then asking for the caller's role in each. Only the
+         *     caller's own memberships appear, so this is not a directory of the
+         *     organization's workspaces: an admin sees the ones they joined, and the
+         *     workspace list endpoint remains the way to see the rest.
+         */
+        CallerWorkspaceMembershipPublic: {
+            /** Name */
+            name: string;
+            /** Role */
+            role: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /**
          * CandidateResponse
          * @description One candidate in a compiled plan.
          */
@@ -3296,6 +3395,11 @@ export interface components {
              * @description Optional user ID to associate with this key
              */
             user_id?: string | null;
+            /**
+             * Workspace Id
+             * @description Workspace this key belongs to. Omitted means the deployment's default workspace. A key belongs to exactly one workspace: requests on it are scoped and billed there, so the workspace is read off the key rather than off a request header.
+             */
+            workspace_id?: string | null;
         };
         /**
          * CreateKeyResponse
@@ -3330,6 +3434,43 @@ export interface components {
             reject_user_mismatch: boolean | null;
             /** User Id */
             user_id: string | null;
+        };
+        /**
+         * CreateScopedBudgetRequest
+         * @description Request model for creating a scoped budget.
+         */
+        CreateScopedBudgetRequest: {
+            /**
+             * Budget Duration Sec
+             * @description Period length in seconds (e.g. 86400 for daily); null never resets
+             */
+            budget_duration_sec?: number | null;
+            /**
+             * Max Budget
+             * @description Maximum USD spend in the period
+             */
+            max_budget?: number | null;
+            /**
+             * Name
+             * @description Admin-facing label for the budget
+             */
+            name?: string | null;
+            /**
+             * Provider Key Id
+             * @description Narrow the cap to one provider instance; null caps spend across every provider
+             */
+            provider_key_id?: string | null;
+            /**
+             * Scope Id
+             * @description Id of the capped identity: an organization, workspace, membership row, or API key
+             */
+            scope_id: string;
+            /**
+             * Scope Type
+             * @description Which kind of identity this ceiling caps
+             * @enum {string}
+             */
+            scope_type: "organization" | "workspace" | "workspace_member" | "org_member" | "api_token";
         };
         /**
          * CreateSearchToolRequest
@@ -3931,6 +4072,11 @@ export interface components {
             reject_user_mismatch: boolean | null;
             /** User Id */
             user_id: string | null;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
         };
         /**
          * KnownProviderSchema
@@ -4389,6 +4535,8 @@ export interface components {
             role: string;
             /** Status */
             status: string;
+            /** Workspace Memberships */
+            workspace_memberships?: components["schemas"]["CallerWorkspaceMembershipPublic"][];
         };
         /** OrganizationPublic */
         OrganizationPublic: {
@@ -4960,6 +5108,42 @@ export interface components {
             user_id: string;
         };
         /**
+         * ScopedBudgetResponse
+         * @description One scoped ceiling and its live counters.
+         *
+         *     Unlike ``/v1/budgets``, the counters are the row's own: a scoped ceiling is
+         *     enforced against ``current_spend + reserved_spend``, so there is no rollup
+         *     over users to compute.
+         */
+        ScopedBudgetResponse: {
+            /** Budget Duration Sec */
+            budget_duration_sec: number | null;
+            /** Created At */
+            created_at: string;
+            /** Current Spend */
+            current_spend: number;
+            /** Id */
+            id: string;
+            /** Max Budget */
+            max_budget: number | null;
+            /** Name */
+            name: string | null;
+            /** Period End */
+            period_end: string | null;
+            /** Period Start */
+            period_start: string | null;
+            /** Provider Key Id */
+            provider_key_id: string | null;
+            /** Reserved Spend */
+            reserved_spend: number;
+            /** Scope Id */
+            scope_id: string;
+            /** Scope Type */
+            scope_type: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /**
          * ScoredExample
          * @description One prompt and how well each candidate answered it.
          */
@@ -5447,6 +5631,18 @@ export interface components {
             reject_user_mismatch?: boolean | null;
         };
         /**
+         * UpdateScopedBudgetRequest
+         * @description Request model for updating a scoped budget.
+         */
+        UpdateScopedBudgetRequest: {
+            /** Budget Duration Sec */
+            budget_duration_sec?: number | null;
+            /** Max Budget */
+            max_budget?: number | null;
+            /** Name */
+            name?: string | null;
+        };
+        /**
          * UpdateSearchToolRequest
          * @description Update a stored search tool. Omitted fields are unchanged; ``api_key`` rotates in place.
          */
@@ -5626,6 +5822,8 @@ export interface components {
             tool?: string | null;
             /** User Id */
             user_id?: string | string[] | null;
+            /** Workspace Id */
+            workspace_id?: string | null;
         };
         /**
          * UsageDeleteResult
@@ -5940,6 +6138,8 @@ export interface components {
             tool?: string | null;
             /** User Id */
             user_id?: string | string[] | null;
+            /** Workspace Id */
+            workspace_id?: string | null;
         };
         /**
          * UsageSetPriceResult
@@ -6456,7 +6656,10 @@ export interface operations {
     };
     list_aliases_v1_aliases_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Only stored entries in this workspace. Config-file entries are always included. Every stored entry is in the deployment's default workspace today, because name uniqueness and the resolution cache are both deployment-wide, so this narrows to one workspace and finds the rest empty until those are scoped (otari-ai#1643). */
+                workspace_id?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6470,6 +6673,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AliasResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -7331,6 +7543,8 @@ export interface operations {
             query?: {
                 skip?: number;
                 limit?: number;
+                /** @description Only keys in this workspace. */
+                workspace_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -8550,7 +8764,10 @@ export interface operations {
     };
     list_policies_v1_routing_policies_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Only stored policies in this workspace. Config-file policies are always included. Every stored policy is in the deployment's default workspace today, because name uniqueness and the resolution cache are both deployment-wide, so this narrows to one workspace and finds the rest empty until those are scoped (otari-ai#1643). */
+                workspace_id?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -8564,6 +8781,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PolicyResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -8718,6 +8944,168 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RouterStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_scoped_budgets_v1_scoped_budgets_get: {
+        parameters: {
+            query?: {
+                scope_type?: ("organization" | "workspace" | "workspace_member" | "org_member" | "api_token") | null;
+                scope_id?: string | null;
+                skip?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopedBudgetResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_scoped_budget_v1_scoped_budgets_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateScopedBudgetRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopedBudgetResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_scoped_budget_v1_scoped_budgets__budget_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                budget_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopedBudgetResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_scoped_budget_v1_scoped_budgets__budget_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                budget_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_scoped_budget_v1_scoped_budgets__budget_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                budget_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateScopedBudgetRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopedBudgetResponse"];
                 };
             };
             /** @description Validation Error */
@@ -9191,6 +9579,8 @@ export interface operations {
                 counts_toward_budget?: boolean | null;
                 /** @description Filter to the rows of one or more request groups; repeatable (request_group_id=a&request_group_id=b). A routed request writes one row per attempt, all sharing a request_group_id, so this returns a request's whole plan: its absorbed attempts and the attempt that served it. Ignore ordering by timestamp and read attempt_position to reconstruct the plan. At most 1000 ids per call. */
                 request_group_id?: string[] | null;
+                /** @description Only usage recorded in this workspace. */
+                workspace_id?: string | null;
                 skip?: number;
                 limit?: number;
             };
@@ -9286,6 +9676,8 @@ export interface operations {
                 counts_toward_budget?: boolean | null;
                 /** @description Filter to the rows of one or more request groups; repeatable (request_group_id=a&request_group_id=b). A routed request writes one row per attempt, all sharing a request_group_id, so this returns a request's whole plan: its absorbed attempts and the attempt that served it. Ignore ordering by timestamp and read attempt_position to reconstruct the plan. At most 1000 ids per call. */
                 request_group_id?: string[] | null;
+                /** @description Only usage recorded in this workspace. */
+                workspace_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -9399,6 +9791,8 @@ export interface operations {
                 tool?: ("any" | "web_search" | "code_execution") | null;
                 /** @description Filter by budget participation: true = only enforced gateway rows, false = only imported rows that never touch a budget */
                 counts_toward_budget?: boolean | null;
+                /** @description Only usage recorded in this workspace. */
+                workspace_id?: string | null;
                 /** @description Time-series granularity: 'hour' or 'day' */
                 bucket?: "hour" | "day";
             };
@@ -9492,6 +9886,8 @@ export interface operations {
                 tool?: ("any" | "web_search" | "code_execution") | null;
                 /** @description Filter by budget participation: true = only enforced gateway rows, false = only imported rows that never touch a budget */
                 counts_toward_budget?: boolean | null;
+                /** @description Only usage recorded in this workspace. */
+                workspace_id?: string | null;
                 /** @description Time-series granularity: 'hour' or 'day' */
                 bucket?: "hour" | "day";
                 /** @description Which breakdowns to compute; repeatable (dimensions=model&dimensions=user). Each value names the 'by_<value>' response field it fills, except 'status_code', which fills the failure taxonomy in 'errors_by_status_code'. Omit for every breakdown (the default); pass 'none' for a totals-and-series-only response. Each dimension left out skips one GROUP BY scan, so a caller that reads only the tiles or the time series should say so. Fields that were not requested come back empty. */
@@ -9554,6 +9950,8 @@ export interface operations {
                 tool?: ("any" | "web_search" | "code_execution") | null;
                 /** @description Filter by budget participation: true = only enforced gateway rows, false = only imported rows that never touch a budget */
                 counts_toward_budget?: boolean | null;
+                /** @description Only usage recorded in this workspace. */
+                workspace_id?: string | null;
             };
             header?: never;
             path?: never;

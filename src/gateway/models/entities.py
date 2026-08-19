@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Text, UniqueConstraint, text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Text, UniqueConstraint, Uuid, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlmodel import SQLModel
 
@@ -43,6 +43,17 @@ class APIKey(Base):
 
     id: Mapped[str] = mapped_column(primary_key=True)
     key_hash: Mapped[str] = mapped_column(unique=True, index=True)
+    # The workspace this row belongs to, and the canonical note for the three
+    # tables below that carry the same column. NOT NULL: a workspace is the unit
+    # the dashboard scopes by, so "no workspace" is never a real state, only an
+    # unmigrated one. Existing rows were backfilled onto the deployment's default
+    # workspace, which the same migration seeds when tenancy was never touched.
+    # RESTRICT rather than cascade: deleting a workspace must not silently take
+    # its keys, usage, aliases and policies with it. Which workspace a write
+    # lands in is resolved in `services/workspace_scope.py`.
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
     # Display-only leading characters of the plaintext key, kept so the dashboard can
     # recognize a key after its one-time reveal. Nullable: keys minted before this
     # column existed cannot be back-filled (the plaintext is unrecoverable).
@@ -211,6 +222,12 @@ class ModelAlias(Base):
 
     __tablename__ = "model_aliases"
     __table_args__ = (
+        # Deliberately not workspace-scoped yet. Widening this to
+        # (workspace_id, name, user_id) would let two workspaces each hold a
+        # "fast" entry, but resolution reads a process-wide cache keyed by name
+        # alone, so the second would silently shadow the first at request time.
+        # The constraint widens in the change that makes that cache
+        # workspace-aware, not before.
         UniqueConstraint("name", "user_id", name="uq_model_aliases_name_user"),
         Index(
             "uq_model_aliases_global_name",
@@ -229,6 +246,10 @@ class ModelAlias(Base):
     name: Mapped[str] = mapped_column()
     target: Mapped[str] = mapped_column()
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), index=True)
+    # The workspace this row belongs to; see `APIKey.workspace_id` for why.
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -267,6 +288,12 @@ class RoutingPolicy(Base):
 
     __tablename__ = "routing_policies"
     __table_args__ = (
+        # Deliberately not workspace-scoped yet. Widening this to
+        # (workspace_id, name, user_id) would let two workspaces each hold a
+        # "fast" entry, but resolution reads a process-wide cache keyed by name
+        # alone, so the second would silently shadow the first at request time.
+        # The constraint widens in the change that makes that cache
+        # workspace-aware, not before.
         UniqueConstraint("name", "user_id", name="uq_routing_policies_name_user"),
         Index(
             "uq_routing_policies_global_name",
@@ -281,6 +308,10 @@ class RoutingPolicy(Base):
     name: Mapped[str] = mapped_column()
     spec: Mapped[dict[str, Any]] = mapped_column(JSON)
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), index=True)
+    # The workspace this row belongs to; see `APIKey.workspace_id` for why.
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -498,6 +529,10 @@ class UsageLog(Base):
     )
 
     id: Mapped[str] = mapped_column(primary_key=True, default=lambda: str(uuid.uuid4()))
+    # The workspace this row belongs to; see `APIKey.workspace_id` for why.
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
     api_key_id: Mapped[str | None] = mapped_column(ForeignKey("api_keys.id", ondelete="SET NULL"), index=True)
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.user_id", ondelete="SET NULL"), index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
@@ -849,3 +884,86 @@ class BudgetResetLog(Base):
             "reset_at": self.reset_at.isoformat() if self.reset_at else None,
             "next_reset_at": self.next_reset_at.isoformat() if self.next_reset_at else None,
         }
+
+
+class ScopedBudget(Base):
+    """A USD ceiling on one tenancy scope, optionally narrowed to one provider.
+
+    Two axes. The identity axis is ``(scope_type, scope_id)``: who is capped, an
+    organization, a workspace, a member of either, or a single API key. The
+    resource axis is ``provider_key_id``: NULL caps spend across every provider,
+    a value narrows the cap to one provider instance. A request must pass every
+    row that applies to it, and each row is an independent ceiling with its own
+    counters and its own period window, unlike ``budgets``, where the window and
+    the counters live on the user.
+
+    USD only. There are deliberately no token or request limits in this pass:
+    the gateway prices in dollars everywhere else, and a second enforced
+    dimension is a separate decision from having scopes at all.
+
+    ``scope_type`` is a plain string rather than a database enum so a new scope
+    needs no enum migration, and ``scope_id`` is a string so it holds both this
+    codebase's string ids (an API key's) and the platform's UUIDs. Nothing here
+    is a foreign key for the same reason: the rows a scope names live in four
+    different tables, and a provider instance may be configured in ``config.yml``
+    and have no row at all.
+
+    This table does not replace ``budgets``. That one is many-to-one from
+    ``users`` and is enforced against ``users.spend + users.reserved``, so N
+    users sharing a budget each get the full limit; folding counters onto it
+    would silently turn that into a pooled cap. Both mechanisms are enforced,
+    side by side.
+    """
+
+    __tablename__ = "scoped_budgets"
+    __table_args__ = (
+        # PostgreSQL treats NULLs as distinct in a plain UNIQUE, so one index
+        # over the triple would enforce nothing on the aggregate rows (every one
+        # of them has a NULL key, so no two are ever "equal"). Two partial
+        # indexes instead: the narrowed rows are unique on the triple, and the
+        # aggregate rows are unique on the identity alone, which is what makes
+        # "one aggregate cap per scope" a real constraint.
+        Index(
+            "uq_scoped_budgets_scope_with_key",
+            "scope_type",
+            "scope_id",
+            "provider_key_id",
+            unique=True,
+            postgresql_where=text("provider_key_id IS NOT NULL"),
+            sqlite_where=text("provider_key_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_scoped_budgets_scope_no_key",
+            "scope_type",
+            "scope_id",
+            unique=True,
+            postgresql_where=text("provider_key_id IS NULL"),
+            sqlite_where=text("provider_key_id IS NULL"),
+        ),
+        # The request path resolves rows by identity, so the lookup needs a
+        # non-partial index: neither unique index above covers a scan that spans
+        # narrowed and aggregate rows.
+        Index("ix_scoped_budgets_scope", "scope_type", "scope_id"),
+    )
+
+    id: Mapped[str] = mapped_column(primary_key=True, default=lambda: str(uuid.uuid4()))
+    scope_type: Mapped[str] = mapped_column()
+    scope_id: Mapped[str] = mapped_column()
+    provider_key_id: Mapped[str | None] = mapped_column(default=None)
+    name: Mapped[str | None] = mapped_column(default=None)
+    max_budget: Mapped[float | None] = mapped_column(default=None)
+    current_spend: Mapped[float] = mapped_column(default=0.0, server_default="0")
+    # In-flight holds from reservations that have passed the gate but whose actual
+    # cost is not known yet. Headroom is ``max_budget - current_spend -
+    # reserved_spend``; a period roll zeroes ``current_spend`` only, so a hold
+    # taken before the roll is still released correctly after it.
+    reserved_spend: Mapped[float] = mapped_column(default=0.0, server_default="0")
+    budget_duration_sec: Mapped[int | None] = mapped_column(default=None)
+    period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )

@@ -146,6 +146,7 @@ from gateway.services.sandbox_backend import (
     SandboxBackend,
     SandboxNotReachableError,
 )
+from gateway.services.scoped_budget_service import BudgetScopeRequest
 from gateway.services.tool_usage import (
     MAX_TOOL_NAMES,
     OVERFLOW_TOOL_NAME,
@@ -154,6 +155,7 @@ from gateway.services.tool_usage import (
 )
 from gateway.services.url_safety import UnsafeURLError, validate_mcp_url
 from gateway.services.web_search_backend import WEB_SEARCH_TOOL_NAME, WebSearchNotReachableError
+from gateway.services.workspace_scope import workspace_for_key_id
 from gateway.streaming import (
     StreamFormat,
     StreamingAttemptFailure,
@@ -1200,6 +1202,12 @@ async def resolve_request_context(
                 pricing_provider=gate_instance,
                 strategy=config.budget_strategy,
                 counts_toward_budget=not budget_exempt,
+                # The tenancy-scoped ceilings resolve from the key's workspace and
+                # the identity behind it, and from the provider this attempt is
+                # about to call. A fallover to a different provider keeps the
+                # ceilings resolved here: repricing changes the amount held, not
+                # which caps the request was admitted against.
+                scope=BudgetScopeRequest(api_key=api_key, provider_instance=gate_instance),
             )
         except HTTPException as exc:
             # A blocked or over-budget user is refused inside reserve_budget,
@@ -1836,6 +1844,7 @@ async def log_usage(
     """
     usage_log = UsageLog(
         id=str(uuid.uuid4()),
+        workspace_id=await workspace_for_key_id(db, api_key_id),
         api_key_id=api_key_id,
         user_id=user_id,
         timestamp=datetime.now(UTC),

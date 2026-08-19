@@ -326,6 +326,22 @@ class Organization(OrganizationBase, PrimaryKeyMixin, CreatedAtMixin, UpdatedAtM
     )
 
 
+class CallerWorkspaceMembershipPublic(SQLModel):
+    """One workspace the caller belongs to, and their role in it.
+
+    Carried on the membership context so the shell can populate its workspace
+    switcher and choose a default from the first authenticated call, rather than
+    listing workspaces and then asking for the caller's role in each. Only the
+    caller's own memberships appear, so this is not a directory of the
+    organization's workspaces: an admin sees the ones they joined, and the
+    workspace list endpoint remains the way to see the rest.
+    """
+
+    workspace_id: uuid.UUID
+    name: str
+    role: str
+
+
 class OrganizationMembershipContextPublic(SQLModel):
     """An organization plus the caller's standing in it.
 
@@ -337,6 +353,7 @@ class OrganizationMembershipContextPublic(SQLModel):
     role: str
     status: str
     organization: OrganizationPublic
+    workspace_memberships: list[CallerWorkspaceMembershipPublic] = Field(default_factory=list)
     # Whether the dashboard may offer the BYO provider-keys surface. The
     # platform answers "does this org have a self-hosted gateway attached", which
     # in a standalone deployment is always yes: the deployment reading this *is*
@@ -408,10 +425,21 @@ class ActiveOrganizationMemberPublic(SQLModel):
     ``email`` is nullable here (a local operator identity has no sign-in
     address), and ``invitation_id`` is always null until the invitation flow
     rehomes, which is what fills it.
+
+    ``attribution_user_id`` is the addition the platform has no counterpart for.
+    Keys, budgets, and usage attach to the gateway's string-keyed ``users`` row,
+    not to this UUID identity, so this carries the ``user_id`` a caller passes to
+    ``POST /v1/keys`` to give this member a key. It is null when no usable row
+    exists (nobody minted one, or it was soft-deleted through
+    ``DELETE /v1/users``), which is the signal not to offer this member as a key
+    owner: key creation would refuse. The two ids converge when the request plane
+    re-parents onto tenancy (M4), and this field is what lets that happen without
+    the dashboard changing.
     """
 
     organization_member_id: uuid.UUID | None = None
     user_id: uuid.UUID | None = None
+    attribution_user_id: str | None = None
     invitation_id: uuid.UUID | None = None
     email: str | None = None
     full_name: str | None = None
@@ -466,6 +494,7 @@ class ActiveOrganizationMemberCreateResultPublic(SQLModel):
     role: str
     organization_member_id: uuid.UUID | None = None
     user_id: uuid.UUID | None = None
+    attribution_user_id: str | None = None
     invitation_id: uuid.UUID | None = None
     full_name: str | None = None
     expires_at: datetime | None = None

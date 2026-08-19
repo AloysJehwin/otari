@@ -67,6 +67,7 @@ from gateway.services.budget_service import reconcile_reservation, refund_reserv
 from gateway.services.log_writer import LogWriter
 from gateway.services.model_access import is_model_allowed, model_not_allowed_detail, resolve_request_allowlist
 from gateway.services.pricing_service import find_model_pricing, flat_request_cost
+from gateway.services.scoped_budget_service import BudgetScopeRequest
 from gateway.services.search_backend import (
     MAX_RESULTS_CAP,
     SearchHit,
@@ -76,6 +77,7 @@ from gateway.services.search_backend import (
     resolve_search_tool,
     run_search,
 )
+from gateway.services.workspace_scope import workspace_for_key_id
 
 router = APIRouter(prefix="/v1", tags=["search"])
 
@@ -317,7 +319,14 @@ async def _dispatch_search(
         model=None,
         strategy=config.budget_strategy,
         counts_toward_budget=not budget_exempt,
+        # A search tool is not a model, but it is billed to a workspace like one,
+        # so the scope carries the tool's provider as the narrowing axis.
+        scope=BudgetScopeRequest(api_key=api_key, provider_instance=tool.provider),
     )
+
+    # Resolved here rather than in the closure below: the builder is
+    # synchronous, and the workspace is fixed for the whole request anyway.
+    usage_workspace_id = await workspace_for_key_id(db, api_key_id)
 
     def usage_row(**overrides: Any) -> UsageLog:
         """Build the row for a search that reached the provider.
@@ -327,6 +336,7 @@ async def _dispatch_search(
         """
         return UsageLog(
             id=str(uuid.uuid4()),
+            workspace_id=usage_workspace_id,
             api_key_id=api_key_id,
             user_id=user_id,
             timestamp=datetime.now(UTC),

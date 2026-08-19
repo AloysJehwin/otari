@@ -34,6 +34,7 @@ from gateway.models.tenancy import (
     ActiveOrganizationMemberPublic,
     ActiveOrganizationMembersPublic,
     ActiveOrganizationMemberUpdateRequest,
+    CallerWorkspaceMembershipPublic,
     Organization,
     OrganizationMember,
     OrganizationMembershipContextPublic,
@@ -48,6 +49,10 @@ from gateway.repositories.tenancy import (
     UserRepository,
     WorkspaceMemberRepository,
     WorkspaceRepository,
+)
+from gateway.repositories.users_repository import (
+    get_or_create_attribution_user,
+    live_attribution_user_ids,
 )
 from gateway.services.tenancy.errors import (
     InvalidEmailError,
@@ -87,6 +92,12 @@ def _validated_email(email: str) -> str:
     return candidate
 
 
+# The most workspaces a switcher seed carries. Above the repository's paging
+# default so the common deployment is never truncated, and bounded so one
+# unusually large organization cannot make every context read unbounded.
+CALLER_WORKSPACE_LIMIT = 1000
+
+
 class OrganizationService:
     """Business logic for the organization surface."""
 
@@ -95,6 +106,8 @@ class OrganizationService:
         self.organizations = OrganizationRepository(db)
         self.members = OrganizationMemberRepository(db)
         self.users = UserRepository(db)
+        self.workspaces = WorkspaceMemberRepository(db)
+        self.workspace_rows = WorkspaceRepository(db)
 
     # ------------------------------------------------------------------
     # Context resolution and authorization
@@ -143,17 +156,57 @@ class OrganizationService:
         *,
         membership: OrganizationMember,
         organization: Organization,
+        workspace_memberships: list[CallerWorkspaceMembershipPublic],
     ) -> OrganizationMembershipContextPublic:
         return OrganizationMembershipContextPublic(
             organization_member_id=membership.id,
             role=membership.role,
             status=membership.status,
             organization=OrganizationPublic.model_validate(organization),
+            workspace_memberships=workspace_memberships,
             # The platform answers "does this org have a self-hosted gateway
             # attached". A standalone deployment reading this *is* that gateway,
             # so its own provider credentials are always available to it.
             byo_provider_keys_allowed=True,
         )
+
+    async def _caller_workspace_memberships(
+        self,
+        *,
+        user: User,
+        organization: Organization,
+    ) -> list[CallerWorkspaceMembershipPublic]:
+        """The workspaces the caller belongs to, with the name and their role.
+
+        Two queries rather than a join helper, reusing the repository methods the
+        workspace surface already has. Only the caller's own memberships, so a
+        shell can pick a default workspace without being handed a directory of
+        the organization's workspaces: listing those is a separate, authorized
+        read.
+        """
+        # Explicit limit, because the repository's default is 100 and this is a
+        # switcher seed rather than a page: silently dropping the caller's 101st
+        # workspace would hide it from every context the shell can select.
+        memberships, _ = await self.workspaces.get_workspaces_for_user(
+            user_id=user.id,
+            organization_id=organization.id,
+            limit=CALLER_WORKSPACE_LIMIT,
+        )
+        if not memberships:
+            return []
+        names = {
+            workspace.id: workspace.name
+            for workspace in await self.workspace_rows.get_by_ids([m.workspace_id for m in memberships])
+        }
+        return [
+            CallerWorkspaceMembershipPublic(
+                workspace_id=membership.workspace_id,
+                name=names[membership.workspace_id],
+                role=membership.role,
+            )
+            for membership in memberships
+            if membership.workspace_id in names
+        ]
 
     async def _resolve_active_organization(self, user: User) -> Organization:
         """Resolve the caller's organization, repairing a stale pointer if it can.
@@ -190,7 +243,11 @@ class OrganizationService:
         """Return the caller's organization and their standing in it."""
         organization = await self._resolve_active_organization(user)
         membership = await self._require_active_membership(user, organization)
-        return self._to_context(membership=membership, organization=organization)
+        return self._to_context(
+            membership=membership,
+            organization=organization,
+            workspace_memberships=await self._caller_workspace_memberships(user=user, organization=organization),
+        )
 
     # ------------------------------------------------------------------
     # The organization itself
@@ -212,7 +269,11 @@ class OrganizationService:
         )
         await self.db.commit()
 
-        return self._to_context(membership=membership, organization=updated)
+        return self._to_context(
+            membership=membership,
+            organization=updated,
+            workspace_memberships=await self._caller_workspace_memberships(user=user, organization=updated),
+        )
 
     # ------------------------------------------------------------------
     # Membership
@@ -229,8 +290,12 @@ class OrganizationService:
         organization = await self.get_active_organization_for_user(user)
 
         rows, count = await self.members.get_by_organization_with_users(organization.id, skip=skip, limit=limit)
+        # One query for the whole page rather than a lookup per row: the roster is
+        # the picker the dashboard builds its key-owner list from, so every row
+        # needs to say whether it can own a key.
+        live = await live_attribution_user_ids(self.db, [str(member_user.id) for _, member_user in rows])
         return ActiveOrganizationMembersPublic(
-            data=[self._to_member_public(membership, member_user) for membership, member_user in rows],
+            data=[self._to_member_public(membership, member_user, live=live) for membership, member_user in rows],
             count=count,
         )
 
@@ -309,6 +374,15 @@ class OrganizationService:
                     {"role": request.role, "status": "active"},
                 )
 
+            # After both branches, not inside either: keyed on the identity's
+            # UUID, so the create path mints and the revive path finds the row it
+            # minted the first time rather than a second one.
+            attribution = await get_or_create_attribution_user(
+                self.db,
+                user_id=str(target.id),
+                alias=email,
+            )
+
             await self._apply_workspace_assignments(user_id=target.id, assignments=assignments)
             await self.db.commit()
         except IntegrityError:
@@ -322,6 +396,7 @@ class OrganizationService:
             status="active",
             organization_member_id=membership.id,
             user_id=target.id,
+            attribution_user_id=attribution.user_id,
             email=email,
             full_name=target.full_name,
             role=membership.role,
@@ -425,7 +500,8 @@ class OrganizationService:
             raise OrganizationMemberNotFoundError(organization_member_id)
         await self.db.commit()
 
-        return self._to_member_public(updated, target_user)
+        live = await live_attribution_user_ids(self.db, [str(target_user.id)])
+        return self._to_member_public(updated, target_user, live=live)
 
     async def remove_active_organization_member_for_user(
         self,
@@ -503,10 +579,17 @@ class OrganizationService:
                 raise MembershipUpdateError("An organization must keep at least one active owner")
 
     @staticmethod
-    def _to_member_public(membership: OrganizationMember, user: User) -> ActiveOrganizationMemberPublic:
+    def _to_member_public(
+        membership: OrganizationMember,
+        user: User,
+        *,
+        live: set[str],
+    ) -> ActiveOrganizationMemberPublic:
+        attribution_user_id = str(user.id)
         return ActiveOrganizationMemberPublic(
             organization_member_id=membership.id,
             user_id=user.id,
+            attribution_user_id=attribution_user_id if attribution_user_id in live else None,
             email=user.email,
             full_name=user.full_name,
             role=membership.role,
