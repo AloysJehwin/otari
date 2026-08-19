@@ -25,17 +25,22 @@ dev:
 # this to see the dashboard from a source checkout (without it the gateway
 # degrades to the tutorial page) and before building a wheel. The Docker image
 # builds it in its own web stage and needs no local Node.
-dashboard: web/node_modules/.package-lock.json
-	npm --prefix web run build
+dashboard: web/node_modules/.install-stamp
+	pnpm --dir web run build
 
-# `npm ci` deletes and reinstalls node_modules, which is the wrong price to pay on
-# every rebuild now that the READMEs send developers to `make dashboard` to see the
-# dashboard locally. Gate it on npm's own install stamp, which it writes inside
-# node_modules: absent (or older than the lockfile) means the tree is missing or
-# stale, and otherwise the install is already the one the lockfile asks for. Kept
-# as `ci` rather than `install` so the lockfile is never rewritten as a side effect.
-web/node_modules/.package-lock.json: web/package-lock.json
-	npm --prefix web ci
+# Reinstalling on every rebuild is the wrong price to pay now that the READMEs
+# send developers to `make dashboard` to see the dashboard locally. Gate it on a
+# stamp of our own rather than on one of pnpm's metadata files: pnpm writes both
+# `.modules.yaml` and `.pnpm/lock.yaml`, but it leaves their mtimes alone when
+# an install turns out to be a no-op, so either one can sit older than the
+# lockfile forever and the gate would never close. Touching the stamp ourselves
+# records what the rule actually cares about, which is that an install ran
+# against this lockfile. `--frozen-lockfile` is the `npm ci` of pnpm: it
+# installs exactly the lockfile and fails rather than rewriting it when
+# package.json has moved on.
+web/node_modules/.install-stamp: web/pnpm-lock.yaml web/package.json web/pnpm-workspace.yaml
+	pnpm --dir web install --frozen-lockfile
+	@touch $@
 
 test:
 	uv run pytest -v tests/unit tests/integration

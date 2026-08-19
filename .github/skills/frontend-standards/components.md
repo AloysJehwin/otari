@@ -21,7 +21,7 @@ Real example from `shared/components/ui.tsx`:
 ```tsx
 import { Button, Card } from "@heroui/react";
 
-<Card className="flex-1 min-w-[180px]">
+<Card className="flex-1 min-w-[11.25rem]">
   <Card.Content className="flex flex-col gap-1 p-5">…</Card.Content>
 </Card>
 
@@ -64,15 +64,45 @@ than duplicating their markup. See [design-tokens.md](./design-tokens.md).
 | Applied filters, each removable | `FilterChips` (`shared/components/FilterChips.tsx`); one chip per value, and pass `clearLabel` so several chips of one dimension stay distinguishable |
 | Form field wrapper | `Field` (`shared/components/Field.tsx`) |
 | Tabular data | `DataTable` (`shared/components/DataTable.tsx`) |
+| Settings page section (header + body) | `SettingsSection` (`shared/components/ui/`, rehomed) |
+| Table row's trailing icon-button cluster | `RowActions` (`shared/components/ui/`, rehomed) |
 
 `errorMessage(error)` centralizes turning an `ApiError`/`Error`/unknown into a display string;
 use it rather than reaching into `error.message` yourself.
 
+**When you add a shared primitive, add its row to that table in the same change.** The table
+is only useful while it is complete, and duplication in this tree has never come from a
+missing rule; it comes from not knowing the primitive already existed.
+
+## Internal links go through the router
+
+HeroUI's `Link` is a react-aria link with no knowledge of TanStack Router, so
+`<Link href="/models">` triggers a **full page reload**: the bundle re-downloads, the query
+cache is thrown away, and the bootstrap round trip runs again. For anything inside the app,
+use the router's own link:
+
+```tsx
+import { Link } from "@tanstack/react-router"
+
+<Link to="/models" className="text-link hover:text-link-hover">Models</Link>
+```
+
+For a control that looks like a button, call `navigate` from a `Button`'s `onPress` rather
+than nesting: `<Link><Button/></Link>` renders an `<a>` around a `<button>`, which is invalid
+HTML and gives the two elements conflicting keyboard behavior. HeroUI's `Link` stays correct
+for genuinely external destinations (documentation, otari.ai).
+
 ## Layout and spacing
 
-- Space siblings with `gap-*` on the flex/grid parent, not `m-*` on each child.
+- Space siblings with `gap-*` on the flex/grid parent, not `m-*` on each child. A shared
+  component never bakes in its own outside margin: what sits between two things is the
+  parent's decision, and a component that decides it cannot be recomposed.
+- Arbitrary values are in `rem`, not `px` (`h-[20rem]`, not `h-[320px]`), so they follow the
+  reader's root font size. A `1px` border is the exception; a `text-[11px]` is not, because
+  that size is the `text-overline` role. See [responsiveness.md](./responsiveness.md).
 - Responsive via Tailwind breakpoints (`sm:`, `md:`, `lg:`) and flex/grid; avoid fixed pixel
-  widths for anything that should reflow (`min-w-[180px]` on a wrapping stat card is fine).
+  widths for anything that should reflow (`min-w-[11.25rem]` on a wrapping stat card is fine:
+  it is a floor, not a fixed width).
 - One component per file for pages and standalone components, colocated with its test.
   `shared/components/ui.tsx` is the one place several closely related primitives share a
   file; a new primitive under `shared/components/ui/` gets its own.

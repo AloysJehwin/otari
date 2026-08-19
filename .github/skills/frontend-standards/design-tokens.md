@@ -1,7 +1,16 @@
 # Design tokens: `web/`
 
-The dashboard's visual system is the one rehomed from `otari-ai/frontend`, which the
-architecture charter settles as canonical for the converged dashboard. All of it lives in
+**The tokens are the design system.** HeroUI and Tailwind are consumers of it, not sources of
+truth for it: HeroUI's internal variables are aliased to our `--color-*` tokens, so a bare
+`<Card>` wears our palette, and every utility a component writes has to resolve back through
+that mapping. That is the whole point. Retheming the dashboard, or dropping a different
+component library under it, is then an edit to one file rather than a sweep through the tree.
+A utility that paints a color without passing through a token, whether it is a Tailwind
+palette class or one HeroUI happens to ship, is outside the system and will not follow the
+next change to it.
+
+The visual system is the one rehomed from `otari-ai/frontend`, which the architecture charter
+settles as canonical for the converged dashboard. All of it lives in
 `web/src/styles/globals.css`: the self-hosted brand faces, the tokens, the type scale, the
 base reset, and a short list of HeroUI v3 patches.
 
@@ -66,9 +75,14 @@ overlap in meaning with our `-subtle` and `-alt` names without being the same th
 compiler cannot tell you which family a class came from: both spellings work, and only one
 tracks our tokens.
 
-**Use ours.** A HeroUI-named utility bypasses the palette and will not follow a token change.
-The names differ because otari-ai chose `-subtle` and `-alt` before this rehome, and renaming
-here would fork the file the M5 merge depends on.
+**Use ours.** The test is not whether a utility's name came from HeroUI, it is whether the
+value behind it does. `bg-accent`, `text-foreground`, `text-muted`, `border-border` and
+`bg-default` are HeroUI-named and correct, because the theme block above aliases each of
+those variables to a `--color-*` token of ours. The families listed here are the opposite
+case: nothing in this repo declares them, so they resolve to whatever `@heroui/styles` ships
+and will not follow a token change. The `-subtle` and `-alt` names differ from HeroUI's
+because otari-ai chose them before this rehome, and renaming here would fork the file the M5
+merge depends on.
 
 Two traps follow from the same overlap. A class that *looks* like it belongs to one family may
 belong to neither and silently emit nothing, which is what happened to `bg-danger-subtle` and
@@ -76,6 +90,32 @@ belong to neither and silently emit nothing, which is what happened to `bg-dange
 neither declares nor reads. When adding a utility, add it to `DOCUMENTED_UTILITIES` in
 `src/styles/foundation.test.ts`, and confirm it compiles by building and grepping the emitted
 stylesheet. A class that does not exist raises nothing at any stage.
+
+### Porting a component from otari-ai
+
+Both repos alias HeroUI's internals to the same `--color-*` tokens, so the palettes agree.
+The **utility vocabulary does not**, and that is the thing to translate when a component moves
+between the trees:
+
+| otari-ai writes | Write here | Token behind it |
+| --- | --- | --- |
+| `bg-content1` | `bg-surface` | `--color-surface` |
+| `bg-content2` | `bg-surface-alt` | `--color-surface-muted` |
+| `bg-content3` | `bg-surface-subtle` | `--color-surface-subtle` |
+| `bg-background-alt` | `bg-background-alt` | `--color-background-muted` |
+| `bg-accent` | `bg-accent` | `--color-primary` |
+| `text-foreground` | `text-foreground` | `--color-text` |
+| `text-muted` | `text-muted` | `--color-text-muted` |
+
+`bg-content1/2/3` are the only real translation, and they are worth knowing about for a second
+reason: **they are dead classes in both repos.** `content1` is a HeroUI v2 name, v3's
+`@heroui/styles` neither declares nor reads it, and Tailwind v4 generates a `bg-*` utility
+only from a `--color-*` theme variable, which neither tree declares for it. Grepping
+otari-ai's own built stylesheet for `.bg-content1` finds nothing while `.bg-surface` and
+`.bg-accent` are both there, so the seventeen files using it over there are rendering with no
+background at all rather than with `--color-surface`. Copying one of those class names here
+would carry the bug across, silently, because a class that does not exist fails at no stage of
+the build.
 
 ## Type scale
 
@@ -85,6 +125,15 @@ text, not its size:
 `text-display` (one per route) · `text-heading` (section) · `text-title` (card/dialog) ·
 `text-body` (default, matches `<body>`) · `text-emphasis` (rare) · `text-caption` (metadata) ·
 `text-overline` (small uppercase group label).
+
+The scale is the whole set of sizes. `text-[11px]` is `text-overline` spelled in a way the
+system cannot see, `text-2xl font-bold` outside `text-display` means the hierarchy is the bug,
+and a one-off combination (`text-base font-semibold uppercase tracking-tight`) that repeats is
+a role that should be added here instead. One `text-display` per route. Heading *level* is a
+separate decision from heading *style*: `<h1>`/`<h2>`/`<h3>` follow the document outline, so a
+card title nested two sections deep may be an `<h3>` or an `<h4>` and still wear
+`text-title`. Pick the level that keeps the outline unbroken, then the role that matches the
+meaning.
 
 Headings and the display/heading roles are set in Zilla Slab; body and UI text in Mozilla
 Text; keys, IDs, and code in Fira Code. The faces are self-hosted in `web/public/fonts/` under

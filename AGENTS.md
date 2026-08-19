@@ -14,8 +14,9 @@ Detailed, task-scoped guidance lives outside this file so it loads only when rel
 (progressive disclosure). Read the applicable one before editing:
 
 - **Backend (`src/gateway/`)** → [src/gateway/AGENTS.md](src/gateway/AGENTS.md) (request lifecycle, budget enforcement, built-in tools, data/sessions, config layering, DB + logging patterns) and [.github/skills/backend-standards/SKILL.md](.github/skills/backend-standards/SKILL.md): async SQLAlchemy house style, layering, the budget/reservation lifecycle, migrations, config/logging conventions.
-- **Dashboard (`web/`)** → [web/AGENTS.md](web/AGENTS.md) (auth/session model, runtime provider management, build + bundled guide, PWA, serving) and [.github/skills/frontend-standards/SKILL.md](.github/skills/frontend-standards/SKILL.md): HeroUI v3, the semantic design tokens rehomed from `otari-ai/frontend`, TanStack Query patterns, and Vitest testing for the admin dashboard.
-- **Reviewing a change** → the path-scoped files in [.github/instructions/](.github/instructions/) auto-apply during Copilot reviews (they carry `applyTo` globs): [security-review](.github/instructions/security-review.instructions.md) (budget/tenant isolation, auth, SSRF, prompt injection) and [performance-review](.github/instructions/performance-review.instructions.md) (N+1, indexes, pagination limits, transaction atomicity) for `src/gateway/`, and [frontend-standards](.github/instructions/frontend-standards.instructions.md) (HeroUI v3, design tokens, TanStack Query) for `web/`.
+- **Dashboard (`web/`)** → [web/AGENTS.md](web/AGENTS.md) (auth/session model, runtime provider management, build + bundled guide, PWA, serving) and [.github/skills/frontend-standards/SKILL.md](.github/skills/frontend-standards/SKILL.md): HeroUI v3, the semantic design tokens rehomed from `otari-ai/frontend`, TanStack Query patterns, component architecture, responsiveness, layout stability, performance under the React Compiler, and the three test suites. Its topic guides load one at a time; the SKILL indexes them.
+- **Reviewing a PR or a diff** → [.github/skills/review/SKILL.md](.github/skills/review/SKILL.md): the procedure (which scoped guidance to load for which paths), the repo-specific gates that have broken a PR here before, and how findings are expressed.
+- **Reviewing a change** → the path-scoped files in [.github/instructions/](.github/instructions/) auto-apply during Copilot reviews (they carry `applyTo` globs): [security-review](.github/instructions/security-review.instructions.md) (budget/tenant isolation, auth, SSRF, prompt injection) and [performance-review](.github/instructions/performance-review.instructions.md) (N+1, indexes, pagination limits, transaction atomicity) for `src/gateway/`, and [frontend-standards](.github/instructions/frontend-standards.instructions.md) (HeroUI v3, design tokens, TanStack Query, mobile, layering, tests) for `web/`.
 - **Adding a table or a cross-repo surface** → [reconciliation-ledger](.github/instructions/reconciliation-ledger.instructions.md). Append to the M4 ledger ([otari-ai#1587](https://github.com/mozilla-ai/otari-ai/issues/1587)) only when it would otherwise be wrong: the target disposition for a row changes, the surface has no row, or a row's current-scope cell became false. A table or contract an existing row already covers, heading where that row says, needs no entry; put it in the PR description. One entry per change, not per PR. One ledger covers both repositories.
 
 The `.claude/skills` directory symlinks to `.github/skills`, so the same skills are available to Claude and to GitHub Copilot from one source.
@@ -43,7 +44,7 @@ The per-request flow (auth → budget → dispatch → reconciliation) spans sev
 ## Lint / Typecheck
 - Run lint checks with `make lint`; it runs the architecture check and then Ruff. **Ruff alone is not equivalent.**
 - The architecture check (`scripts/check_architecture.py`, also `make check-architecture`) enforces the `src/gateway/` layer rules: services must not import the API layer, repositories must not import services or the API layer, API routes must not import `sqlalchemy.orm`, and repository modules end in `_repository.py`.
-- **`make lint` does not touch the dashboard.** `npm --prefix web run lint` is its counterpart (Biome: formatting, recommended rules, and the `web/src/` layer boundaries), run separately in CI. See [web/AGENTS.md](web/AGENTS.md) for what those boundaries are and why the config mirrors `otari-ai/frontend`.
+- **`make lint` does not touch the dashboard.** `pnpm --dir web run lint` is its counterpart (Biome: formatting, recommended rules, and the `web/src/` layer boundaries), run separately in CI. See [web/AGENTS.md](web/AGENTS.md) for what those boundaries are and why the config mirrors `otari-ai/frontend`.
 - If introducing a formatter/linter, keep changes in a separate PR unless requested.
 
 ## Test Notes
@@ -92,7 +93,9 @@ The per-request flow (auth → budget → dispatch → reconciliation) spans sev
   (`web/src/client/schema.ts`) and route tree (`web/src/routeTree.gen.ts`) are generated **and
   committed**, each with a CI drift check, while the bundle (`src/gateway/static/dashboard/`)
   is generated and **not** committed. A change under `web/src` therefore sometimes leaves a
-  file to commit and never leaves a bundle to commit.
+  file to commit and never leaves a bundle to commit. Screenshot baselines are a fourth
+  artifact that is deliberately neither: the suite runs on demand and its PNGs are gitignored
+  while the dashboard is mid-migration.
 
 ## Repository Conventions
 - Prefer minimal, targeted edits over broad refactors, and match the import order and typing style of the file you are in (`TYPE_CHECKING` for type-only imports where it helps, as in `routes/_helpers.py`).
