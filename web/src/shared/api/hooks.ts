@@ -13,9 +13,12 @@ import type {
   CreateBudgetRequest,
   CreateKeyRequest,
   CreateKeyResponse,
+  CreateOrganizationMemberRequest,
+  CreateOrganizationMemberResult,
   CreateSearchToolRequest,
   CreateStoredProviderRequest,
   CreateUserRequest,
+  CreateWorkspaceRequest,
   DashboardBuild,
   DiscoverableModelsResponse,
   ExplainPolicyRequest,
@@ -27,6 +30,8 @@ import type {
   KnownProviderSummary,
   ModelListResponse,
   ModelMetadataResponse,
+  OrganizationContext,
+  OrganizationMember,
   PricingRefreshPreview,
   PricingResponse,
   ProviderHealthResponse,
@@ -50,11 +55,14 @@ import type {
   ToolsResponse,
   UpdateBudgetRequest,
   UpdateKeyRequest,
+  UpdateOrganizationMemberRequest,
+  UpdateOrganizationRequest,
   UpdateSearchToolRequest,
   UpdateSettingsRequest,
   UpdateStoredProviderRequest,
   UpdateToolSettingsRequest,
   UpdateUserRequest,
+  UpdateWorkspaceRequest,
   UsageBucket,
   UsageCount,
   UsageDeleteResult,
@@ -67,6 +75,9 @@ import type {
   UsageSetPriceResult,
   UsageSummary,
   User,
+  Workspace,
+  WorkspaceMember,
+  WorkspaceMemberRole,
 } from "@/client"
 import { ApiError, apiFetch, longRequestSignal } from "@/shared/api/client"
 import { isoAgo } from "@/shared/helpers/timeRange"
@@ -95,6 +106,12 @@ const KEYS = "keys"
 const BUDGETS = "budgets"
 const USERS = "users"
 const USAGE = "usage"
+const ORGANIZATIONS = "organizations"
+// Deliberately its own key rather than a child of ORGANIZATIONS: switching
+// organizations invalidates both, but a role change invalidates only the roster,
+// and nesting would re-read the context (and every page gated on it) as well.
+const ORGANIZATION_MEMBERS = "organization-members"
+const WORKSPACES = "workspaces"
 
 // How often an open tab asks whether the app it is running is still the one the
 // gateway serves. Cheap (a hash of one small file) and only while the tab is
@@ -378,6 +395,11 @@ export function useModelMetadata() {
   })
 }
 
+// Deliberately unscoped, and deliberately without the parameter the endpoint
+// would accept: the gateway stores every alias in the default workspace because
+// resolution reads a process-wide name-keyed cache, so a filtered list would
+// hide live aliases. Leaving the argument here would be a loaded gun beside the
+// comment explaining why it must not be fired.
 export function useAliases() {
   return useQuery({
     queryKey: [ALIASES],
@@ -386,6 +408,7 @@ export function useAliases() {
   })
 }
 
+// Unscoped for the same reason as `useAliases` above.
 export function useRoutingPolicies() {
   return useQuery({
     queryKey: [ROUTING_POLICIES],
@@ -785,11 +808,12 @@ export function useRejectPricingRefresh() {
 const KEYS_PAGE_SIZE = 1000
 const KEYS_MAX_PAGES = 100
 
-async function fetchAllKeys(): Promise<ApiKey[]> {
+async function fetchAllKeys(workspaceId?: string): Promise<ApiKey[]> {
   const all: ApiKey[] = []
+  const scope = workspaceId ? `&workspace_id=${workspaceId}` : ""
   for (let page = 0; page < KEYS_MAX_PAGES; page += 1) {
     const rows = await apiFetch<ApiKey[]>(
-      `/v1/keys?skip=${page * KEYS_PAGE_SIZE}&limit=${KEYS_PAGE_SIZE}`,
+      `/v1/keys?skip=${page * KEYS_PAGE_SIZE}&limit=${KEYS_PAGE_SIZE}${scope}`,
     )
     all.push(...rows)
     if (rows.length < KEYS_PAGE_SIZE) {
@@ -799,10 +823,14 @@ async function fetchAllKeys(): Promise<ApiKey[]> {
   return all
 }
 
-export function useKeys() {
+// The workspace is part of the key, not just the request: switching workspaces
+// has to refetch rather than serve the previous one's keys from cache. Same for
+// the two below. An unset id keeps the deployment-wide view, which is what the
+// organization context and a deployment with no workspace selected still want.
+export function useKeys(workspaceId?: string) {
   return useQuery({
-    queryKey: [KEYS],
-    queryFn: fetchAllKeys,
+    queryKey: [KEYS, workspaceId ?? null],
+    queryFn: () => fetchAllKeys(workspaceId),
     staleTime: 60_000,
   })
 }
@@ -1032,6 +1060,7 @@ function usageParams(filters: UsageFilters): URLSearchParams {
       if (one) params.append(key, one)
     }
   }
+  if (filters.workspace_id) params.set("workspace_id", filters.workspace_id)
   if (filters.start_date) params.set("start_date", filters.start_date)
   if (filters.end_date) params.set("end_date", filters.end_date)
   if (filters.status) params.set("status", filters.status)
@@ -1332,5 +1361,291 @@ export function useUsageGroupedSeries(
     // the page falls back to the ungrouped view with a notice instead.
     retry: (failureCount, error) =>
       !(error instanceof ApiError && error.status === 404) && failureCount < 3,
+  })
+}
+
+// ---------- tenancy: organizations, workspaces, memberships ----------
+
+// The tenancy endpoints answer `{ data, count }` and page with skip/limit, all
+// capped at 1000 server-side. The pages want one list, so the walk is bounded
+// the same way fetchAllPricing is: a backend or proxy that ignores `skip` must
+// not turn "fetch everything" into an unbounded loop.
+const TENANCY_PAGE_SIZE = 1000
+const TENANCY_MAX_PAGES = 100
+
+interface Paged<T> {
+  data: T[]
+  count: number
+}
+
+async function fetchAllPaged<T>(path: string): Promise<T[]> {
+  const all: T[] = []
+  for (let page = 0; page < TENANCY_MAX_PAGES; page += 1) {
+    const body = await apiFetch<Paged<T>>(
+      `${path}?skip=${page * TENANCY_PAGE_SIZE}&limit=${TENANCY_PAGE_SIZE}`,
+    )
+    all.push(...body.data)
+    if (body.data.length < TENANCY_PAGE_SIZE) break
+  }
+  return all
+}
+
+// The organization the caller's identity is pointed at, and their standing in
+// it. Every tenancy page reads it first: it names the tenant on screen and
+// decides whether the management controls are offered at all. Read often and
+// changed rarely, so it is cached for a minute like the other management lists.
+export function useOrganizationContext() {
+  return useQuery({
+    queryKey: [ORGANIZATIONS, "context"],
+    queryFn: () => apiFetch<OrganizationContext>("/v1/organizations/me"),
+    staleTime: 60_000,
+  })
+}
+
+// `enabled` because the roster is now read from outside the Organization pages
+// too, to name the owner of an API key. A deployment that does not host the
+// `organizations` surface has no such route to call, so the caller gates on it
+// rather than letting the page 404 on a request it only wanted for a label.
+export function useOrganizationMembers(enabled = true) {
+  return useQuery({
+    queryKey: [ORGANIZATION_MEMBERS],
+    queryFn: () =>
+      fetchAllPaged<OrganizationMember>("/v1/organizations/me/members"),
+    staleTime: 60_000,
+    enabled,
+  })
+}
+
+export function useUpdateOrganization() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: UpdateOrganizationRequest) =>
+      apiFetch<OrganizationContext>("/v1/organizations/me", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [ORGANIZATIONS] })
+    },
+  })
+}
+// The one write path that puts a second row on the roster. The response says
+// which arm of the platform's result union it took: this edition always answers
+// "active", because it has no invitation to send and no way to accept one, and
+// the caller is shown that rather than a generic success.
+export function useAddOrganizationMember() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: CreateOrganizationMemberRequest) =>
+      apiFetch<CreateOrganizationMemberResult>("/v1/organizations/me/members", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [ORGANIZATION_MEMBERS] })
+      // A request may place the new member into workspaces in the same
+      // transaction, so their rosters move with it.
+      void queryClient.invalidateQueries({ queryKey: [WORKSPACES] })
+      // The switcher reads its list from `workspace_memberships` on the
+      // organization context, not from this key, so a roster change that moves
+      // the caller in or out of a workspace has to refresh it too.
+      void queryClient.invalidateQueries({ queryKey: [ORGANIZATIONS] })
+    },
+  })
+}
+
+export function useUpdateOrganizationMember() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      id,
+      body,
+    }: {
+      id: string
+      body: UpdateOrganizationMemberRequest
+    }) =>
+      apiFetch<OrganizationMember>(
+        `/v1/organizations/me/members/${encodeURIComponent(id)}`,
+        { method: "PATCH", body: JSON.stringify(body) },
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [ORGANIZATION_MEMBERS] })
+      // The caller may have changed their own role, which is what the page
+      // gates its controls on.
+      void queryClient.invalidateQueries({ queryKey: [ORGANIZATIONS] })
+    },
+  })
+}
+
+export function useRemoveOrganizationMember() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<void>(`/v1/organizations/me/members/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [ORGANIZATION_MEMBERS] })
+      // A suspended member keeps their workspace rows, so every roster that
+      // resolves a name through the organization list is now stale.
+      void queryClient.invalidateQueries({ queryKey: [WORKSPACES] })
+      // The switcher reads its list from `workspace_memberships` on the
+      // organization context, not from this key, so a roster change that moves
+      // the caller in or out of a workspace has to refresh it too.
+      void queryClient.invalidateQueries({ queryKey: [ORGANIZATIONS] })
+    },
+  })
+}
+
+export function useWorkspaces() {
+  return useQuery({
+    queryKey: [WORKSPACES],
+    queryFn: () => fetchAllPaged<Workspace>("/v1/workspaces"),
+    staleTime: 60_000,
+  })
+}
+
+// One workspace's roster. Nested under the workspaces key so deleting a
+// workspace drops its roster with it.
+export function useWorkspaceMembers(workspaceId: string | null) {
+  return useQuery({
+    queryKey: [WORKSPACES, workspaceId, "members"],
+    queryFn: () =>
+      fetchAllPaged<WorkspaceMember>(
+        `/v1/workspaces/${encodeURIComponent(workspaceId as string)}/members`,
+      ),
+    enabled: workspaceId !== null,
+    staleTime: 60_000,
+  })
+}
+
+export function useCreateWorkspace() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: CreateWorkspaceRequest) =>
+      apiFetch<Workspace>("/v1/workspaces", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [WORKSPACES] })
+      // The switcher reads its list from `workspace_memberships` on the
+      // organization context, not from this key, so a workspace created
+      // here would not be offered and a deleted one would stay selected.
+      void queryClient.invalidateQueries({ queryKey: [ORGANIZATIONS] })
+    },
+  })
+}
+
+export function useUpdateWorkspace() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: UpdateWorkspaceRequest }) =>
+      apiFetch<Workspace>(`/v1/workspaces/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [WORKSPACES] })
+      // The switcher reads its list from `workspace_memberships` on the
+      // organization context, not from this key, so a workspace created
+      // here would not be offered and a deleted one would stay selected.
+      void queryClient.invalidateQueries({ queryKey: [ORGANIZATIONS] })
+    },
+  })
+}
+
+export function useDeleteWorkspace() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<void>(`/v1/workspaces/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [WORKSPACES] })
+      // The switcher reads its list from `workspace_memberships` on the
+      // organization context, not from this key, so a workspace created
+      // here would not be offered and a deleted one would stay selected.
+      void queryClient.invalidateQueries({ queryKey: [ORGANIZATIONS] })
+    },
+  })
+}
+
+export function useAddWorkspaceMember() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      workspaceId,
+      userId,
+      role,
+    }: {
+      workspaceId: string
+      userId: string
+      role: WorkspaceMemberRole
+    }) =>
+      // The role travels as a query parameter, not a body: that is the wire
+      // contract these endpoints were rehomed with.
+      apiFetch<WorkspaceMember>(
+        `/v1/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}?role=${encodeURIComponent(role)}`,
+        { method: "POST" },
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [WORKSPACES] })
+      // The switcher reads its list from `workspace_memberships` on the
+      // organization context, not from this key, so a roster change that moves
+      // the caller in or out of a workspace has to refresh it too.
+      void queryClient.invalidateQueries({ queryKey: [ORGANIZATIONS] })
+    },
+  })
+}
+
+export function useUpdateWorkspaceMemberRole() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      workspaceId,
+      userId,
+      role,
+    }: {
+      workspaceId: string
+      userId: string
+      role: WorkspaceMemberRole
+    }) =>
+      apiFetch<WorkspaceMember>(
+        `/v1/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}?role=${encodeURIComponent(role)}`,
+        { method: "PATCH" },
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [WORKSPACES] })
+      // The switcher reads its list from `workspace_memberships` on the
+      // organization context, not from this key, so a roster change that moves
+      // the caller in or out of a workspace has to refresh it too.
+      void queryClient.invalidateQueries({ queryKey: [ORGANIZATIONS] })
+    },
+  })
+}
+
+export function useRemoveWorkspaceMember() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      workspaceId,
+      userId,
+    }: {
+      workspaceId: string
+      userId: string
+    }) =>
+      apiFetch<void>(
+        `/v1/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [WORKSPACES] })
+      // The switcher reads its list from `workspace_memberships` on the
+      // organization context, not from this key, so a roster change that moves
+      // the caller in or out of a workspace has to refresh it too.
+      void queryClient.invalidateQueries({ queryKey: [ORGANIZATIONS] })
+    },
   })
 }

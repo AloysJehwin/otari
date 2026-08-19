@@ -55,7 +55,33 @@ type NavItemGating =
   | { capability: string; flag?: string }
 
 /** One sidebar link with its deployment, entitlement, and feature-flag gating. */
-export type NavItem = NavItemBase & NavItemGating
+export type NavItem = NavItemBase &
+  NavItemGating & {
+    /**
+     * Destinations nested under this one, rendered as a collapsible group.
+     *
+     * A child declares no gating of its own and inherits the parent's: the
+     * group exists because the pages belong together, and a deployment that
+     * hosts the surface hosts all of them. Children carry no icon either, since
+     * the prototype indents them under the parent's rather than repeating one.
+     */
+    children?: readonly NavChild[]
+  }
+
+/** A destination nested under another, gated with its parent by default. */
+export interface NavChild {
+  to: NavPath
+  label: string
+  /**
+   * The surface this destination needs, when it is not the parent's.
+   *
+   * Grouping is an editorial choice and gating is a fact about the deployment,
+   * so the two can disagree: Guardrails is grouped under Routing, where the
+   * navigation prototype puts it, but the page is served by the tools surface.
+   * Omitted, the child inherits the parent's, which is the ordinary case.
+   */
+  surface?: string
+}
 
 /**
  * A group of links under a shared heading.

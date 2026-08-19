@@ -252,4 +252,58 @@ export type VisionStrategy = NonNullable<
   UpdateSettingsRequest["vision_strategy"]
 >
 
+// ---------------------------------------------------------------------------
+// Tenancy: organizations, workspaces, and the memberships joining them
+//
+// Rehomed from the platform with their shapes intact, which is the point: the
+// pages built on them here are the ones otari.ai's control plane brings across
+// at M5, so a renamed field would have to be reconciled twice.
+// ---------------------------------------------------------------------------
+// A standalone gateway hosts exactly one organization, provisioned at first
+// boot and fixed: the create, switch and delete endpoints are not mounted here,
+// so there is no request shape for any of them to alias.
+export type Organization = Schemas["OrganizationPublic"]
+/** An organization plus the caller's standing in it: what every tenancy page reads first. */
+export type OrganizationContext = Schemas["OrganizationMembershipContextPublic"]
+// The caller's own workspace memberships, carried on the context so the shell
+// can seed its switcher from the call it already makes. Not a directory of the
+// organization's workspaces: listing those is a separate authorized read.
+export type CallerWorkspaceMembership =
+  Schemas["CallerWorkspaceMembershipPublic"]
+export type UpdateOrganizationRequest =
+  Schemas["ActiveOrganizationUpdateRequest"]
+export type OrganizationMember = Schemas["ActiveOrganizationMemberPublic"]
+export type UpdateOrganizationMemberRequest =
+  Schemas["ActiveOrganizationMemberUpdateRequest"]
+export type CreateOrganizationMemberRequest = Defaulted<
+  Schemas["ActiveOrganizationMemberCreateRequest"],
+  "role"
+>
+export type CreateOrganizationMemberResult =
+  Schemas["ActiveOrganizationMemberCreateResultPublic"]
+// Not `Defaulted`: the form states the role it grants rather than leaving it to
+// the server, and `Defaulted` is for the fields the dashboard actually omits.
+export type WorkspaceAssignment = Schemas["WorkspaceAssignmentRequest"]
+
+// The role and status vocabularies, taken from the requests that *set* one
+// rather than restated as literal unions. The gateway publishes them as enums
+// now, so a value this edition refuses cannot reach a picker: the two that
+// matter are that "invited" is a status a membership may hold and not one it may
+// be given, and that a workspace role travels as a query parameter, so its
+// vocabulary is pinned to the operation rather than to a body schema.
+export type MembershipRole =
+  Schemas["ActiveOrganizationMemberCreateRequest"]["role"]
+export type SettableMemberStatus = NonNullable<
+  Schemas["ActiveOrganizationMemberUpdateRequest"]["status"]
+>
+export type WorkspaceMemberRole = NonNullable<
+  NonNullable<
+    operations["add_workspace_member_v1_workspaces__workspace_id__members__user_id__post"]["parameters"]["query"]
+  >["role"]
+>
+export type Workspace = Schemas["WorkspacePublic"]
+export type CreateWorkspaceRequest = Schemas["WorkspaceCreate"]
+export type UpdateWorkspaceRequest = Schemas["WorkspaceUpdate"]
+export type WorkspaceMember = Schemas["WorkspaceMemberPublic"]
+
 export type * from "./local"

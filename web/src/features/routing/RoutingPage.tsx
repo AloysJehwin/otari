@@ -1236,6 +1236,13 @@ function PolicyForm({
 // ---------------------------------------------------------------------------
 
 export function RoutingPage() {
+  // Deliberately unscoped, unlike keys and usage. The gateway stores every
+  // policy and alias in the default workspace on purpose, because resolution
+  // reads a process-wide name-keyed cache: one stored elsewhere would be listed
+  // as scoped while it resolved for everyone. Filtering this list by the
+  // selected workspace would therefore show an empty page while those policies
+  // were live for that workspace's traffic, and hide a policy the moment it was
+  // created. Scope this when resolution is scoped, not before.
   const policies = useRoutingPolicies()
   const aliases = useAliases()
   const deletePolicy = useDeleteRoutingPolicy()

@@ -1,4 +1,5 @@
 import { Button, Card, Chip } from "@heroui/react"
+import { Link } from "@tanstack/react-router"
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
@@ -18,6 +19,7 @@ import {
   accessLabel,
   ModelScopeControl,
 } from "@/features/models/ModelScopeControl"
+import { useMemberAttributionLabels } from "@/features/organization/attribution"
 import { UserComboBox } from "@/features/users/UserComboBox"
 import {
   useCreateKey,
@@ -37,18 +39,14 @@ import {
   InfoBanner,
   PageHeader,
 } from "@/shared/components/ui"
+import { formatDate } from "@/shared/helpers/format"
 import {
   resolveSelectedIds,
   useTableSelection,
 } from "@/shared/helpers/tableSelection"
+import { useSelectedWorkspace } from "@/shared/hooks/SelectedWorkspace"
 
 // ---------- helpers ----------
-
-function absolute(iso: string | null): string {
-  if (!iso) return "—"
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString()
-}
 
 function relative(iso: string | null): string | null {
   if (!iso) return null
@@ -455,8 +453,11 @@ function CreateKeyForm({
 }) {
   const create = useCreateKey()
   const users = useUsers()
+  const { selected: workspace, isLoading: workspaceLoading } =
+    useSelectedWorkspace()
   const [keyName, setKeyName] = useState("")
   const [expiresAt, setExpiresAt] = useState("")
+  const memberLabels = useMemberAttributionLabels()
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [userId, setUserId] = useState("")
   const [allowedModels, setAllowedModels] = useState<string[] | null>(null)
@@ -472,11 +473,23 @@ function CreateKeyForm({
   // API creates as a named user). This is what keeps the dashboard from minting the
   // anonymous virtual users an omitted id would.
   const ownerMissing = userId.trim() === ""
+  // The workspace comes from the organization context, which resolves after the
+  // form paints. Submitting before it does would send no workspace and land the
+  // key in the server's default rather than the one the switcher is showing, so
+  // the button waits for that read. It waits for the read, not for a workspace:
+  // a caller who belongs to none resolves to null and must still be able to
+  // create a key, which the server puts in its default.
+  const workspaceUnresolved = workspaceLoading
 
   const submit = () => {
-    if (create.isPending || !scopeValid || ownerMissing) return
+    if (create.isPending || !scopeValid || ownerMissing || workspaceUnresolved)
+      return
     const body: CreateKeyRequest = {
       key_name: keyName.trim() || null,
+      // The workspace the shell is on. A key belongs to exactly one, and it is
+      // what every request on that key is billed to, so it is decided here
+      // rather than left to the server's default.
+      workspace_id: workspace?.workspace_id,
       user_id: userId.trim(),
       expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
       allowed_models: allowedModels,
@@ -530,6 +543,7 @@ function CreateKeyForm({
           value={userId}
           onChange={setUserId}
           users={users.data ?? []}
+          memberLabels={memberLabels}
         />
         <button
           type="button"
@@ -564,7 +578,12 @@ function CreateKeyForm({
         <div className="flex gap-2">
           <Button
             variant="primary"
-            isDisabled={create.isPending || !scopeValid || ownerMissing}
+            isDisabled={
+              create.isPending ||
+              !scopeValid ||
+              ownerMissing ||
+              workspaceUnresolved
+            }
             onPress={submit}
           >
             {create.isPending ? "Creating…" : "Create key"}
@@ -719,10 +738,14 @@ function AccessChip({ allowed }: { allowed: string[] | null }) {
 }
 
 export function KeysPage() {
-  const keys = useKeys()
+  // Scoped to the workspace the switcher is on: a key belongs to exactly one,
+  // and this page is in the workspace context.
+  const { selected: workspace } = useSelectedWorkspace()
+  const keys = useKeys(workspace?.workspace_id)
   const updateKey = useUpdateKey()
   const rotateKey = useRotateKey()
   const deleteKey = useDeleteKey()
+  const memberLabels = useMemberAttributionLabels()
 
   const [addOpen, setAddOpen] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
@@ -829,14 +852,28 @@ export function KeysPage() {
       {
         id: "owner",
         header: "Owner",
-        cell: (k) =>
-          isVirtualUser(k.user_id) ? (
-            <Chip size="sm" color="default">
-              virtual
-            </Chip>
-          ) : (
-            <code className="text-xs text-muted">{k.user_id ?? "—"}</code>
-          ),
+        // A member is named; anything else keeps the raw id, which for a
+        // hand-made owner like `ci-bot` is already the readable form. The id
+        // stays in the title so the value actually sent on a request is still
+        // recoverable from this column.
+        cell: (k) => {
+          if (isVirtualUser(k.user_id)) {
+            return (
+              <Chip size="sm" color="default">
+                virtual
+              </Chip>
+            )
+          }
+          const member = k.user_id ? memberLabels.get(k.user_id) : undefined
+          if (member) {
+            return (
+              <span className="text-sm text-foreground" title={k.user_id ?? ""}>
+                {member}
+              </span>
+            )
+          }
+          return <code className="text-xs text-muted">{k.user_id ?? "—"}</code>
+        },
       },
       {
         id: "key",
@@ -851,7 +888,7 @@ export function KeysPage() {
         id: "created",
         header: "Created",
         cell: (k) => (
-          <span className="text-muted">{absolute(k.created_at)}</span>
+          <span className="text-muted">{formatDate(k.created_at)}</span>
         ),
       },
       {
@@ -873,7 +910,7 @@ export function KeysPage() {
               k.expires_at ? new Date(k.expires_at).toLocaleString() : undefined
             }
           >
-            {k.expires_at ? absolute(k.expires_at) : "never"}
+            {k.expires_at ? formatDate(k.expires_at) : "never"}
           </span>
         ),
       },
@@ -941,6 +978,7 @@ export function KeysPage() {
       deleteKey.mutate,
       setActive,
       regenerate,
+      memberLabels,
     ],
   )
 
@@ -973,6 +1011,28 @@ export function KeysPage() {
           keys.error ?? updateKey.error ?? rotateKey.error ?? deleteKey.error
         }
       />
+
+      {/* A key's owner and its spending limit are both set elsewhere now, on the
+          organization rail. This page is where an operator arrives looking for
+          them, so it says where they went rather than leaving the sidebar to be
+          re-learned. */}
+      <p className="text-sm text-muted">
+        A key spends against its owner's budget. Owners live under{" "}
+        <Link
+          to="/users"
+          className="font-medium text-link hover:text-link-hover"
+        >
+          Organization → Users
+        </Link>
+        , and their limits under{" "}
+        <Link
+          to="/budgets"
+          className="font-medium text-link hover:text-link-hover"
+        >
+          Spend &amp; budgets
+        </Link>
+        .
+      </p>
 
       {showOnboarding ? (
         <EmptyState

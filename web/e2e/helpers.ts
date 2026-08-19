@@ -12,7 +12,10 @@ export const MASTER_KEY = "e2e-master-key"
 // page has tile-links whose names substring-collide with sidebar items (e.g.
 // "Providers healthy", "Active users", "No budgets configured"), so an unscoped
 // getByRole("link", { name }) is ambiguous there.
-export const nav = (page: Page): Locator => page.getByRole("navigation")
+// The sidebar specifically: the header's breadcrumb is a navigation landmark
+// too, so an unnamed query now matches both.
+export const nav = (page: Page): Locator =>
+  page.getByRole("navigation", { name: "Sidebar" })
 
 export async function login(page: Page): Promise<void> {
   await page.goto("/")
@@ -20,13 +23,48 @@ export async function login(page: Page): Promise<void> {
   await page.locator('input[type="password"]').press("Enter")
   // The sidebar appears once authenticated, regardless of the index landing
   // page.
-  await expect(nav(page).getByRole("link", { name: "Providers" })).toBeVisible()
+  await expect(
+    nav(page).getByRole("link", { name: "Provider credentials" }),
+  ).toBeVisible()
 }
 
 // The dashboard authenticates with a session cookie, but the seeding and
 // assertion helpers below talk to the management API directly as the master key,
 // which the auth dependencies prefer over the cookie. That keeps them usable
 // before `login` has run.
+/**
+ * Cross from the workspace rail onto the organization one.
+ *
+ * The two sidebars never render together, so a spec about an organization
+ * destination has to enter that context first; the footer entry is the only way
+ * in, matching the navigation prototype.
+ */
+export async function openOrganization(page: Page): Promise<void> {
+  await page.getByRole("link", { name: "Organization", exact: true }).click()
+  await expect(
+    nav(page).getByRole("link", { name: "Members & roles" }),
+  ).toBeVisible()
+}
+
+/**
+ * Expand a sidebar group and open one of the destinations nested under it.
+ *
+ * Routing and Tools nest their pages, so their sidebar row expands rather than
+ * navigating; a spec reaching a child has to open the group first. Idempotent
+ * on an already-open group, which is what arriving from a child route leaves.
+ */
+export async function openNested(
+  page: Page,
+  group: string,
+  child: string,
+): Promise<void> {
+  const toggle = nav(page).getByRole("button", { name: group, exact: true })
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") {
+    await toggle.click()
+  }
+  await nav(page).getByRole("link", { name: child, exact: true }).click()
+}
+
 export const authHeaders = {
   Authorization: `Bearer ${MASTER_KEY}`,
   "Content-Type": "application/json",

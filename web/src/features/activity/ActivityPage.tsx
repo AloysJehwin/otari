@@ -57,6 +57,7 @@ import {
   YEAR_SPAN_S,
 } from "@/shared/helpers/timeRange"
 import { useUrlState } from "@/shared/helpers/urlState"
+import { useSelectedWorkspace } from "@/shared/hooks/SelectedWorkspace"
 
 // ---------- formatting ----------
 
@@ -1188,8 +1189,12 @@ export function ActivityPage() {
         ? false
         : undefined
 
+  const { selected: workspace } = useSelectedWorkspace()
   const filters: UsageFilters = useMemo(
     () => ({
+      // From the sidebar's switcher, not from a control on this page: it scopes
+      // the whole shell, and the operator's own filters sit below it.
+      workspace_id: workspace?.workspace_id,
       start_date: win.start,
       end_date: win.end,
       status: statusFilter || undefined,
@@ -1204,6 +1209,7 @@ export function ActivityPage() {
       priced,
     }),
     [
+      workspace,
       win,
       toolFilter,
       statusFilter,
@@ -1255,6 +1261,7 @@ export function ActivityPage() {
   // model filter omitted so the full list stays offered).
   const modelSuggestFilters: UsageFilters = useMemo(
     () => ({
+      workspace_id: workspace?.workspace_id,
       start_date: win.start,
       end_date: win.end,
       status: statusFilter || undefined,
@@ -1267,6 +1274,7 @@ export function ActivityPage() {
       tool: (toolFilter || undefined) as UsageFilters["tool"],
     }),
     [
+      workspace?.workspace_id,
       win,
       statusFilter,
       userFilters,
@@ -1323,6 +1331,7 @@ export function ActivityPage() {
   // (and the picker stays useful) while a drill-down narrows everything else.
   const sourceSuggestFilters: UsageFilters = useMemo(
     () => ({
+      workspace_id: workspace?.workspace_id,
       start_date: win.start,
       end_date: win.end,
       status: statusFilter || undefined,
@@ -1330,7 +1339,14 @@ export function ActivityPage() {
       user_id: userFilters.length > 0 ? userFilters : undefined,
       api_key_id: apiKeyFilters.length > 0 ? apiKeyFilters : undefined,
     }),
-    [win, statusFilter, modelFilters, userFilters, apiKeyFilters],
+    [
+      workspace?.workspace_id,
+      win,
+      statusFilter,
+      modelFilters,
+      userFilters,
+      apiKeyFilters,
+    ],
   )
   const sourceSummary = useUsageSummary(
     sourceSuggestFilters,
@@ -1378,6 +1394,7 @@ export function ActivityPage() {
     : (extentPreset?.bucket ?? "day")
   const contextFilters: UsageFilters = useMemo(
     () => ({
+      workspace_id: workspace?.workspace_id,
       start_date: winOutsideExtent ? win.start : extentWin.start,
       end_date: winOutsideExtent ? win.end : undefined,
       status: statusFilter || undefined,
@@ -1392,6 +1409,7 @@ export function ActivityPage() {
       priced,
     }),
     [
+      workspace?.workspace_id,
       winOutsideExtent,
       toolFilter,
       win,
@@ -1717,6 +1735,12 @@ export function ActivityPage() {
     selection.allMatching
       ? {
           by_filter: true,
+          // First, because it is the widest of them: the switcher scopes the
+          // whole shell, so leaving it out would delete or reprice every other
+          // workspace's imported rows from a view the operator had narrowed to
+          // one. `UsageSelection.workspace_id` exists on the server for exactly
+          // this case.
+          workspace_id: filters.workspace_id,
           model: filters.model,
           user_id: filters.user_id,
           api_key_id: filters.api_key_id,

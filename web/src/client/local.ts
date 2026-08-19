@@ -102,6 +102,11 @@ export interface DashboardBuild {
  * spec for this to be generated from.
  */
 export interface UsageFilters {
+  // The workspace a row was recorded in. Set from the sidebar's switcher rather
+  // than by the operator, so the request log, its counts, and the summary and
+  // series the charts are drawn from all show the workspace the shell is looking
+  // at. Every usage endpoint this object is spread onto takes it.
+  workspace_id?: string
   start_date?: string
   // Upper bound (exclusive). Omitted for a live "up to now" window; set by the
   // analytics previous-period query so its window does not overlap the current one.

@@ -1,4 +1,3 @@
-import { Button } from "@heroui/react"
 import { Link, Outlet, useLocation } from "@tanstack/react-router"
 import { clsx } from "clsx"
 import type {
@@ -8,16 +7,25 @@ import type {
 } from "react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { ConnectionStatus } from "@/app/ConnectionStatus"
+import { AccountMenu } from "@/app/nav/AccountMenu"
+import { Breadcrumbs } from "@/app/nav/Breadcrumbs"
 import {
   NAV_SECTIONS,
+  navContextForPath,
   navItemForPath,
+  navLabelForPath,
+  ORG_NAV_SECTIONS,
   visibleNavSections,
 } from "@/app/nav/registry"
+import type { NavItem } from "@/app/nav/types"
 import { useNavVisibility } from "@/app/nav/useNavVisibility"
+import { WorkspaceSwitcher } from "@/app/nav/WorkspaceSwitcher"
 import { UpdatePrompt } from "@/app/UpdatePrompt"
-import { useAuth } from "@/features/auth/AuthContext"
 import { PricingWarning } from "@/features/models/PricingWarning"
+import { canManage } from "@/features/organization/roles"
+import { useOrganizationContext } from "@/shared/api/hooks"
 import { EmptyState } from "@/shared/components/ui"
+import { useSelectedWorkspace } from "@/shared/hooks/SelectedWorkspace"
 
 const MIN_SIDEBAR = 200
 const MAX_SIDEBAR = 480
@@ -87,8 +95,100 @@ const navLinkClass = (collapsed: boolean) =>
 const NAV_ACTIVE = "bg-primary-subtle text-primary-subtle-foreground"
 const NAV_INACTIVE = "text-muted hover:bg-surface-alt hover:text-foreground"
 
+/**
+ * A sidebar entry with destinations nested under it, drawn the way the
+ * navigation prototype draws Routing and Tools: a row that expands rather than
+ * navigates, and indented children below it.
+ *
+ * Open when the current route is one of its children, so arriving by URL shows
+ * where you are rather than a collapsed group. Held in state after that, so
+ * closing it stays closed while you read the page it opened.
+ *
+ * Not rendered when the rail is collapsed: there is no width for the labels, and
+ * the parent's icon links straight to its own page instead.
+ */
+function NavGroup({
+  item,
+  currentPath,
+  onNavigate,
+  isVisible,
+}: {
+  item: NavItem
+  currentPath: string
+  onNavigate: () => void
+  isVisible: (item: NavItem) => boolean
+}) {
+  // A child declaring its own surface is gated on it. Without this the field
+  // was decoration: Guardrails is grouped under Routing but served by the tools
+  // surface, so a deployment without that surface kept the link and landed on
+  // the "not available here" panel.
+  const children = (item.children ?? []).filter((child) =>
+    child.surface ? isVisible({ ...item, surface: child.surface }) : true,
+  )
+  const holdsCurrent = children.some((child) => child.to === currentPath)
+  const [open, setOpen] = useState(holdsCurrent)
+  // Follows the route when navigation lands inside the group from elsewhere
+  // (a link on a page, a bookmark), without fighting a manual close.
+  const [lastHeld, setLastHeld] = useState(holdsCurrent)
+  if (holdsCurrent !== lastHeld) {
+    setLastHeld(holdsCurrent)
+    if (holdsCurrent) setOpen(true)
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className={clsx(
+          navLinkClass(false),
+          "justify-between",
+          holdsCurrent ? NAV_ACTIVE : NAV_INACTIVE,
+        )}
+      >
+        <span className="flex items-center gap-3">
+          {item.icon}
+          {item.label}
+        </span>
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          className={clsx(
+            "h-4 w-4 shrink-0 transition-transform motion-reduce:transition-none",
+            open && "rotate-90",
+          )}
+        >
+          <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open
+        ? children.map((child) => (
+            <Link
+              key={child.to}
+              to={child.to}
+              activeOptions={{ exact: true }}
+              onClick={onNavigate}
+              className={clsx(
+                navLinkClass(false),
+                // Indented to the parent's label rather than its icon, which is
+                // what marks it as nested without repeating a glyph.
+                "pl-11",
+                currentPath === child.to ? NAV_ACTIVE : NAV_INACTIVE,
+              )}
+            >
+              {child.label}
+            </Link>
+          ))
+        : null}
+    </div>
+  )
+}
+
 export function AppShell() {
-  const { logout } = useAuth()
   // Navigation is data: the shell renders whatever the registry declares and
   // decides visibility from the deployment, the entitlements, and the flags,
   // rather than each page asking what it is running against.
@@ -100,9 +200,30 @@ export function AppShell() {
   // entry and is never gated.
   const currentItem = navItemForPath(pathname)
   const routeIsGatedOff = currentItem !== undefined && !isVisible(currentItem)
+  // Which of the two sidebars this path belongs under. The organization context
+  // is a separate rail reached from the footer, not a section inside the
+  // workspace one, so the two never render together.
+  const navContext = navContextForPath(pathname)
+  const inOrganization = navContext === "organization"
   // Filtered before it is indexed, so the divider and top margin below key off
   // the first *rendered* section rather than the first registered one.
-  const visibleSections = visibleNavSections(NAV_SECTIONS, isVisible)
+  const visibleSections = visibleNavSections(
+    inOrganization ? ORG_NAV_SECTIONS : NAV_SECTIONS,
+    isVisible,
+  )
+  const organization = useOrganizationContext()
+  const { selected: selectedWorkspace } = useSelectedWorkspace()
+  // Always true in a standalone deployment, where the one session is the local
+  // operator and it owns the organization the gateway provisioned for itself.
+  // Written anyway because it becomes load-bearing the moment per-user sign-in
+  // lands (otari-ai#1716), and because an overlay build can already be reached
+  // by someone who is not an admin.
+  // Fails open when the context errors rather than resolving false: Users,
+  // budgets and settings are reachable only through this entry, the routes still
+  // work by URL, and the server authorizes every request behind it regardless.
+  // Hiding the way there because one query failed strands three destinations.
+  const managesOrganization =
+    canManage(organization.data) || organization.isError
 
   const asideRef = useRef<HTMLElement>(null)
   const mainRef = useRef<HTMLElement>(null)
@@ -286,47 +407,6 @@ export function AppShell() {
       >
         Skip to main content
       </button>
-      <header
-        inert={backgroundInert}
-        className="flex shrink-0 items-center justify-between border-b border-border bg-surface px-5 py-3"
-      >
-        <div className="flex items-center gap-2.5">
-          <button
-            type="button"
-            ref={toggleRef}
-            onClick={() => setMobileNavOpen((value) => !value)}
-            aria-label={mobileNavOpen ? "Close navigation" : "Open navigation"}
-            aria-expanded={mobileNavOpen}
-            aria-controls="app-sidebar"
-            className="-ml-1 flex h-8 w-8 items-center justify-center rounded-lg text-muted transition-colors hover:bg-surface-alt hover:text-foreground md:hidden"
-          >
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              className="h-5 w-5"
-            >
-              <path
-                d="M4 6h16M4 12h16M4 18h16"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-          <img src="/favicon.svg" alt="" className="h-7 w-7 shrink-0" />
-          <span className="text-base font-semibold text-foreground">Otari</span>
-        </div>
-        <Button
-          size="sm"
-          variant="outline"
-          onPress={logout}
-          aria-label="Sign out"
-        >
-          Sign out
-        </Button>
-      </header>
       <UpdatePrompt />
       <ConnectionStatus />
       <PricingWarning />
@@ -357,7 +437,7 @@ export function AppShell() {
           onKeyDown={isMobile && mobileNavOpen ? trapFocus : undefined}
           style={isMobile ? undefined : { width }}
           className={clsx(
-            "flex flex-col border-r border-border bg-surface focus:outline-none",
+            "flex flex-col border-r border-border bg-background-alt focus:outline-none",
             isMobile
               ? clsx(
                   "fixed inset-y-0 left-0 z-40 w-[17rem] shadow-xl transition-transform duration-200",
@@ -369,37 +449,57 @@ export function AppShell() {
                 ),
           )}
         >
-          {/* A round chevron on the sidebar's edge toggles collapse — floats over
-              the border for a polished, VS Code / Notion-style affordance.
-              Desktop-only: on mobile the drawer is dismissed from the header or
-              backdrop instead. */}
-          <button
-            type="button"
-            onClick={() => setCollapsed((value) => !value)}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-pressed={collapsed}
-            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            className="absolute -right-3 top-4 z-30 hidden h-6 w-6 items-center justify-center rounded-full border border-border bg-surface text-muted shadow-sm transition-colors hover:border-accent hover:text-accent md:flex"
-          >
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
+          {/* The scope the rail below belongs to. In the workspace context that
+              is the switcher; in the organization context it is the way back
+              out, which is how the prototype leaves that rail. */}
+          {inOrganization ? (
+            <Link
+              to="/"
+              onClick={() => setMobileNavOpen(false)}
               className={clsx(
-                "h-3.5 w-3.5 transition-transform",
-                collapsed && "rotate-180",
+                navLinkClass(effectiveCollapsed),
+                NAV_INACTIVE,
+                effectiveCollapsed ? "mx-2 mt-3" : "mx-3 mt-3",
               )}
+              aria-label={
+                effectiveCollapsed
+                  ? `Back to ${selectedWorkspace?.name ?? "workspace"}`
+                  : undefined
+              }
+              title={
+                effectiveCollapsed
+                  ? `Back to ${selectedWorkspace?.name ?? "workspace"}`
+                  : undefined
+              }
             >
-              <path
-                d="M15 6l-6 6 6 6"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                className="h-5 w-5 shrink-0"
+              >
+                <path
+                  d="M15 6l-6 6 6 6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              {effectiveCollapsed
+                ? null
+                : `Back to ${selectedWorkspace?.name ?? "workspace"}`}
+            </Link>
+          ) : (
+            <div className="pt-3">
+              <WorkspaceSwitcher collapsed={effectiveCollapsed} />
+            </div>
+          )}
           <nav
+            // Named because the header's breadcrumb is a navigation landmark
+            // too, and two unnamed ones give a screen-reader user no way to tell
+            // the rail from the trail.
+            aria-label="Sidebar"
             className={clsx(
               "flex flex-col py-4",
               effectiveCollapsed ? "px-2" : "px-3",
@@ -425,96 +525,126 @@ export function AppShell() {
                     <div className="mx-1 mb-2 border-t border-border" />
                   ) : null}
                   <div className="flex flex-col gap-1">
-                    {items.map((item) => (
-                      <Link
-                        key={item.to}
-                        to={item.to}
-                        activeProps={{ className: NAV_ACTIVE }}
-                        inactiveProps={{ className: NAV_INACTIVE }}
-                        // Tapping a destination dismisses the mobile drawer so the
-                        // page it navigated to is visible, not hidden behind it.
-                        onClick={() => setMobileNavOpen(false)}
-                        aria-label={effectiveCollapsed ? item.label : undefined}
-                        title={effectiveCollapsed ? item.label : undefined}
-                        className={navLinkClass(effectiveCollapsed)}
-                      >
-                        {item.icon}
-                        {effectiveCollapsed ? null : item.label}
-                      </Link>
-                    ))}
+                    {items.map((item) =>
+                      item.children && !effectiveCollapsed ? (
+                        <NavGroup
+                          key={item.to}
+                          item={item}
+                          currentPath={pathname}
+                          onNavigate={() => setMobileNavOpen(false)}
+                          isVisible={isVisible}
+                        />
+                      ) : (
+                        <Link
+                          key={item.to}
+                          to={item.to}
+                          // Exact, because the default is a prefix match: on
+                          // /organization/members that leaves `aria-current` on
+                          // "Organization" as well as on the child. The class
+                          // below was already driven from the registry; this is
+                          // the half a screen reader reads.
+                          activeOptions={{ exact: true }}
+                          // Highlighted from the registry's own answer rather than
+                          // from `activeProps`, whose default match is a prefix
+                          // one: on `/organization/members` that lights up
+                          // "General" as well, since `/organization` is its parent
+                          // route. `navItemForPath` prefers the exact entry, and a
+                          // future child route (`/routing/new`) still resolves to
+                          // its parent, which is the highlight that route wants.
+                          className={clsx(
+                            navLinkClass(effectiveCollapsed),
+                            currentItem?.to === item.to
+                              ? NAV_ACTIVE
+                              : NAV_INACTIVE,
+                          )}
+                          // Tapping a destination dismisses the mobile drawer so the
+                          // page it navigated to is visible, not hidden behind it.
+                          onClick={() => setMobileNavOpen(false)}
+                          aria-label={
+                            effectiveCollapsed ? item.label : undefined
+                          }
+                          title={effectiveCollapsed ? item.label : undefined}
+                        >
+                          {item.icon}
+                          {effectiveCollapsed ? null : item.label}
+                        </Link>
+                      ),
+                    )}
                   </div>
                 </div>
               )
             })}
           </nav>
-          {/* Footer links, pinned to the bottom of the rail. The user guide is the
-              dashboard's own docs, bundled with the running gateway (see DocsPage);
-              otari.ai is a subtler pointer to the hosted product below it. */}
-          <div className="mt-auto flex flex-col gap-1 pb-3">
-            <Link
-              to="/docs"
-              activeProps={{ className: NAV_ACTIVE }}
-              inactiveProps={{ className: NAV_INACTIVE }}
-              // Tapping dismisses the mobile drawer, like the primary nav above.
-              onClick={() => setMobileNavOpen(false)}
-              aria-label={effectiveCollapsed ? "User guide" : undefined}
-              title={effectiveCollapsed ? "User guide" : undefined}
-              className={clsx(
-                navLinkClass(effectiveCollapsed),
-                // Indented by a margin rather than the nav's padding: this block
-                // sits outside <nav>, pinned to the bottom of the rail.
-                effectiveCollapsed ? "mx-2" : "mx-3",
-              )}
-            >
-              {/* An open book: the operator guide for this dashboard. Decorative;
-                  the link is labeled by its text (or aria-label when collapsed). */}
-              <svg
-                aria-hidden="true"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                className="h-5 w-5 shrink-0"
+          {/* The account block, set off by a rule as in the navigation prototype:
+              the way onto the organization rail, the bundled guide, and the
+              account control whose menu carries appearance and sign-out. */}
+          <div className="mt-auto flex flex-col gap-1 border-t border-border pt-2 pb-3">
+            {/* The way into the organization rail. Only in the workspace
+                context, since the organization one has its own way back, and
+                only for someone who manages the organization: it is the single
+                destination the prototype hides outright rather than degrading
+                to read-only.
+
+                Drawn as a bordered row with a trailing chevron rather than as
+                another muted link, because it is the only control here that
+                changes context rather than opening a page, and because Users,
+                Budgets and Settings all moved behind it: an operator upgrading
+                from a sidebar that listed them needs to find this. */}
+            {!inOrganization && managesOrganization ? (
+              <Link
+                to="/organization/members"
+                onClick={() => setMobileNavOpen(false)}
+                className={clsx(
+                  navLinkClass(effectiveCollapsed),
+                  "border border-border bg-surface text-foreground transition-colors hover:border-accent hover:bg-surface-alt",
+                  effectiveCollapsed ? "mx-2" : "mx-3",
+                )}
+                aria-label={effectiveCollapsed ? "Organization" : undefined}
+                title={
+                  effectiveCollapsed
+                    ? "Organization: members, spend and budgets, users, settings"
+                    : undefined
+                }
               >
-                <path
-                  d="M12 6.5C10.5 5 8 4.5 4 4.5V18c4 0 6.5.5 8 2 1.5-1.5 4-2 8-2V4.5c-4 0-6.5.5-8 2z"
-                  strokeLinejoin="round"
-                />
-                <path d="M12 6.5V20" strokeLinecap="round" />
-              </svg>
-              {effectiveCollapsed ? null : "User guide"}
-            </Link>
-            <a
-              href="https://otari.ai"
-              target="_blank"
-              rel="noreferrer"
-              title="otari.ai: the hosted Otari gateway"
-              className={clsx(
-                "flex items-center rounded-lg py-2 text-xs font-medium text-muted transition-colors hover:bg-surface-alt hover:text-link",
-                effectiveCollapsed
-                  ? "mx-2 justify-center px-0"
-                  : "mx-3 gap-2 px-3",
-              )}
-            >
-              <svg
-                aria-hidden="true"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                className="h-4 w-4 shrink-0"
-              >
-                <path
-                  d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              {effectiveCollapsed ? null : (
-                <span className="flex-1">
-                  otari.ai <span aria-hidden>↗</span>
-                </span>
-              )}
-            </a>
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  className="h-5 w-5 shrink-0"
+                >
+                  <circle cx="12" cy="12" r="3" />
+                  <path
+                    d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                {effectiveCollapsed ? null : (
+                  <>
+                    Organization
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      className="ml-auto h-4 w-4 shrink-0 text-muted"
+                    >
+                      <path
+                        d="M9 6l6 6-6 6"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </>
+                )}
+              </Link>
+            ) : null}
+            {/* One control, not a stack of links: the guide, appearance, and
+                sign-out all live in its menu, which is how the prototype ends
+                the rail. Sign-out used to sit in the page header. */}
+            <AccountMenu collapsed={effectiveCollapsed} />
           </div>
           {collapsed || isMobile ? null : (
             // biome-ignore lint/a11y/useSemanticElements: <hr> is a thematic break; this is a keyboard-operable resize handle
@@ -538,26 +668,91 @@ export function AppShell() {
             />
           )}
         </aside>
-        <main
-          ref={mainRef}
-          id="main-content"
-          // tabIndex={-1} lets the skip link move focus here programmatically
-          // without adding the region itself to the natural tab order.
-          tabIndex={-1}
-          inert={backgroundInert}
-          className="flex-1 overflow-y-auto focus:outline-none"
-        >
-          <div className="mx-auto flex max-w-[1800px] flex-col gap-6 px-4 py-5 md:px-6 md:py-6">
-            {routeIsGatedOff ? (
-              <EmptyState
-                title={`${currentItem.label} is not available here`}
-                description="This deployment does not serve that page. Pick a destination from the sidebar."
-              />
-            ) : (
-              <Outlet />
-            )}
-          </div>
-        </main>
+        {/* The right-hand pane: the header sits beside the rail rather than above
+            it, which is what lets the sidebar run the full height of the window. */}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <header
+            inert={backgroundInert}
+            className="flex shrink-0 items-center justify-between border-b border-border bg-surface px-5 py-3"
+          >
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                ref={toggleRef}
+                onClick={() => setMobileNavOpen((value) => !value)}
+                aria-label={
+                  mobileNavOpen ? "Close navigation" : "Open navigation"
+                }
+                aria-expanded={mobileNavOpen}
+                aria-controls="app-sidebar"
+                className="-ml-1 flex h-8 w-8 items-center justify-center rounded-lg text-muted transition-colors hover:bg-surface-alt hover:text-foreground md:hidden"
+              >
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  className="h-5 w-5"
+                >
+                  <path
+                    d="M4 6h16M4 12h16M4 18h16"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+              {/* Collapse lives here, at the head of the content pane, rather
+                  than floating on the rail's edge: the rail now runs the full
+                  height of the window and has no edge above the fold to hang it
+                  on. Desktop-only, as before; on mobile the drawer is dismissed
+                  from the control to its left or from the backdrop. */}
+              <button
+                type="button"
+                onClick={() => setCollapsed((value) => !value)}
+                aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                aria-pressed={collapsed}
+                title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                className="-ml-1 hidden h-7 w-7 items-center justify-center rounded-lg text-muted transition-colors hover:bg-surface-alt hover:text-foreground md:flex"
+              >
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  className="h-4 w-4"
+                >
+                  <rect x="3" y="4" width="18" height="16" rx="2" />
+                  <path d="M9 4v16" strokeLinecap="round" />
+                </svg>
+              </button>
+              <Breadcrumbs pathname={pathname} />
+            </div>
+          </header>
+          <main
+            ref={mainRef}
+            id="main-content"
+            // tabIndex={-1} lets the skip link move focus here programmatically
+            // without adding the region itself to the natural tab order.
+            tabIndex={-1}
+            inert={backgroundInert}
+            className="flex-1 overflow-y-auto focus:outline-none"
+          >
+            <div className="mx-auto flex max-w-[1800px] flex-col gap-6 px-4 py-5 md:px-6 md:py-6">
+              {routeIsGatedOff ? (
+                <EmptyState
+                  // The leaf's name, not the group's: someone who followed a
+                  // link to Guardrails should not be told "Routing" is missing.
+                  title={`${navLabelForPath(pathname) ?? currentItem.label} is not available here`}
+                  description="This deployment does not serve that page. Pick a destination from the sidebar."
+                />
+              ) : (
+                <Outlet />
+              )}
+            </div>
+          </main>
+        </div>
       </div>
     </div>
   )

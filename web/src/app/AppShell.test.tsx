@@ -1,17 +1,18 @@
-import { act, screen } from "@testing-library/react"
+import { act, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { AppShell } from "@/app/AppShell"
 import { Provider } from "@/app/provider"
 import type { DeploymentBootstrap } from "@/client"
+import { SelectedWorkspaceProvider } from "@/shared/hooks/SelectedWorkspace"
 import { DeploymentProvider } from "@/shared/hooks/useDeployment"
 import type { Entitlements } from "@/shared/hooks/useEntitlements"
 import {
   BASE_CAPABILITIES,
   EntitlementProvider,
 } from "@/shared/hooks/useEntitlements"
-import { bootstrap } from "@/tests/fixtures"
+import { bootstrap, organizationContext } from "@/tests/fixtures"
 import { renderWithRouter } from "@/tests/router"
 
 // jsdom has no layout engine, so `md:hidden` / responsive classes never take
@@ -60,13 +61,23 @@ function renderShell(
     ...options.entitlements,
   }
   const url = options.url ?? "/"
+  // The shell reads the organization context to decide whether to offer the way
+  // into that rail, and the switcher reads it for the names it shows. Stubbed
+  // here so the sidebar behaves as it does in front of a real gateway.
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+    Response.json(organizationContext()),
+  )
   return renderWithRouter(<div>PAGE CONTENT</div>, {
     url,
     shell: (
       <Provider>
         <DeploymentProvider value={deployment}>
           <EntitlementProvider value={entitlements}>
-            <AppShell />
+            {/* The shell reads the selected workspace for its switcher and its
+                way back out of the organization rail. */}
+            <SelectedWorkspaceProvider>
+              <AppShell />
+            </SelectedWorkspaceProvider>
           </EntitlementProvider>
         </DeploymentProvider>
       </Provider>
@@ -113,7 +124,7 @@ describe("AppShell responsive layout", () => {
     await renderShell()
 
     await user.click(screen.getByRole("button", { name: "Open navigation" }))
-    await user.click(screen.getByRole("link", { name: "Providers" }))
+    await user.click(screen.getByRole("link", { name: "Provider credentials" }))
 
     expect(await screen.findByText("PROVIDERS PAGE")).toBeInTheDocument()
     // Navigating closes the drawer so the page it landed on is not hidden behind it.
@@ -133,17 +144,16 @@ describe("AppShell responsive layout", () => {
     await renderShell()
 
     const overview = screen.getByRole("link", { name: "Overview" })
-    const providers = screen.getByRole("link", { name: "Providers" })
+    const providers = screen.getByRole("link", { name: "Provider credentials" })
     expect(overview).toHaveAttribute("aria-current", "page")
     expect(providers).not.toHaveAttribute("aria-current")
 
     await user.click(providers)
 
     expect(await screen.findByText("PROVIDERS PAGE")).toBeInTheDocument()
-    expect(screen.getByRole("link", { name: "Providers" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    )
+    expect(
+      screen.getByRole("link", { name: "Provider credentials" }),
+    ).toHaveAttribute("aria-current", "page")
     expect(screen.getByRole("link", { name: "Overview" })).not.toHaveAttribute(
       "aria-current",
     )
@@ -302,11 +312,13 @@ describe("AppShell responsive layout", () => {
 
   it("links to the bundled user guide from the sidebar footer", async () => {
     mockMatchMedia(false)
+    const user = userEvent.setup()
     await renderShell()
 
-    // A footer link points operators at the guide bundled with this dashboard,
-    // discoverable without hunting for a separate docs site.
-    const guideLink = screen.getByRole("link", { name: "User guide" })
+    // Still reachable, now from the account menu rather than as its own row:
+    // the footer is one control, and the guide is one of the things it opens.
+    await user.click(screen.getByRole("button", { name: "Account" }))
+    const guideLink = await screen.findByRole("link", { name: "User guide" })
     expect(guideLink).toHaveAttribute("href", "/docs")
   })
 
@@ -347,22 +359,50 @@ describe("AppShell surface gating", () => {
     await renderShell()
 
     // Every label, not a sample: a surface misspelled on a NAV entry hides that
-    // destination in every deployment, and only the full list catches it.
-    for (const label of [
+    // destination in every deployment, and only the full list catches it. Kept
+    // as an exact comparison rather than a loop of presence checks, because a
+    // subset check keeps passing while the list quietly stops being every label
+    // (which is what happened when the tenancy section landed).
+    expect(
+      within(screen.getByRole("navigation", { name: "Sidebar" }))
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual([
       "Overview",
       "Activity",
       "Usage",
-      "Providers",
-      "Users",
-      "API keys",
-      "Budgets",
       "Models",
-      "Routing",
-      "Tools & Guardrails",
+      "API keys",
+      "Provider credentials",
+      "Members",
+    ])
+    // Routing and Tools nest destinations, so they expand rather than
+    // navigate; their children are links once the group is open.
+    expect(
+      within(screen.getByRole("navigation", { name: "Sidebar" }))
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["Routing", "Tools"])
+  })
+
+  it("renders every organization destination on that rail", async () => {
+    mockMatchMedia(false)
+    // Same reasoning as above, for the other context: the organization rail is
+    // its own registry, and nothing else compares it against a full list.
+    await renderShell(bootstrap(), { url: "/organization/members" })
+
+    expect(
+      within(screen.getByRole("navigation", { name: "Sidebar" }))
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual([
+      "Members & roles",
+      "Workspaces",
+      "Spend & budgets",
+      "Users",
+      "Organization",
       "Settings",
-    ]) {
-      expect(screen.getByRole("link", { name: label })).toBeInTheDocument()
-    }
+    ])
   })
 
   it("hides a destination whose surface the deployment does not host", async () => {
@@ -378,17 +418,19 @@ describe("AppShell surface gating", () => {
     expect(screen.queryByRole("link", { name: "API keys" })).toBeNull()
     // Ungated and still present: the index is the deployment's front page.
     expect(screen.getByRole("link", { name: "Overview" })).toBeInTheDocument()
-    expect(screen.getByRole("link", { name: "Providers" })).toBeInTheDocument()
+    expect(
+      screen.getByRole("link", { name: "Provider credentials" }),
+    ).toBeInTheDocument()
   })
 
   it("drops a section header once its whole group is gated away", async () => {
     mockMatchMedia(false)
     await renderShell(bootstrap({ surfaces: ["models"] }))
 
-    // "Observability" labels Activity and Usage; with neither served, an empty
+    // "Observe" labels Activity and Usage; with neither served, an empty
     // heading over nothing is worse than no heading.
-    expect(screen.queryByText("Observability")).toBeNull()
-    expect(screen.getByText("Catalog")).toBeInTheDocument()
+    expect(screen.queryByText("Observe")).toBeNull()
+    expect(screen.getByText("Gateway")).toBeInTheDocument()
   })
 })
 
@@ -408,9 +450,10 @@ describe("AppShell entitlement and flag gating", () => {
     // would silently drop a page from the sidebar of every gateway.
     await renderShell(bootstrap(), { entitlements: { capabilities: [] } })
 
-    expect(screen.getByRole("link", { name: "Routing" })).toBeInTheDocument()
+    // Routing nests destinations, so it is the group's expander.
+    expect(screen.getByRole("button", { name: "Routing" })).toBeInTheDocument()
     expect(screen.getByRole("link", { name: "Models" })).toBeInTheDocument()
-    expect(screen.getByText("Catalog")).toBeInTheDocument()
+    expect(screen.getByText("Gateway")).toBeInTheDocument()
   })
 
   it("answers a gated-off destination with a panel, not the page", async () => {
@@ -425,9 +468,38 @@ describe("AppShell entitlement and flag gating", () => {
     })
 
     expect(
-      await screen.findByText("Providers is not available here"),
+      await screen.findByText("Provider credentials is not available here"),
     ).toBeInTheDocument()
     expect(screen.queryByText("PAGE CONTENT")).toBeNull()
+  })
+
+  it("highlights one link on a nested route, and names it correctly", async () => {
+    mockMatchMedia(false)
+    // /organization/members is a child route of /organization in the generated
+    // tree, and both are entries on the organization rail. TanStack's own
+    // `activeProps` matches a parent as active, so the sidebar would light up
+    // both; the shell drives the highlight from navItemForPath instead, which
+    // prefers the exact entry.
+    await renderShell(bootstrap(), { url: "/organization/members" })
+
+    const members = await screen.findByRole("link", { name: "Members & roles" })
+    const parent = screen.getByRole("link", { name: "Organization" })
+    expect(members.className).toContain("bg-primary-subtle")
+    expect(parent.className).not.toContain("bg-primary-subtle")
+  })
+
+  it("names a gated-off child route after the child, not its parent", async () => {
+    mockMatchMedia(false)
+    // Same prefix collision, seen from the panel: resolving the parent would
+    // tell someone who followed a /organization/members link that
+    // "Organization" is not available here.
+    await renderShell(bootstrap({ surfaces: ["models"] }), {
+      url: "/organization/members",
+    })
+
+    expect(
+      await screen.findByText("Members & roles is not available here"),
+    ).toBeInTheDocument()
   })
 
   it("still renders a destination that passes every axis", async () => {
@@ -447,5 +519,146 @@ describe("AppShell entitlement and flag gating", () => {
     })
 
     expect(await screen.findByText("PAGE CONTENT")).toBeInTheDocument()
+  })
+
+  it("swaps the whole rail when the route is an organization destination", async () => {
+    mockMatchMedia(false)
+    await renderShell(bootstrap(), { url: "/organization/members" })
+
+    // The two rails never render together: entering the organization context
+    // replaces the workspace nav rather than expanding a section inside it.
+    expect(
+      await screen.findByRole("link", { name: "Members & roles" }),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole("link", { name: "API keys" })).toBeNull()
+    expect(screen.queryByRole("link", { name: "Activity" })).toBeNull()
+  })
+
+  it("offers a way into the organization rail, and a way back out", async () => {
+    mockMatchMedia(false)
+    await renderShell()
+
+    // In: a footer entry, not a nav section.
+    const enter = await screen.findByRole("link", { name: "Organization" })
+    expect(enter).toHaveAttribute("href", "/organization/members")
+    // Out only exists on the other rail.
+    expect(screen.queryByText(/^Back to /)).toBeNull()
+  })
+
+  it("leaves the organization rail by its own way back", async () => {
+    mockMatchMedia(false)
+    await renderShell(bootstrap(), { url: "/organization/members" })
+
+    // The organization rail has no switcher; it has the one link back to where
+    // the shell opened. ("Organization" is a destination *on* this rail, so its
+    // absence is not what distinguishes the two.)
+    expect(await screen.findByText(/^Back to /)).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Switch workspace" }),
+    ).toBeNull()
+  })
+
+  it("expands a nav group to reveal its nested destinations", async () => {
+    mockMatchMedia(false)
+    const user = userEvent.setup()
+    await renderShell()
+
+    // Collapsed to start: the children are not in the tree at all, so they are
+    // not reachable by tab or by a screen reader while the group is shut.
+    expect(screen.queryByRole("link", { name: "Web search" })).toBeNull()
+
+    await user.click(screen.getByRole("button", { name: "Tools" }))
+    expect(screen.getByRole("link", { name: "Web search" })).toBeInTheDocument()
+    expect(
+      screen.getByRole("link", { name: "Code execution" }),
+    ).toBeInTheDocument()
+  })
+
+  it("opens the group that holds the current route, without a click", async () => {
+    mockMatchMedia(false)
+    // Arriving by bookmark or shared URL should show where you are rather than
+    // a shut group that hides it.
+    await renderShell(bootstrap(), { url: "/tools/web-search" })
+
+    expect(
+      await screen.findByRole("button", { name: "Tools", expanded: true }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole("link", { name: "Web search" })).toBeInTheDocument()
+  })
+
+  it("signs out from the account menu rather than the page header", async () => {
+    mockMatchMedia(false)
+    const user = userEvent.setup()
+    await renderShell()
+
+    // The header carried this until the sidebar grew an account block.
+    expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull()
+    await user.click(screen.getByRole("button", { name: "Account" }))
+    expect(
+      await screen.findByRole("button", { name: "Sign out" }),
+    ).toBeInTheDocument()
+  })
+
+  it("names the scope and the page, leaving out an organization there is one of", async () => {
+    mockMatchMedia(false)
+    await renderShell()
+
+    // Standalone has exactly one organization and no way to mint a second, so
+    // naming it on every page is a segment that never disambiguates anything.
+    const crumb = await screen.findByLabelText("Breadcrumb")
+    expect(crumb).toHaveTextContent("Overview")
+    expect(crumb).not.toHaveTextContent(/organization/i)
+  })
+
+  it("names a nested destination after itself, not after its group", async () => {
+    mockMatchMedia(false)
+    // `navItemForPath` answers with the entry that gates a path, which for a
+    // child is its parent; a breadcrumb wants the leaf.
+    await renderShell(bootstrap(), { url: "/tools/web-search" })
+
+    expect(await screen.findByLabelText("Breadcrumb")).toHaveTextContent(
+      "Web search",
+    )
+  })
+
+  it("leads the trail with the organization when a deployment can hold several", async () => {
+    mockMatchMedia(false)
+    // The only way to exercise this: no gateway in this repository reports
+    // `hosted` (bootstrap.py answers standalone or hybrid), and the endpoints
+    // that would mint a second organization are not mounted in standalone. So
+    // the multi-organization trail has no live deployment to be seen on, and
+    // this is what keeps it from rotting until the hosted shell arrives.
+    await renderShell(bootstrap({ deployment_type: "hosted" }))
+
+    const crumb = await screen.findByLabelText("Breadcrumb")
+    expect(crumb).toHaveTextContent("Default Organization")
+    expect(crumb).toHaveTextContent("Overview")
+  })
+
+  it("drops a nested destination whose own surface the deployment lacks", async () => {
+    mockMatchMedia(false)
+    const user = userEvent.setup()
+    // Guardrails is grouped under Routing but served by the tools surface. The
+    // link used to render anyway and land on the "not available here" panel.
+    await renderShell(bootstrap({ surfaces: ["routing"] }))
+
+    await user.click(screen.getByRole("button", { name: "Routing" }))
+    expect(screen.getByRole("link", { name: "Policies" })).toBeInTheDocument()
+    expect(screen.queryByRole("link", { name: "Guardrails" })).toBeNull()
+  })
+
+  it("marks one link as the current page on a nested route", async () => {
+    mockMatchMedia(false)
+    // TanStack's Link matches a prefix by default, so /organization/members
+    // left `aria-current` on "Organization" too. The className was already
+    // driven from the registry; this is the half a screen reader reads.
+    await renderShell(bootstrap(), { url: "/organization/members" })
+
+    await screen.findByRole("link", { name: "Members & roles" })
+    const current = screen
+      .getAllByRole("link")
+      .filter((link) => link.getAttribute("aria-current") === "page")
+      .map((link) => link.textContent)
+    expect(current).toEqual(["Members & roles"])
   })
 })

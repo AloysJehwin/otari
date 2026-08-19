@@ -1,6 +1,14 @@
 import { expect, type Locator, type Page, test } from "@playwright/test"
 
-import { dismissComboBox, gotoRoute, login, nav, tableRows } from "./helpers"
+import {
+  dismissComboBox,
+  gotoRoute,
+  login,
+  nav,
+  openNested,
+  openOrganization,
+  tableRows,
+} from "./helpers"
 import { PARITY } from "./parity-data"
 
 // Each flow creates the object it acts on and removes it again, so the file can
@@ -54,7 +62,7 @@ test.describe("standalone provider setup", () => {
     page,
   }) => {
     await login(page)
-    await openPage(page, "Providers", "Providers")
+    await openPage(page, "Provider credentials", "Providers")
 
     await page.getByRole("button", { name: "Add provider" }).click()
     await page.getByRole("button", { name: "Custom endpoint" }).click()
@@ -162,7 +170,8 @@ test.describe("budgets", () => {
     page,
   }) => {
     await login(page)
-    await openPage(page, "Budgets", "Budgets")
+    await openOrganization(page)
+    await openPage(page, "Spend & budgets", "Budgets")
 
     await page.getByRole("button", { name: "Create budget" }).click()
     await page.getByLabel("Name (optional)").fill(BUDGET)
@@ -216,7 +225,10 @@ test.describe("budgets", () => {
 test.describe("fallback routing", () => {
   test("grows and shrinks a policy's failure chain", async ({ page }) => {
     await login(page)
-    await openPage(page, "Routing", "Routing")
+    await openNested(page, "Routing", "Policies")
+    await expect(
+      page.getByRole("heading", { name: "Routing", exact: true }),
+    ).toBeVisible()
 
     await page.getByRole("button", { name: "New policy" }).click()
     await page.getByRole("textbox", { name: /Policy name/ }).fill(POLICY)
