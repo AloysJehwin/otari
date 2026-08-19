@@ -1005,6 +1005,85 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/organizations/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Active Organization Context
+         * @description Get the caller's active organization and their standing in it.
+         */
+        get: operations["get_active_organization_context_v1_organizations_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Active Organization
+         * @description Rename the caller's active organization.
+         */
+        patch: operations["update_active_organization_v1_organizations_me_patch"];
+        trace?: never;
+    };
+    "/v1/organizations/me/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Active Organization Members
+         * @description List the members of the caller's active organization.
+         */
+        get: operations["list_active_organization_members_v1_organizations_me_members_get"];
+        put?: never;
+        /**
+         * Create Active Organization Member
+         * @description Add a member to the caller's active organization, by email address.
+         *
+         *     Organization owners and admins only. The member is active immediately and
+         *     the response says so: this edition has no invitation to send and no way to
+         *     accept one, so it answers on the ``active`` arm of the result rather than
+         *     the ``invited`` one the platform uses. An address that belongs to no
+         *     identity yet creates one, which carries the address as the handle a future
+         *     sign-in flow will claim it by, and can do nothing until then.
+         */
+        post: operations["create_active_organization_member_v1_organizations_me_members_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/organizations/me/members/{organization_member_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Active Organization Member
+         * @description Remove a member by suspending their membership, keeping their history resolvable.
+         */
+        delete: operations["remove_active_organization_member_v1_organizations_me_members__organization_member_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Active Organization Member
+         * @description Change a member's role or status. Organization owners and admins only.
+         */
+        patch: operations["update_active_organization_member_v1_organizations_me_members__organization_member_id__patch"];
+        trace?: never;
+    };
     "/v1/pricing": {
         parameters: {
             query?: never;
@@ -2214,10 +2293,217 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/workspaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Workspaces
+         * @description List the workspaces the caller can see in their organization.
+         */
+        get: operations["list_workspaces_v1_workspaces_get"];
+        put?: never;
+        /**
+         * Create Workspace
+         * @description Create a workspace in the caller's organization. Owners and admins only.
+         */
+        post: operations["create_workspace_v1_workspaces_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Workspace
+         * @description Get one workspace.
+         */
+        get: operations["get_workspace_v1_workspaces__workspace_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Workspace
+         * @description Delete a workspace and its memberships. Organization owners and admins only.
+         */
+        delete: operations["delete_workspace_v1_workspaces__workspace_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Workspace
+         * @description Rename a workspace or change its description.
+         */
+        patch: operations["update_workspace_v1_workspaces__workspace_id__patch"];
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Workspace Members
+         * @description List a workspace's members.
+         */
+        get: operations["list_workspace_members_v1_workspaces__workspace_id__members_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/members/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Workspace Member
+         * @description Add an existing organization member to a workspace.
+         */
+        post: operations["add_workspace_member_v1_workspaces__workspace_id__members__user_id__post"];
+        /**
+         * Remove Workspace Member
+         * @description Remove a member from a workspace. Idempotent.
+         */
+        delete: operations["remove_workspace_member_v1_workspaces__workspace_id__members__user_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Workspace Member Role
+         * @description Change a workspace member's role.
+         */
+        patch: operations["update_workspace_member_role_v1_workspaces__workspace_id__members__user_id__patch"];
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ActiveOrganizationMemberCreateRequest
+         * @description Add someone to the caller's organization, optionally into workspaces at once.
+         */
+        ActiveOrganizationMemberCreateRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /**
+             * Role
+             * @default member
+             * @enum {string}
+             */
+            role: "owner" | "admin" | "member" | "viewer";
+            /** Workspace Assignments */
+            workspace_assignments?: components["schemas"]["WorkspaceAssignmentRequest"][] | null;
+        };
+        /**
+         * ActiveOrganizationMemberCreateResultPublic
+         * @description The outcome of adding a member.
+         *
+         *     The platform answers ``invited`` on both its branches, because being added
+         *     there always needs acceptance: a known address gets an ``invited``
+         *     membership, an unknown one an emailed invitation. This edition has neither
+         *     an invitation to send nor a way to accept one, so it answers on the other
+         *     arm of the same union, ``active``, and the invitation fields stay null until
+         *     that flow rehomes.
+         */
+        ActiveOrganizationMemberCreateResultPublic: {
+            /** Created At */
+            created_at?: string | null;
+            /** Email */
+            email: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Full Name */
+            full_name?: string | null;
+            /** Invitation Id */
+            invitation_id?: string | null;
+            /** Organization Member Id */
+            organization_member_id?: string | null;
+            /** Role */
+            role: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "invited";
+            /** Updated At */
+            updated_at?: string | null;
+            /** User Id */
+            user_id?: string | null;
+        };
+        /**
+         * ActiveOrganizationMemberPublic
+         * @description A member row joined to the identity behind it, as the roster shows it.
+         *
+         *     Field-for-field the platform's shape, so the ported roster page is not
+         *     rewritten around a new contract, with two consequences of the OSS line:
+         *     ``email`` is nullable here (a local operator identity has no sign-in
+         *     address), and ``invitation_id`` is always null until the invitation flow
+         *     rehomes, which is what fills it.
+         */
+        ActiveOrganizationMemberPublic: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Email */
+            email?: string | null;
+            /** Full Name */
+            full_name?: string | null;
+            /** Invitation Id */
+            invitation_id?: string | null;
+            /** Organization Member Id */
+            organization_member_id?: string | null;
+            /** Role */
+            role: string;
+            /** Status */
+            status: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** User Id */
+            user_id?: string | null;
+        };
+        /** ActiveOrganizationMemberUpdateRequest */
+        ActiveOrganizationMemberUpdateRequest: {
+            /** Role */
+            role?: ("owner" | "admin" | "member" | "viewer") | null;
+            /** Status */
+            status?: ("active" | "suspended") | null;
+        };
+        /** ActiveOrganizationMembersPublic */
+        ActiveOrganizationMembersPublic: {
+            /** Count */
+            count: number;
+            /** Data */
+            data: components["schemas"]["ActiveOrganizationMemberPublic"][];
+        };
+        /** ActiveOrganizationUpdateRequest */
+        ActiveOrganizationUpdateRequest: {
+            /** Name */
+            name: string;
+        };
         /**
          * AgentTelemetryBehavior
          * @description Counts from the behavioral events already captured on the logs signal.
@@ -3790,6 +4076,17 @@ export interface components {
             url: string;
         };
         /**
+         * Message
+         * @description A human-readable acknowledgment for an operation with nothing to return.
+         */
+        Message: {
+            /**
+             * Message
+             * @description What happened.
+             */
+            message: string;
+        };
+        /**
          * MessagesRequest
          * @description Anthropic Messages API-compatible request.
          *
@@ -4068,6 +4365,51 @@ export interface components {
             provider_raw?: {
                 [key: string]: unknown;
             } | null;
+        };
+        /**
+         * OrganizationMembershipContextPublic
+         * @description An organization plus the caller's standing in it.
+         *
+         *     What every tenancy page reads first: which organization it is looking at,
+         *     and what the caller may do there.
+         */
+        OrganizationMembershipContextPublic: {
+            /**
+             * Byo Provider Keys Allowed
+             * @default false
+             */
+            byo_provider_keys_allowed: boolean;
+            organization: components["schemas"]["OrganizationPublic"];
+            /**
+             * Organization Member Id
+             * Format: uuid
+             */
+            organization_member_id: string;
+            /** Role */
+            role: string;
+            /** Status */
+            status: string;
+        };
+        /** OrganizationPublic */
+        OrganizationPublic: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By User Id */
+            created_by_user_id?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Slug */
+            slug: string;
+            /** Updated At */
+            updated_at?: string | null;
         };
         /**
          * PolicyRequest
@@ -5774,6 +6116,112 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /**
+         * WorkspaceAssignmentRequest
+         * @description A workspace and the role to grant in it, applied when a member is added.
+         */
+        WorkspaceAssignmentRequest: {
+            /**
+             * Role
+             * @default member
+             * @enum {string}
+             */
+            role: "owner" | "admin" | "member" | "viewer";
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** WorkspaceCreate */
+        WorkspaceCreate: {
+            /** Description */
+            description?: string | null;
+            /** Name */
+            name: string;
+        };
+        /** WorkspaceMemberPublic */
+        WorkspaceMemberPublic: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Role
+             * @default member
+             */
+            role: string;
+            /**
+             * Status
+             * @default active
+             */
+            status: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** WorkspaceMembersPublic */
+        WorkspaceMembersPublic: {
+            /** Count */
+            count: number;
+            /** Data */
+            data: components["schemas"]["WorkspaceMemberPublic"][];
+        };
+        /** WorkspacePublic */
+        WorkspacePublic: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By User Id */
+            created_by_user_id?: string | null;
+            /** Description */
+            description?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** WorkspaceUpdate */
+        WorkspaceUpdate: {
+            /** Description */
+            description?: string | null;
+            /** Name */
+            name?: string | null;
+        };
+        /** WorkspacesPublic */
+        WorkspacesPublic: {
+            /** Count */
+            count: number;
+            /** Data */
+            data: components["schemas"]["WorkspacePublic"][];
+        };
     };
     responses: never;
     parameters: never;
@@ -7312,6 +7760,192 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ModerationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_active_organization_context_v1_organizations_me_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationMembershipContextPublic"];
+                };
+            };
+        };
+    };
+    update_active_organization_v1_organizations_me_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ActiveOrganizationUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationMembershipContextPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_active_organization_members_v1_organizations_me_members_get: {
+        parameters: {
+            query?: {
+                /** @description Number of records to skip */
+                skip?: number;
+                /** @description Maximum number of records to return */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActiveOrganizationMembersPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_active_organization_member_v1_organizations_me_members_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ActiveOrganizationMemberCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActiveOrganizationMemberCreateResultPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_active_organization_member_v1_organizations_me_members__organization_member_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organization_member_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Message"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_active_organization_member_v1_organizations_me_members__organization_member_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organization_member_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ActiveOrganizationMemberUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActiveOrganizationMemberPublic"];
                 };
             };
             /** @description Validation Error */
@@ -9128,6 +9762,308 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UsageLogResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_workspaces_v1_workspaces_get: {
+        parameters: {
+            query?: {
+                /** @description Number of records to skip */
+                skip?: number;
+                /** @description Maximum number of records to return */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacesPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_workspace_v1_workspaces_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacePublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_workspace_v1_workspaces__workspace_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacePublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_workspace_v1_workspaces__workspace_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Message"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_workspace_v1_workspaces__workspace_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacePublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_workspace_members_v1_workspaces__workspace_id__members_get: {
+        parameters: {
+            query?: {
+                /** @description Number of records to skip */
+                skip?: number;
+                /** @description Maximum number of records to return */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceMembersPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_workspace_member_v1_workspaces__workspace_id__members__user_id__post: {
+        parameters: {
+            query?: {
+                /** @description Role to assign in this workspace. */
+                role?: "owner" | "admin" | "member" | "viewer";
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceMemberPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_workspace_member_v1_workspaces__workspace_id__members__user_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Message"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_workspace_member_role_v1_workspaces__workspace_id__members__user_id__patch: {
+        parameters: {
+            query: {
+                /** @description Role to assign in this workspace. */
+                role: "owner" | "admin" | "member" | "viewer";
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceMemberPublic"];
                 };
             };
             /** @description Validation Error */

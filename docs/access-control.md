@@ -90,6 +90,64 @@ Assign a budget to a user by setting `budget_id` on the user (at create time or 
 
 The enforcement strategy is configurable with `OTARI_BUDGET_STRATEGY` (`for_update` row-lock, `cas` compare-and-swap, or `disabled`); see [Configuration](configuration.md).
 
+## Organizations and workspaces
+
+Otari is growing a tenancy layer above the users, keys, and budgets described here: an **organization** owns **workspaces**, and identities join both as members with a fixed role (`owner`, `admin`, `member`, or `viewer`). It is available today over the API (`/v1/organizations/*` and `/v1/workspaces/*`, master-key authenticated like the rest of this guide); the dashboard pages for it are still being built.
+
+A self-hosted deployment is **one organization with several people in it**, not several tenants: the organization is provisioned for you and cannot be created, switched or deleted, and workspaces are the unit you separate teams and projects by. Hosting mutually isolated tenants on one deployment is what a hosted control plane is for.
+
+Nothing is required to set it up. The first request to one of those endpoints provisions a default organization, a default workspace, and one owner identity representing the operator, and every later request resolves that same identity. Organization owners and admins can create further workspaces, add members, and manage roles; a workspace's own owners and admins can manage the workspace they belong to.
+
+Adding a member takes an email address (`POST /v1/organizations/me/members`), optionally with the workspaces to grant at the same time. If no identity holds that address yet, one is created carrying it, and the member is active immediately: there is no invitation to accept, because this edition sends no email. Such an identity is a roster and attribution entry today. It cannot sign in until Otari grows a sign-in flow, at which point the address is the handle its owner claims it by.
+
+Two rules exist to stop a tenancy from becoming unmanageable, and both answer `400`:
+
+- an organization always keeps at least one active owner, so the last owner cannot be demoted or removed;
+- an organization always keeps at least one workspace, so the last one cannot be deleted.
+
+Removing a member suspends their membership rather than deleting it, which keeps their past usage attributable.
+
+Granting the `owner` role is an owner's to give. An admin manages members, workspaces and roles, and cannot promote anyone (themselves included) to owner, nor add one.
+
+### Adopting an existing tenancy
+
+Provisioning adopts an organization whose slug is `default`, which is the one it would have created itself. It cannot adopt any other, because every route is scoped to the organization the operator identity is currently pointed at, and there is no route to list, switch, or fetch an organization by id. So an organization this deployment did not provision is unreachable through the API until the operator identity points at it.
+
+That is the state a database restored or imported from elsewhere arrives in: those slugs are `{name}-{suffix}` and never the literal `default`. Otari refuses rather than shadowing it, and the tenancy endpoints answer `500` with `Internal server error` while the specific organizations are named in the gateway's log.
+
+Two rows decide this, and both have to move. The marker is a `runtime_settings` row keyed `tenancy_bootstrap_user_id`, holding the id of the identity every request resolves to; it is deliberately not settable over the API, since repointing it changes who the operator *is*. The organization served is then that identity's own `active_organization_id`, **not** anything the marker says. An imported identity usually belongs to several organizations, and that pointer holds whichever one they last switched to on the platform, so setting the marker alone adopts whatever organization that happens to be:
+
+```sql
+-- 1. Find an active owner of the organization to adopt.
+SELECT u.id, u.email, u.full_name, u.active_organization_id
+FROM "user" u
+JOIN organization_member om ON om.user_id = u.id
+JOIN organization o ON o.id = om.organization_id
+WHERE o.slug = 'acme-1a2b3c4d' AND om.role = 'owner' AND om.status = 'active';
+
+-- 2. Point that identity at the organization to adopt. Without this the
+--    gateway serves whichever organization the identity was last active in,
+--    and reports the operator's role there rather than their ownership here.
+UPDATE "user"
+SET active_organization_id = (SELECT id FROM organization WHERE slug = 'acme-1a2b3c4d')
+WHERE id = '<the id from step 1>';
+
+-- 3. Point the marker at that identity. An upsert, not an UPDATE: a gateway
+--    that refused rather than provisioning never wrote the marker row, so an
+--    UPDATE would match nothing and the refusal would repeat unchanged.
+--    updated_at is NOT NULL with no database-side default, so it is supplied.
+INSERT INTO runtime_settings (key, value, updated_at)
+VALUES ('tenancy_bootstrap_user_id', '<the id from step 1>', CURRENT_TIMESTAMP)
+ON CONFLICT (key) DO UPDATE
+SET value = excluded.value, updated_at = excluded.updated_at;
+```
+
+Confirm with `GET /v1/organizations/me`, which should name the adopted organization and report the role `owner`. No restart is needed: both rows are read from the database on each request.
+
+One ordering is not caught. The refusal only runs while the marker is unresolved, so it covers importing into a deployment that has never served a tenancy request. Import *after* this gateway has provisioned its own default organization and nothing refuses: the marker already resolves, and the imported rows are silently unreachable. Repointing the marker is still the fix, and importing before the first tenancy request is what turns a silent case into a loud one.
+
+This layer does not yet gate request-plane spend: keys, budgets, and usage still key on the `user_id` described above. Bringing the two together is the reconciliation tracked in [mozilla-ai/otari-ai#1452](https://github.com/mozilla-ai/otari-ai/issues/1452).
+
 ## See also
 
 - [Admin dashboard](dashboard.md): the same users, keys, and budgets in the browser UI.
