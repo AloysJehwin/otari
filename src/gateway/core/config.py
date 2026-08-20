@@ -1245,12 +1245,29 @@ class GatewayConfig(BaseSettings):
     @field_validator("platform")
     @classmethod
     def _validate_platform_streaming_timeouts(cls, platform: dict[str, Any]) -> dict[str, Any]:
-        """Reject non-sensical streaming first-chunk timeout settings at load time.
+        """Reject non-sensical platform timeout settings at load time.
 
-        The per-attempt first-chunk budgets must be positive: a zero or negative
-        wait would treat every attempt as instantly hung. The terminal-attempt
-        extra grace must be non-negative, since it is added on top of the budget.
+        The per-attempt first-chunk and inline-settlement budgets must be
+        positive. The terminal-attempt extra grace must be non-negative, since
+        it is added on top of the first-chunk budget.
         """
+        inline_key = "usage_inline_timeout_ms"
+        if inline_key in platform:
+            raw_inline_timeout = platform[inline_key]
+            try:
+                inline_timeout = int(raw_inline_timeout)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"{inline_key} must be a positive integer, got {raw_inline_timeout!r}"
+                ) from None
+            if (
+                isinstance(raw_inline_timeout, bool)
+                or (isinstance(raw_inline_timeout, float) and not raw_inline_timeout.is_integer())
+                or inline_timeout <= 0
+            ):
+                raise ValueError(f"{inline_key} must be a positive integer, got {raw_inline_timeout!r}")
+            platform[inline_key] = inline_timeout
+
         positive_ms_keys = (
             "streaming_first_chunk_timeout_ms",
             "streaming_first_chunk_timeout_ms_tool_loop",
@@ -1465,6 +1482,9 @@ def _apply_platform_env_overrides(config: dict[str, Any]) -> None:
         "PLATFORM_MANAGEMENT_URL": ("management_url", str),
         "PLATFORM_RESOLVE_TIMEOUT_MS": ("resolve_timeout_ms", int),
         "PLATFORM_USAGE_TIMEOUT_MS": ("usage_timeout_ms", int),
+        # Budget for the one usage report the response path waits on. Expiry
+        # detaches the wait without cancelling the accounting report.
+        "PLATFORM_USAGE_INLINE_TIMEOUT_MS": ("usage_inline_timeout_ms", int),
         "PLATFORM_USAGE_MAX_RETRIES": ("usage_max_retries", int),
         # Per-attempt budget for streaming fallback: how long to wait for the
         # first chunk from each attempt before treating it as hung and moving
