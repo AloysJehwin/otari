@@ -15,22 +15,29 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
+from gateway.core.config import GatewayConfig
 from gateway.models.tenancy import (
     ActiveOrganizationMemberCreateRequest,
     ActiveOrganizationMemberUpdateRequest,  # noqa: E402
+    InviteOrganizationMemberRequest,
     Organization,
     User,
+    WorkspaceAssignmentRequest,
     WorkspaceCreate,
 )
 from gateway.repositories.tenancy import (
+    InvitationRepository,
     OrganizationMemberRepository,
     OrganizationRepository,
     UserRepository,
+    WorkspaceMemberRepository,
     WorkspaceRepository,
 )
 from gateway.services.tenancy import OrganizationService, WorkspaceService
 from gateway.services.tenancy.errors import (
     ForeignTenancyError,
+    InvitationAlreadyPendingError,
+    InvitationAlreadyUsedError,
     LastWorkspaceError,
     MembershipUpdateError,
     OrganizationMemberAlreadyExistsError,
@@ -301,3 +308,190 @@ async def test_concurrent_deletes_cannot_remove_the_last_workspace(
     assert len(refused) == 1
     _, remaining = await WorkspaceRepository(async_db).get_by_organization(organization.id, limit=1)
     assert remaining == 1
+
+
+async def test_concurrent_invites_to_a_suspended_membership_produce_one_pending_invitation(
+    async_db: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    """A suspended membership has no unique index to lose to either.
+
+    `organization_member_id` on `Invitation` carries no uniqueness (a
+    membership can be invited, revoked, and re-invited more than once over its
+    life), so nothing catches two concurrent invites to the same suspended
+    membership as an `IntegrityError`. Without locking the organization before
+    the status check that decides create/revive/refuse, both racers can read
+    "suspended", both revive it, and both mint their own live pending
+    invitation for the one membership.
+    """
+    organization, owner = await _seed_owner(async_db)
+    owner_row = await UserRepository(async_db).get(owner.id)
+    assert owner_row is not None
+    added = await OrganizationService(async_db).create_active_organization_member_for_user(
+        user=owner_row,
+        request=ActiveOrganizationMemberCreateRequest(email="grace@example.com"),
+    )
+    assert added.organization_member_id is not None
+    assert added.user_id is not None
+    await OrganizationService(async_db).remove_active_organization_member_for_user(
+        user=owner_row,
+        organization_member_id=added.organization_member_id,
+    )
+    config = GatewayConfig()
+
+    async def attempt(session: AsyncSession) -> object:
+        user = await UserRepository(session).get(owner.id)
+        assert user is not None
+        return await OrganizationService(session).invite_active_organization_member_for_user(
+            user=user,
+            request=InviteOrganizationMemberRequest(email="grace@example.com"),
+            config=config,
+        )
+
+    outcomes = await _race(sessions, attempt)
+
+    invited = [outcome for outcome in outcomes if not isinstance(outcome, Exception)]
+    # Whichever racer wins the lock leaves the membership `invited` with a
+    # fresh, unexpired invitation, so every loser re-reads that and raises
+    # InvitationAlreadyPendingError, not OrganizationMemberAlreadyExistsError
+    # (that one is for an *active* membership, which none of the racers here
+    # ever produce: the starting status is `suspended`).
+    conflicts = [outcome for outcome in outcomes if isinstance(outcome, InvitationAlreadyPendingError)]
+    assert len(invited) == 1
+    assert len(conflicts) == _RACERS - 1
+
+    membership = await OrganizationMemberRepository(async_db).get_by_organization_and_user(
+        organization.id, added.user_id
+    )
+    assert membership is not None
+    pending = await InvitationRepository(async_db).get_pending_by_organization_members([membership.id])
+    assert len(pending) == 1
+
+
+async def test_concurrent_accepts_of_one_invitation_produce_one_active_membership(
+    async_db: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    """accept_invitation's pending check is check-then-act too, with a worse failure mode.
+
+    Without locking before the re-check, two concurrent accepts of the same
+    token both see `pending`, both flip the membership, and both reach
+    `_apply_workspace_assignments`, whose existing-then-create shape lets the
+    second racer's insert violate `uq_workspace_member_workspace_user` as an
+    uncaught `IntegrityError` on a public, unauthenticated endpoint, rather
+    than the mapped `InvitationAlreadyUsedError` every other double-use path
+    already answers with.
+    """
+    organization, owner = await _seed_owner(async_db)
+    owner_row = await UserRepository(async_db).get(owner.id)
+    assert owner_row is not None
+    workspace = await WorkspaceService(async_db).create_workspace(
+        user=owner_row,
+        workspace_create=WorkspaceCreate(name="Research"),
+    )
+    config = GatewayConfig()
+    invited = await OrganizationService(async_db).invite_active_organization_member_for_user(
+        user=owner_row,
+        request=InviteOrganizationMemberRequest(
+            email="hank@example.com",
+            workspace_assignments=[WorkspaceAssignmentRequest(workspace_id=workspace.id, role="viewer")],
+        ),
+        config=config,
+    )
+    token = invited.accept_link.split("token=")[1]
+
+    async def attempt(session: AsyncSession) -> object:
+        return await OrganizationService(session).accept_invitation(token)
+
+    outcomes = await _race(sessions, attempt)
+
+    accepted = [outcome for outcome in outcomes if not isinstance(outcome, Exception)]
+    already_used = [outcome for outcome in outcomes if isinstance(outcome, InvitationAlreadyUsedError)]
+    assert len(accepted) == 1
+    assert len(already_used) == _RACERS - 1
+
+    # async_db's own invite call above left the membership row resident in this
+    # session's identity map with status "invited"; with expire_on_commit=False,
+    # a plain get() would return that unexpired cached instance rather than
+    # querying the row the race committed through separate sessions.
+    async_db.expire_all()
+    membership = await OrganizationMemberRepository(async_db).get(invited.organization_member_id)
+    assert membership is not None
+    assert membership.status == "active"
+    # Exactly one workspace_member row, not one per racer that reached
+    # _apply_workspace_assignments before the lock closed this off.
+    workspace_members = await WorkspaceMemberRepository(async_db).get_by_workspaces_and_user(
+        {workspace.id: "viewer"}, membership.user_id
+    )
+    assert len(workspace_members) == 1
+
+
+async def test_concurrent_accept_and_revoke_of_one_invitation_produce_one_consistent_outcome(
+    async_db: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    """revoke_organization_member_invitation_for_user races accept_invitation too.
+
+    Both are check-then-act on the same invitation's `pending` status, and
+    until revoke's organization lock moved ahead of its own reads, this had a
+    worse failure mode than the accept-vs-accept race above: revoke's read of
+    the invitation and membership happened before it took any lock, so a
+    revoke that started just ahead of a winning accept could sit on the lock
+    call inside `_validate_membership_update`, wake up once that accept had
+    fully committed, and then unconditionally overwrite the accept's
+    `active`/`accepted` state with its own stale, pre-lock `suspended`/
+    `cancelled` write. Both operations would report success, and the invitee
+    who just accepted would silently lose the membership they were told they
+    had.
+    """
+    organization, owner = await _seed_owner(async_db)
+    owner_row = await UserRepository(async_db).get(owner.id)
+    assert owner_row is not None
+    invited = await OrganizationService(async_db).invite_active_organization_member_for_user(
+        user=owner_row,
+        request=InviteOrganizationMemberRequest(email="ivy@example.com"),
+        config=GatewayConfig(),
+    )
+    token = invited.accept_link.split("token=")[1]
+    assert invited.invitation_id is not None
+
+    async def accept(session: AsyncSession) -> object:
+        return await OrganizationService(session).accept_invitation(token)
+
+    async def revoke(session: AsyncSession) -> object:
+        user = await UserRepository(session).get(owner.id)
+        assert user is not None
+        assert invited.invitation_id is not None
+        await OrganizationService(session).revoke_organization_member_invitation_for_user(
+            user=user,
+            invitation_id=invited.invitation_id,
+        )
+        return None
+
+    async def run_one(attempt: Callable[[AsyncSession], object]) -> object:
+        async with sessions() as session:
+            try:
+                return await attempt(session)  # type: ignore[misc]
+            except Exception as exc:  # noqa: BLE001 - the outcome is the assertion
+                return exc
+
+    outcomes = list(await asyncio.gather(*(run_one(attempt) for attempt in (accept, revoke))))
+
+    # Exactly one side has to lose, and lose with the mapped error: accept and
+    # revoke are different operations, but they are still racing the same
+    # pending-to-something-else transition, so only one may win it.
+    losses = [outcome for outcome in outcomes if isinstance(outcome, InvitationAlreadyUsedError)]
+    assert len(losses) == 1
+
+    async_db.expire_all()
+    invitation = await InvitationRepository(async_db).get(invited.invitation_id)
+    membership = await OrganizationMemberRepository(async_db).get(invited.organization_member_id)
+    assert invitation is not None
+    assert membership is not None
+    # The invitation and its paired membership have to agree on which
+    # operation won, never a mix showing one operation's write and the other's
+    # leftover state.
+    assert (invitation.status, membership.status) in {
+        ("accepted", "active"),
+        ("cancelled", "suspended"),
+    }

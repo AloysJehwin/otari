@@ -109,6 +109,21 @@ class OrganizationMemberAlreadyExistsError(TenancyConflictError):
         super().__init__(f"{identifier} is already an active member of this organization")
 
 
+class InvitationAlreadyPendingError(TenancyConflictError):
+    """The address already has a live, unexpired invitation, so a fresh one is refused rather than piled on.
+
+    Distinct from ``OrganizationMemberAlreadyExistsError``: that message says
+    "already an active member", which is false for an address that is only
+    ``invited``. Resending is revoke (which cancels the pending invitation and
+    suspends the membership) followed by a fresh invite; once the existing
+    invitation's own expiry has passed, a fresh invite supersedes it directly
+    instead of raising this.
+    """
+
+    def __init__(self, identifier: object):
+        super().__init__(f"{identifier} already has a pending invitation")
+
+
 class InvalidEmailError(TenancyValidationError):
     """An address that could not be a claim handle.
 
@@ -216,12 +231,41 @@ class OrganizationPricingOverlapError(TenancyConflictError):
             f"An override for '{model_key}' already covers part of that period ({existing_period}). "
             "Change this period, or edit the existing override instead."
         )
+class InvitationNotFoundError(TenancyNotFoundError):
+    """No invitation matches the token or id given.
+
+    One status for "wrong token", "unknown id", and "someone else's
+    invitation", for the same reason ``TenancyNotFoundError`` gives every
+    cross-tenant lookup one status: distinguishing them would let a caller
+    probe for which is true.
+    """
+
+    def __init__(self, identifier: object = "invitation") -> None:
+        super().__init__(f"{identifier} not found or already used")
+
+
+class InvitationExpiredError(TenancyValidationError):
+    """The invitation's ``expires_at`` has passed."""
+
+    def __init__(self) -> None:
+        super().__init__("This invitation has expired")
+
+
+class InvitationAlreadyUsedError(TenancyValidationError):
+    """The invitation is not ``pending`` (already accepted, cancelled, or expired)."""
+
+    def __init__(self) -> None:
+        super().__init__("This invitation has already been used or is no longer valid")
 
 
 __all__ = [
     "ForeignTenancyError",
     "InvalidEmailError",
     "InvalidRoleError",
+    "InvitationAlreadyPendingError",
+    "InvitationAlreadyUsedError",
+    "InvitationExpiredError",
+    "InvitationNotFoundError",
     "LastWorkspaceError",
     "MembershipUpdateError",
     "NotAnOrganizationMemberError",
