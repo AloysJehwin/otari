@@ -40,7 +40,7 @@ from gateway.services.model_access import is_model_allowed, model_not_allowed_de
 from gateway.services.pricing_service import find_model_pricing
 from gateway.services.provider_kwargs import get_provider_kwargs, resolve_provider_selector
 from gateway.services.scoped_budget_service import BudgetScopeRequest
-from gateway.services.workspace_scope import workspace_for_key_id
+from gateway.services.workspace_scope import organization_for_key_id, workspace_for_key_id
 
 router = APIRouter(prefix="/v1/batches", tags=["batches"])
 
@@ -88,14 +88,24 @@ async def log_batch_usage(
     total_tokens: int | None = None,
     cost: float | None = None,
     counts_toward_budget: bool = True,
+    workspace_id: uuid.UUID | None = None,
 ) -> None:
-    """Log batch API usage, including token counts and cost when derivable."""
+    """Log batch API usage, including token counts and cost when derivable.
+
+    ``workspace_id`` overrides the workspace derived from ``api_key_id``. A batch
+    is retrieved by a key that need not be the one that created it, and the
+    accounting scopes follow the creator: the row is attributed to the creator's
+    user, priced at the creator's organization's rates, and so must land in the
+    creator's workspace, or per-workspace usage stops reconciling against the
+    rate list it was billed under. ``api_key_id`` stays the key that actually
+    made the request, because that is what it records.
+    """
     # latency_ms is intentionally left NULL: a batch is an asynchronous job that
     # is submitted and later polled, so there is no synchronous request duration
     # to record (unlike the chat/passthrough paths).
     usage_log = UsageLog(
         id=str(uuid.uuid4()),
-        workspace_id=await workspace_for_key_id(db, api_key_id),
+        workspace_id=workspace_id if workspace_id is not None else await workspace_for_key_id(db, api_key_id),
         api_key_id=api_key_id,
         user_id=user_id,
         timestamp=datetime.now(UTC),
@@ -311,6 +321,9 @@ async def create_batch(
         strategy=config.budget_strategy,
         counts_toward_budget=not budget_exempt,
         scope=BudgetScopeRequest(api_key=api_key, provider_instance=resolved.instance),
+        # So the free-model shortcut reads this organization's rate, the same one
+        # the results are priced at when they are retrieved.
+        organization_id=await organization_for_key_id(db, api_key_id),
     )
 
     # Stamp the billed user into the provider-side metadata so ownership can be
@@ -596,9 +609,27 @@ async def retrieve_batch_results(
             completion_tokens += usage.completion_tokens or 0
             total_tokens += usage.total_tokens or 0
 
+    # Rates and the usage row's workspace follow the key that CREATED the batch,
+    # for the same reason the budget exemption above does and the owner
+    # attribution before it: the cost is billed to that key's owner, so it has to
+    # be priced at that key's organization and recorded in its workspace. Scoping
+    # to the retriever would let a master-key retrieval, or a second key of the
+    # same user in another organization, settle the batch at rates its owner never
+    # negotiated. A record with no originating key (it was deleted) falls back to
+    # the retriever, which is the only organization still knowable.
+    #
+    # Resolved before the token check, because the usage row below is written
+    # whether or not there were billable tokens.
+    billing_key_id = record.api_key_id if record is not None and record.api_key_id is not None else api_key_id
+
     cost: float | None = None
     if total_tokens:
-        pricing = await find_model_pricing(db, provider_enum.value, batch_model)
+        pricing = await find_model_pricing(
+            db,
+            provider_enum.value,
+            batch_model,
+            organization_id=await organization_for_key_id(db, billing_key_id),
+        )
         if pricing:
             cost = (prompt_tokens / 1_000_000) * pricing.input_price_per_million + (
                 completion_tokens / 1_000_000
@@ -640,6 +671,9 @@ async def retrieve_batch_results(
             total_tokens=total_tokens,
             cost=cost,
             counts_toward_budget=not batch_exempt,
+            # The creator's workspace, matching the user and the rates this row
+            # was priced at; see the note on ``log_batch_usage``.
+            workspace_id=await workspace_for_key_id(db, billing_key_id),
         )
         if record is not None:
             if cost and user_id and not batch_exempt:

@@ -1,16 +1,17 @@
 """Shared pricing lookup utilities."""
 
+import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from genai_prices import Usage, calc_price
 from genai_prices.types import PriceCalculation, TieredPrices
-from sqlalchemy import select
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.log_config import logger
-from gateway.models.entities import ModelPricing
+from gateway.models.entities import ModelPricing, OrganizationModelPricing
 
 # A zero-token usage is enough to resolve a model's per-million rates from
 # genai-prices without depending on real token counts.
@@ -328,6 +329,90 @@ def default_model_pricing(provider: str | None, model: str, as_of: datetime) -> 
     )
 
 
+def _override_as_model_pricing(override: OrganizationModelPricing) -> ModelPricing:
+    """Present an organization's override as a transient ``ModelPricing``.
+
+    The same trick :func:`default_model_pricing` uses for a genai-prices match,
+    and for the same reason: every caller of :func:`find_model_pricing`, and the
+    whole cost-math core behind them, reads a ``ModelPricing``. Returning the
+    override row itself would make the override the one pricing source that needs
+    a different accessor at fourteen call sites.
+
+    Never added to a session. It is a lookup result, not a stored price.
+
+    ``effective_at`` carries the override's ``effective_from``, which is what the
+    row's own "this price applies from" means. The UTC stamp is not cosmetic:
+    ``DateTime(timezone=True)`` is a no-op on SQLite, so a value read back there
+    is naive, and a caller comparing it against an aware timestamp would raise
+    rather than compare.
+    """
+    effective_at = override.effective_from
+    if effective_at.tzinfo is None:
+        effective_at = effective_at.replace(tzinfo=UTC)
+    return ModelPricing(
+        model_key=override.model_key,
+        effective_at=effective_at,
+        input_price_per_million=override.input_price_per_million,
+        output_price_per_million=override.output_price_per_million,
+        cache_read_price_per_million=override.cache_read_price_per_million,
+        cache_write_price_per_million=override.cache_write_price_per_million,
+        cache_write_1h_price_per_million=override.cache_write_1h_price_per_million,
+        pricing_tiers=override.pricing_tiers or [],
+    )
+
+
+async def _find_organization_override(
+    db: AsyncSession,
+    organization_id: uuid.UUID,
+    model_keys: list[str],
+    as_of: datetime,
+) -> ModelPricing | None:
+    """An organization's rate for the first of ``model_keys`` that has one.
+
+    One statement over every candidate key, not one per key. This runs on the
+    request path ahead of the deployment lookup, so an organization with no
+    override at all pays for it on every request and it has to be a single index
+    probe rather than a probe per key form.
+
+    Preference, not just a filter: ``model_keys`` is ordered (canonical
+    ``provider:model`` before the legacy ``provider/model``), and the ``CASE``
+    below carries that order into SQL so an override matches on the same key the
+    deployment row would rather than on whichever form happened to be stored.
+    A per-key loop expressed the same preference by asking twice.
+
+    The period test is half-open: ``effective_from`` is inclusive and
+    ``effective_to`` exclusive, so two adjacent periods that share an instant
+    (one ending exactly where the next begins) resolve to the later one and are
+    not an overlap. The service applies the same rule when it refuses one, so
+    what is storable and what is resolvable agree.
+    """
+    key_preference = case(
+        {model_key: rank for rank, model_key in enumerate(model_keys)},
+        value=OrganizationModelPricing.model_key,
+        else_=len(model_keys),
+    )
+    stmt = (
+        select(OrganizationModelPricing)
+        .where(
+            OrganizationModelPricing.organization_id == organization_id,
+            OrganizationModelPricing.model_key.in_(model_keys),
+            OrganizationModelPricing.effective_from <= as_of,
+            or_(
+                OrganizationModelPricing.effective_to.is_(None),
+                OrganizationModelPricing.effective_to > as_of,
+            ),
+        )
+        # At most one row per key can match once the overlap rule holds, so the
+        # second ordering term only decides between a row that predates the rule
+        # and one that slipped through the write race the model documents; it
+        # resolves to the newest applicable period rather than an arbitrary one.
+        .order_by(key_preference, OrganizationModelPricing.effective_from.desc())
+        .limit(1)
+    )
+    override = (await db.execute(stmt)).scalar_one_or_none()
+    return _override_as_model_pricing(override) if override is not None else None
+
+
 async def _find_by_model_key(db: AsyncSession, model_key: str, as_of: datetime) -> ModelPricing | None:
     stmt = (
         select(ModelPricing)
@@ -349,14 +434,24 @@ async def find_model_pricing(
     *,
     as_of: datetime | None = None,
     use_defaults: bool = True,
+    organization_id: uuid.UUID | None = None,
 ) -> ModelPricing | None:
     """Look up model pricing as of a timestamp.
 
-    Resolution order: the canonical ``provider:model`` key, then the legacy
-    ``provider/model`` key, then (when default pricing is enabled) community-
-    maintained default pricing from genai-prices. Explicit pricing stored in the
-    database always takes precedence over defaults. The default fallback is gated
-    by ``GatewayConfig.default_pricing`` via :func:`configure_default_pricing`.
+    Resolution order: the requesting organization's own override (when
+    ``organization_id`` is given), then the canonical ``provider:model`` key, then
+    the legacy ``provider/model`` key, then (when default pricing is enabled)
+    community-maintained default pricing from genai-prices. Explicit pricing
+    stored in the database always takes precedence over defaults. The default
+    fallback is gated by ``GatewayConfig.default_pricing`` via
+    :func:`configure_default_pricing`.
+
+    ``organization_id`` is what makes a rate tenant-specific. Omitted, this
+    resolves exactly as it did before the override table existed, which is what
+    keeps every deployment-wide caller (the startup pricing warning, the catalog)
+    reading the deployment's own list rather than some organization's negotiated
+    one. Request-path callers pass it, resolved from the authenticating key by
+    ``services.workspace_scope.organization_for_key_id``, never from a header.
 
     ``use_defaults=False`` skips that fallback for any caller whose billable unit
     is not a token, because every dataset rate is quoted per million *tokens*.
@@ -373,10 +468,19 @@ async def find_model_pricing(
 
     lookup_time = normalize_effective_at(as_of)
     model_key = f"{provider}:{model}" if provider else model
+    legacy_keys = [f"{provider}/{model}"] if provider else []
+
+    if organization_id is not None:
+        override = await _find_organization_override(db, organization_id, [model_key, *legacy_keys], lookup_time)
+        if override is not None:
+            return override
+
     pricing = await _find_by_model_key(db, model_key, lookup_time)
 
-    if pricing is None and provider:
-        pricing = await _find_by_model_key(db, f"{provider}/{model}", lookup_time)
+    for legacy_key in legacy_keys:
+        if pricing is not None:
+            break
+        pricing = await _find_by_model_key(db, legacy_key, lookup_time)
 
     if pricing is None and use_defaults and default_pricing_enabled():
         pricing = default_model_pricing(provider, model, lookup_time)
@@ -458,6 +562,7 @@ async def price_tool_calls(
     billable_calls: dict[str, int],
     *,
     as_of: datetime | None = None,
+    organization_id: uuid.UUID | None = None,
 ) -> tuple[float, list[dict[str, float | int | str]], list[str]]:
     """Price a request's successful gateway-run tool calls.
 
@@ -479,7 +584,7 @@ async def price_tool_calls(
     tools = [tool for tool in sorted(billable_calls) if billable_calls[tool] > 0]
     if not tools:
         return 0.0, [], []
-    rates = await _tool_rates(db, tools, as_of=as_of)
+    rates = await _tool_rates(db, tools, as_of=as_of, organization_id=organization_id)
 
     total = 0.0
     lines: list[dict[str, float | int | str]] = []
@@ -501,6 +606,7 @@ async def _tool_rates(
     tools: list[str],
     *,
     as_of: datetime | None,
+    organization_id: uuid.UUID | None = None,
 ) -> dict[str, ModelPricing]:
     """Latest-as-of pricing for several gateway tools, in one query.
 
@@ -512,7 +618,23 @@ async def _tool_rates(
     (see the note in :func:`price_tool_calls`).
     """
     lookup_time = normalize_effective_at(as_of)
-    keys = {f"{GATEWAY_TOOL_PRICING_PROVIDER}:{tool}": tool for tool in tools}
+    # Both spellings, mapped back to the tool, because the gate that admits the
+    # request resolves through ``find_model_pricing`` and that tries the canonical
+    # ``otari:tool`` *and* the legacy ``otari/tool``. Matching only the canonical
+    # one here made the gate and the settlement disagree: a tool priced under the
+    # slash spelling passed the require-pricing check and then settled at zero.
+    # Writes normalize now, which stops new rows landing in the legacy form, but
+    # ``normalize_pricing_key`` returns a key unchanged when its prefix is an
+    # unconfigured instance, so the read side closes the gap rather than trusting
+    # that it never happens.
+    keys = {
+        key: tool
+        for tool in tools
+        for key in (
+            f"{GATEWAY_TOOL_PRICING_PROVIDER}:{tool}",
+            f"{GATEWAY_TOOL_PRICING_PROVIDER}/{tool}",
+        )
+    }
     stmt = (
         select(ModelPricing)
         .where(ModelPricing.model_key.in_(keys), ModelPricing.effective_at <= lookup_time)
@@ -521,6 +643,32 @@ async def _tool_rates(
     found: dict[str, ModelPricing] = {}
     for row in (await db.execute(stmt)).scalars():
         found[keys[row.model_key]] = row
+
+    if organization_id is not None:
+        # Overrides win, resolved in a second batched statement for the same
+        # reason the first one is batched. This has to happen even though the
+        # gate in ``_pipeline`` already consulted overrides: the gate decides
+        # whether a tool *has* a rate and this decides what it *is*, so a tool
+        # priced only by an override would otherwise pass the gate and then be
+        # charged at zero.
+        override_stmt = (
+            select(OrganizationModelPricing)
+            .where(
+                OrganizationModelPricing.organization_id == organization_id,
+                OrganizationModelPricing.model_key.in_(keys),
+                OrganizationModelPricing.effective_from <= lookup_time,
+                or_(
+                    OrganizationModelPricing.effective_to.is_(None),
+                    OrganizationModelPricing.effective_to > lookup_time,
+                ),
+            )
+            # Oldest first, so the newest applicable period wins the assignment,
+            # matching the rule the statement above uses for deployment rows.
+            .order_by(OrganizationModelPricing.effective_from)
+        )
+        for override in (await db.execute(override_stmt)).scalars():
+            found[keys[override.model_key]] = _override_as_model_pricing(override)
+
     return found
 
 
