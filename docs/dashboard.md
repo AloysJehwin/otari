@@ -162,8 +162,11 @@ workspace. It is reached from the **Organization** entry at the foot of the
 workspace rail, and left by the link at its top. Users, budgets, and settings
 live there.
 
-At the very bottom sits the account control: the bundled user guide, the
-light/dark preference, and sign-out.
+At the very bottom sits the account control, which holds account settings, an
+**Appearance** row that cycles through system, light, and dark, the hosted legal
+pages where there are any, and **Log out**. The bundled user guide is
+**Documentation**, in the top bar; on a narrow screen, where the top bar has room
+for the trail and nothing else, the account control carries it instead.
 
 The groups below match the current dashboard, rail by rail.
 
@@ -301,13 +304,6 @@ hand.
 
 ### Gateway
 
-- **Provider credentials**: add, edit, test, and delete provider credentials at runtime
-  (standalone only). Stored keys are encrypted with `OTARI_SECRET_KEY`; config
-  providers appear read-only. See the first-run walkthrough above. The add and
-  edit forms also take **Client options (JSON)**, the `client_args` passed to the
-  provider's client (a request timeout, custom headers); on the known-provider
-  form they sit under Advanced. A backend that can take longer than 10 minutes to
-  answer a non-streaming request needs an explicit `{"timeout": 1800}` here.
 - **Models**: browse the model catalog and set per-model pricing, with specs
   and modality metadata where available (from models.dev). The copy control next
   to a model puts its full `provider:model` id on your clipboard, which is what
@@ -379,8 +375,14 @@ hand.
   models a key may call and setting an expiry (leave blank for a key that never
   expires). A key belongs to one workspace, the one selected above, and every
   request on it is billed there.
-- **Provider credentials**: see Gateway above; the same page is reached from
-  either group.
+- **Providers**: listed here because a provider credential is what a key
+  spends upstream. Add, edit, test, and delete provider credentials at runtime
+  (standalone only). Stored keys are encrypted with `OTARI_SECRET_KEY`; config
+  providers appear read-only. See the first-run walkthrough above. The add and
+  edit forms also take **Client options (JSON)**, the `client_args` passed to the
+  provider's client (a request timeout, custom headers); on the known-provider
+  form they sit under Advanced. A backend that can take longer than 10 minutes to
+  answer a non-streaming request needs an explicit `{"timeout": 1800}` here.
 - **Members**: who is assigned to the selected workspace and their role in it.
   A workspace's members are always a subset of the organization's, so someone
   joins the organization first, on the organization rail.
@@ -442,27 +444,36 @@ lands: the address they are added by is the handle it will claim them with.
 
 ### People & access
 
+- **Workspaces**: create, rename, and delete workspaces, and manage each
+  roster. The last workspace cannot be deleted.
 - **Members & roles**: who belongs to the organization, their role
   (owner, admin, member, viewer), and their status. Adding someone takes an
   email address and optionally the workspaces to put them in straight away.
-- **Workspaces**: create, rename, and delete workspaces, and manage each
-  roster. The last workspace cannot be deleted.
-
-### Money
-
-- **Spend & budgets**: spending limits callers are held to, with per-period
-  resets.
 - **Users**: the principals that keys and budgets attach to, including the
   default model access for a user's keys. Distinct from members: a member is a
   person who signs in, a user is what spend is attributed to, and the two merge
   once the request plane is re-parented onto tenancy.
 
+### Cost & billing
+
+- **Spend & budgets**: spending limits callers are held to, with per-period
+  resets.
+- **Model pricing**: what the gateway meters a request at, which is one rate per
+  model for the whole deployment. The page opens with what an *unpriced* model
+  costs, because that decides what the table under it means: with default pricing
+  on, the table is the models you have overridden, and with it off, the table is
+  everything that can be billed and `require_pricing` decides whether anything
+  else is refused (HTTP 402) or served for free. Below that, **Check for price
+  updates** fetches the upstream `genai-prices` catalog and shows what would
+  change before anything is saved; custom prices are never touched by it. A single
+  model's rate is still edited beside the model, on Models.
+
 ### General
 
-- **Organization**: rename the organization. There is exactly one.
-- **Settings**: search and toggle runtime settings, review and apply default
-  pricing updates, and rotate the generated master key. Rotating the master key
-  issues a fresh `otari-mk-…` value and keeps your current session signed in.
+- **Org settings**: rename the organization. There is exactly one.
+- **Settings**: search and toggle runtime settings, and rotate the generated
+  master key. Rotating the master key issues a fresh `otari-mk-…` value and keeps
+  your current session signed in.
 
 ## Install it on your phone
 
@@ -500,9 +511,9 @@ put it behind HTTPS, as the security notes below describe.
   server, expires the cookie, and clears any cached admin data. Rotating the
   master key revokes every session and re-mints the one you are using, so other
   signed-in browsers are logged out.
-- **Sign out on a machine you share.** A session runs for its full
+- **Log out on a machine you share.** A session runs for its full
   `dashboard_session_ttl_hours` with no idle timeout, so an unattended browser
-  stays signed in until the cookie expires. Use **Sign out** when you are done on
+  stays signed in until the cookie expires. Use **Log out** when you are done on
   a shared or public machine, or shorten `dashboard_session_ttl_hours`. Rotating
   the master key is the way to revoke a session you can no longer reach.
 - **Provider keys are write-only over the API.** Once stored, the plaintext is

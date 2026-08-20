@@ -134,7 +134,7 @@ export type StatStatus = "ok" | "warn" | "alert"
 
 // The accent bar is `!`-important because the design foundation gives every
 // HeroUI Card a 1px outline (`.card:not(.card--transparent)` in globals.css),
-// and that rule is unlayered while a Tailwind utility sits in @layer utilities —
+// and that rule is unlayered while a Tailwind utility sits in @layer utilities;
 // unlayered always wins, whatever the specificity. Without the bang the
 // shorthand `border:` resets this tile's left edge back to a hairline.
 const STAT_STATUS: Record<StatStatus, { accent: string; pill: string }> = {
@@ -570,6 +570,24 @@ export function PageLoading({ label = "Loading…" }: { label?: string }) {
       <Spinner size="sm" />
       <span>{label}</span>
     </div>
+  )
+}
+
+/**
+ * A destination this build declares but does not serve.
+ *
+ * The shell already answers a *gated-off* registered path with its own panel, so
+ * in a standalone gateway this never renders: the surface is absent, the sidebar
+ * drops the link, and the shell intercepts the route. It is what a deployment
+ * that reports the surface but has not composed the overlay serving it would
+ * see, which is the one case that would otherwise paint a blank page.
+ */
+export function UnavailableHere({ title }: { title: string }) {
+  return (
+    <EmptyState
+      title={`${title} is not available here`}
+      description="This deployment declares the page but does not serve it. Pick a destination from the sidebar."
+    />
   )
 }
 

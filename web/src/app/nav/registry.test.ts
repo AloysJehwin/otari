@@ -1,11 +1,11 @@
+import { FiBox } from "react-icons/fi"
 import { describe, expect, it } from "vitest"
-
 import { BASE_CAPABILITIES } from "@/shared/hooks/useEntitlements"
-
 import { OVERLAY_NAV_LABEL_OVERRIDES } from "./overlayLabelOverrides"
 import {
   applyNavLabelOverrides,
   composeNavSections,
+  isPathVisible,
   NAV_ITEMS,
   NAV_SECTIONS,
   navContextForPath,
@@ -18,11 +18,17 @@ import type { NavItem, NavLabelOverride, NavSection } from "./types"
 describe("nav registry", () => {
   it("exposes the base sections in display order", () => {
     expect(NAV_SECTIONS.map((section) => section.id)).toEqual([
-      "home",
+      "index",
       "observe",
       "gateway",
       "access",
     ])
+    // Exactly one unlabeled group, and it is the one the index sits alone in.
+    // Asserted as a count rather than a property of that section, because the
+    // thing worth catching is a *second* headingless group appearing: two of
+    // them and the rail stops reading as one list with a landing row on top.
+    expect(NAV_SECTIONS.filter((section) => !section.label)).toHaveLength(1)
+    expect(NAV_SECTIONS.find((section) => !section.label)?.id).toBe("index")
   })
 
   it("exposes the organization sections in display order", () => {
@@ -31,6 +37,7 @@ describe("nav registry", () => {
     expect(ORG_NAV_SECTIONS.map((section) => section.id)).toEqual([
       "org-people",
       "org-money",
+      "org-gateway",
       "org-general",
     ])
   })
@@ -49,13 +56,18 @@ describe("nav registry", () => {
       "Routing",
       "Tools",
       "API keys",
-      "Provider credentials",
+      "Providers",
       "Members",
-      "Members & roles",
       "Workspaces",
-      "Spend & budgets",
+      "Members & roles",
       "Users",
-      "Organization",
+      "Providers",
+      "Spend & budgets",
+      "Billing",
+      "Model pricing",
+      "Guardrails",
+      "Gateways",
+      "Org settings",
       "Settings",
     ])
   })
@@ -87,8 +99,13 @@ describe("nav registry", () => {
       (section) => section.id === "org-people",
     )
     expect(tenancy?.items.map((item) => [item.label, item.surface])).toEqual([
-      ["Members & roles", "organizations"],
       ["Workspaces", "workspaces"],
+      ["Members & roles", "organizations"],
+      // Grouped with the tenancy rows but gated on its own surface: Users reads
+      // the pre-tenancy `users` table, so a deployment serving one identity
+      // without the other hides exactly the row it cannot answer for.
+      ["Users", "users"],
+      ["Providers", "organization_providers"],
     ])
   })
 
@@ -101,7 +118,7 @@ describe("nav registry", () => {
     expect(navItemForPath("/organization/members")?.label).toBe(
       "Members & roles",
     )
-    expect(navItemForPath("/organization")?.label).toBe("Organization")
+    expect(navItemForPath("/organization")?.label).toBe("Org settings")
   })
 
   it("resolves a deeper path to the deepest entry above it", () => {
@@ -149,6 +166,8 @@ describe("nav registry", () => {
     const observability = NAV_SECTIONS.find(
       (section) => section.id === "observe",
     )
+    // The whole section now: the index moved out to its own group above, so
+    // there is nothing ungated left in here to skip past.
     expect(observability?.items.map((item) => item.surface)).toEqual([
       "usage",
       "usage",
@@ -177,6 +196,44 @@ describe("nav registry", () => {
     }
   })
 
+  it("gates every declared-but-unserved destination on a surface", () => {
+    // The design's organization rail draws four rows this gateway has no endpoint
+    // for. Each is declared so the rail matches on a deployment that does serve
+    // them, and gated on a surface `STANDALONE_SURFACES` does not report so the
+    // row is absent here. Pinned as the whole set, because the failure mode is
+    // silent in both directions: a missing gate ships a link to a page that
+    // cannot work, and a gate on a surface the bootstrap *does* report hides a
+    // page that can.
+    const unserved = new Map([
+      ["/organization/provider-keys", "organization_providers"],
+      ["/organization/billing", "billing"],
+      ["/organization/guardrails", "organization_guardrails"],
+      ["/organization/gateways", "gateways"],
+    ])
+    for (const [to, surface] of unserved) {
+      expect(navItemForPath(to)?.surface).toBe(surface)
+    }
+    // And none of those surface names is one a standalone gateway reports, or the
+    // gate would be decoration.
+    const standalone = [
+      "budgets",
+      "keys",
+      "models",
+      "organizations",
+      "pricing",
+      "providers",
+      "routing",
+      "settings",
+      "tools",
+      "usage",
+      "users",
+      "workspaces",
+    ]
+    for (const surface of unserved.values()) {
+      expect(standalone).not.toContain(surface)
+    }
+  })
+
   it("appends overlay sections after the base sections", () => {
     const base: NavSection[] = [{ id: "base", items: [] }]
     const overlay: NavSection[] = [
@@ -186,7 +243,7 @@ describe("nav registry", () => {
           {
             to: "/settings",
             label: "Billing",
-            icon: null,
+            icon: FiBox,
             capability: "billing",
           },
         ],
@@ -209,7 +266,7 @@ describe("nav registry", () => {
       (section) => section.id === "org-general",
     )
     expect(general?.label).toBe("General")
-    expect(general?.items.map((item) => item.label)).toContain("Organization")
+    expect(general?.items.map((item) => item.label)).toContain("Org settings")
   })
 
   it("keeps section ids unique across the two rails", () => {
@@ -229,7 +286,7 @@ describe("nav registry", () => {
 
 describe("visibleNavSections", () => {
   const entry = (label: string, surface?: string): NavItem =>
-    ({ to: "/", label, icon: null, surface }) as NavItem
+    ({ to: "/", label, icon: FiBox, surface }) as NavItem
 
   const sections: NavSection[] = [
     { id: "first", items: [entry("A", "a")] },
@@ -299,19 +356,57 @@ describe("navItemForPath", () => {
   })
 })
 
+describe("isPathVisible", () => {
+  // The predicate the shell composes, narrowed to the deployment axis: a
+  // surface this test withholds stands for one the bootstrap does not report.
+  const without = (surface: string) => (item: NavItem) =>
+    item.surface !== surface
+
+  it("serves a destination whose surface the deployment reports", () => {
+    expect(isPathVisible("/routing", without("keys"))).toBe(true)
+  })
+
+  it("refuses a destination whose surface it does not", () => {
+    expect(isPathVisible("/routing", without("routing"))).toBe(false)
+  })
+
+  it("gates a nested destination on its own surface, not its group's", () => {
+    // Guardrails is grouped under Routing and served by the tools surface, so
+    // the tools surface is the one that decides. Withholding `routing` leaves
+    // the page served (and the rail without a row for it, which is the grouping
+    // showing through); withholding `tools` is what refuses it.
+    expect(isPathVisible("/tools/guardrails", without("tools"))).toBe(false)
+    expect(isPathVisible("/tools/guardrails", without("routing"))).toBe(true)
+  })
+
+  it("inherits the gate of the destination a deeper path sits under", () => {
+    expect(isPathVisible("/routing/new", without("routing"))).toBe(false)
+  })
+
+  it("leaves a path the registry does not declare ungated", () => {
+    // The guide and the 404 splat: the registry governs what it declares and
+    // nothing else, so withholding every surface must not gate them.
+    expect(isPathVisible("/docs", () => false)).toBe(true)
+    expect(isPathVisible("/nope", () => false)).toBe(true)
+  })
+})
+
 describe("applyNavLabelOverrides", () => {
   const base: NavSection[] = [
     {
       id: "gateway",
       label: "Gateway",
       items: [
-        { to: "/models", label: "Models", surface: "models", icon: null },
+        // A real mark rather than a placeholder: `icon` is a `react-icons`
+        // `IconType` on an item and on a child alike, so the fixture has to be a
+        // shape the registry could actually hold.
+        { to: "/models", label: "Models", surface: "models", icon: FiBox },
         {
           to: "/routing",
           label: "Routing",
           surface: "routing",
-          icon: null,
-          children: [{ to: "/routing", label: "Policies" }],
+          icon: FiBox,
+          children: [{ to: "/routing", label: "Policies", icon: FiBox }],
         },
       ],
     },

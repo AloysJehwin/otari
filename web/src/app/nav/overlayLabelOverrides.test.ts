@@ -52,7 +52,9 @@ describe("a build that replaces the label-override module", () => {
     ])
     expect(ORG_NAV_SECTIONS.map((section) => section.label)).toEqual([
       "People & access",
-      "Money",
+      "Cost & billing",
+      "Gateway",
+      // The one the mocked list renames; the three around it are untouched.
       "Deployment",
     ])
   })

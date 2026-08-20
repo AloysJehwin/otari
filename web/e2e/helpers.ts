@@ -17,15 +17,26 @@ export const MASTER_KEY = "e2e-master-key"
 export const nav = (page: Page): Locator =>
   page.getByRole("navigation", { name: "Sidebar" })
 
+/**
+ * The page's own title, scoped to the content pane.
+ *
+ * A nav group is a disclosure now, and HeroUI puts its trigger inside a heading
+ * (`h3.disclosure__heading`), so the rail contributes headings of its own:
+ * `getByRole("heading", { name: "Routing" })` matches the group's row as well as
+ * the page's `h1` and fails strict mode with two elements. Scoping to `main` is
+ * what `nav()` does in the other direction, and it stays right however the rail's
+ * markup changes.
+ */
+export const pageHeading = (page: Page, name: string): Locator =>
+  page.getByRole("main").getByRole("heading", { name, exact: true })
+
 export async function login(page: Page): Promise<void> {
   await page.goto("/")
   await page.locator('input[type="password"]').fill(MASTER_KEY)
   await page.locator('input[type="password"]').press("Enter")
   // The sidebar appears once authenticated, regardless of the index landing
   // page.
-  await expect(
-    nav(page).getByRole("link", { name: "Provider credentials" }),
-  ).toBeVisible()
+  await expect(nav(page).getByRole("link", { name: "Providers" })).toBeVisible()
 }
 
 // The dashboard authenticates with a session cookie, but the seeding and

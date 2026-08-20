@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { UsageSummary } from "@/client"
 import { UsagePage } from "@/features/usage/UsagePage"
-import { seriesPoint, usageTotals } from "@/tests/fixtures"
+import { SelectedWorkspaceProvider } from "@/shared/hooks/SelectedWorkspace"
+import { organizationContext, seriesPoint, usageTotals } from "@/tests/fixtures"
 import { withRouter } from "@/tests/router"
 
 function summary(overrides: Partial<UsageSummary> = {}): UsageSummary {
@@ -180,9 +181,18 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
-function mockApi(body: UsageSummary | null) {
+// `extra` adds a path the default stub does not answer; the scope cases need
+// /v1/organizations/me, which is where the workspace switcher's memberships come
+// from and therefore where a selection has to come from too.
+function mockApi(
+  body: UsageSummary | null,
+  extra: Record<string, unknown> = {},
+) {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     const url = String(input)
+    for (const [path, answer] of Object.entries(extra)) {
+      if (url.includes(path)) return jsonResponse(answer)
+    }
     if (url.includes("/v1/usage/summary")) {
       return jsonResponse(body ?? summary())
     }
@@ -261,12 +271,21 @@ function LocationProbe() {
   )
 }
 
-function renderPage(ui: ReactElement) {
+function renderPage(ui: ReactElement, options: { scoped?: boolean } = {}) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+  // Most cases here are about the charts and read no workspace, so the provider
+  // is opt-in: outside it `useSelectedWorkspace` answers with nothing, which is
+  // the same shape as a caller in no workspace and keeps those requests
+  // unscoped either way. `scoped` is for the case that is *about* the scope.
+  const body = options.scoped ? (
+    <SelectedWorkspaceProvider>{ui}</SelectedWorkspaceProvider>
+  ) : (
+    ui
+  )
   return render(
-    <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+    <QueryClientProvider client={client}>{body}</QueryClientProvider>,
     {
       wrapper: withRouter({
         url: "/usage",
@@ -279,6 +298,30 @@ function renderPage(ui: ReactElement) {
 describe("UsagePage", () => {
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it("scopes the workspace view to the switcher's selection", async () => {
+    const fetchMock = mockApi(summary(), {
+      "/v1/organizations/me": organizationContext({
+        workspace_memberships: [
+          {
+            workspace_id: "ws-1",
+            name: "Platform team",
+            role: "owner",
+          },
+        ],
+      }),
+    })
+    renderPage(<UsagePage />, { scoped: true })
+    await screen.findByText("$1,240.50")
+
+    expect(
+      fetchMock.mock.calls.some(
+        ([url]) =>
+          String(url).includes("/v1/usage/summary") &&
+          String(url).includes("workspace_id=ws-1"),
+      ),
+    ).toBe(true)
   })
 
   it("renders totals tiles with compact currency and error rate", async () => {

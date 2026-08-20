@@ -52,7 +52,12 @@ function mockMatchMedia(matches: boolean, options: { legacy?: boolean } = {}) {
 // are the router's children, which is what makes clicking a nav link swap them.
 function renderShell(
   deployment: DeploymentBootstrap = bootstrap(),
-  options: { entitlements?: Partial<Entitlements>; url?: string } = {},
+  options: {
+    entitlements?: Partial<Entitlements>
+    url?: string
+    /** The caller's membership, for the controls that gate on their role. */
+    context?: Parameters<typeof organizationContext>[0]
+  } = {},
 ) {
   const entitlements: Entitlements = {
     capabilities: BASE_CAPABILITIES,
@@ -65,7 +70,7 @@ function renderShell(
   // into that rail, and the switcher reads it for the names it shows. Stubbed
   // here so the sidebar behaves as it does in front of a real gateway.
   vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
-    Response.json(organizationContext()),
+    Response.json(organizationContext(options.context)),
   )
   return renderWithRouter(<div>PAGE CONTENT</div>, {
     url,
@@ -104,8 +109,14 @@ describe("AppShell responsive layout", () => {
 
     const aside = container.querySelector("aside")
     // Off-canvas by default so it does not squash the page's content.
-    expect(aside?.className).toContain("fixed")
     expect(aside?.className).toContain("-translate-x-full")
+    // Absolute within the row the header leads, not fixed to the viewport: the
+    // banners above that row are in flow, so a viewport offset left the drawer
+    // over the top of the header by however tall they were, covering the one
+    // control that closes it.
+    expect(aside?.className).toContain("absolute")
+    expect(aside?.className).not.toContain("fixed")
+    expect(aside?.parentElement?.className).toContain("relative")
 
     const toggle = screen.getByRole("button", { name: "Open navigation" })
     expect(toggle).toHaveAttribute("aria-expanded", "false")
@@ -124,7 +135,7 @@ describe("AppShell responsive layout", () => {
     await renderShell()
 
     await user.click(screen.getByRole("button", { name: "Open navigation" }))
-    await user.click(screen.getByRole("link", { name: "Provider credentials" }))
+    await user.click(screen.getByRole("link", { name: "Providers" }))
 
     expect(await screen.findByText("PROVIDERS PAGE")).toBeInTheDocument()
     // Navigating closes the drawer so the page it landed on is not hidden behind it.
@@ -144,29 +155,44 @@ describe("AppShell responsive layout", () => {
     await renderShell()
 
     const overview = screen.getByRole("link", { name: "Overview" })
-    const providers = screen.getByRole("link", { name: "Provider credentials" })
+    const providers = screen.getByRole("link", { name: "Providers" })
     expect(overview).toHaveAttribute("aria-current", "page")
     expect(providers).not.toHaveAttribute("aria-current")
 
     await user.click(providers)
 
     expect(await screen.findByText("PROVIDERS PAGE")).toBeInTheDocument()
-    expect(
-      screen.getByRole("link", { name: "Provider credentials" }),
-    ).toHaveAttribute("aria-current", "page")
+    expect(screen.getByRole("link", { name: "Providers" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    )
     expect(screen.getByRole("link", { name: "Overview" })).not.toHaveAttribute(
       "aria-current",
     )
   })
 
-  it("renders the resizable rail (not a drawer) on desktop", async () => {
+  it("renders the rail at one fixed width (not a drawer) on desktop", async () => {
     mockMatchMedia(false)
     const { container } = await renderShell()
 
     const aside = container.querySelector("aside")
-    // Desktop keeps the in-flow, inline-width-driven rail rather than a fixed overlay.
-    expect(aside?.className).not.toContain("fixed")
-    expect(aside?.getAttribute("style")).toContain("width")
+    // Desktop keeps the in-flow rail rather than an overlay, and it is one
+    // width: no inline style, because nothing drags it any more.
+    expect(aside?.className).not.toContain("absolute")
+    expect(aside?.className).toContain("w-[16.5rem]")
+    expect(aside?.getAttribute("style")).toBeNull()
+    expect(
+      screen.queryByRole("separator", { name: "Resize sidebar" }),
+    ).toBeNull()
+  })
+
+  it("collapses to the narrow rail rather than to a remembered width", async () => {
+    mockMatchMedia(false)
+    const user = userEvent.setup()
+    const { container } = await renderShell()
+
+    await user.click(screen.getByRole("button", { name: "Collapse sidebar" }))
+    expect(container.querySelector("aside")?.className).toContain("w-[4.5rem]")
   })
 
   it("closes the drawer when the viewport grows past the mobile breakpoint", async () => {
@@ -213,20 +239,20 @@ describe("AppShell responsive layout", () => {
     ).toHaveFocus()
   })
 
-  it("closes the drawer when the backdrop is clicked", async () => {
+  it("fills the viewport below the top bar rather than floating over the page", async () => {
     mockMatchMedia(true)
     const user = userEvent.setup()
     const { container } = await renderShell()
 
+    // The design's drawer is the width of the phone, starting under the top bar.
+    // There is therefore nothing behind it to dim, which is why the backdrop that
+    // used to dismiss it is gone: the control in that bar is what closes it.
     await user.click(screen.getByRole("button", { name: "Open navigation" }))
-    const backdrop = container.querySelector(".fixed.inset-0")!
-    expect(backdrop).toBeInTheDocument()
 
-    await user.click(backdrop)
-
-    expect(
-      screen.getByRole("button", { name: "Open navigation" }),
-    ).toHaveAttribute("aria-expanded", "false")
+    const aside = container.querySelector("aside")!
+    expect(aside.className).toContain("w-full")
+    expect(aside.className).toContain("top-14")
+    expect(container.querySelector(".fixed.inset-0")).toBeNull()
   })
 
   it("marks the drawer inert while closed so its links leave the tab order", async () => {
@@ -241,23 +267,23 @@ describe("AppShell responsive layout", () => {
     )
   })
 
-  it("makes the background (header + main) inert while the drawer is open", async () => {
+  it("makes the page inert while the drawer is open, and leaves the top bar live", async () => {
     mockMatchMedia(true)
     const user = userEvent.setup()
     const { container } = await renderShell()
 
     const header = container.querySelector("header")!
     const main = container.querySelector("main")!
-    // Background is interactive until the modal drawer opens.
-    expect(header).not.toHaveAttribute("inert")
     expect(main).not.toHaveAttribute("inert")
 
     await user.click(screen.getByRole("button", { name: "Open navigation" }))
 
-    // aria-modal isn't universally honored, so inert is what actually keeps the
-    // obscured page out of the tab order and the accessibility tree.
-    expect(header).toHaveAttribute("inert")
+    // The page behind the drawer goes inert, which is what keeps controls nobody
+    // can see out of the tab order and the accessibility tree. The top bar does
+    // not: the control that closes the drawer is in it, and inerting it would
+    // strand a keyboard user with only Escape.
     expect(main).toHaveAttribute("inert")
+    expect(header).not.toHaveAttribute("inert")
   })
 
   it("moves focus to the main region via the skip link without changing the route", async () => {
@@ -310,15 +336,13 @@ describe("AppShell responsive layout", () => {
     })
   })
 
-  it("links to the bundled user guide from the sidebar footer", async () => {
+  it("links to the bundled user guide from the top bar", async () => {
     mockMatchMedia(false)
-    const user = userEvent.setup()
     await renderShell()
 
-    // Still reachable, now from the account menu rather than as its own row:
-    // the footer is one control, and the guide is one of the things it opens.
-    await user.click(screen.getByRole("button", { name: "Account" }))
-    const guideLink = await screen.findByRole("link", { name: "User guide" })
+    // In the top bar, where the design puts it, rather than inside the account
+    // menu: the guide is read alongside a page rather than instead of one.
+    const guideLink = await screen.findByRole("link", { name: "Documentation" })
     expect(guideLink).toHaveAttribute("href", "/docs")
   })
 
@@ -373,7 +397,7 @@ describe("AppShell surface gating", () => {
       "Usage",
       "Models",
       "API keys",
-      "Provider credentials",
+      "Providers",
       "Members",
     ])
     // Routing and Tools nest destinations, so they expand rather than
@@ -396,13 +420,20 @@ describe("AppShell surface gating", () => {
         .getAllByRole("link")
         .map((link) => link.textContent),
     ).toEqual([
-      "Members & roles",
       "Workspaces",
-      "Spend & budgets",
+      "Members & roles",
       "Users",
-      "Organization",
+      "Spend & budgets",
+      "Model pricing",
+      "Org settings",
       "Settings",
     ])
+    // The design's rail has four more rows (the organization's own Providers,
+    // Billing, Guardrails and Gateways), and each is gated on a surface a
+    // standalone gateway does not report, so none of them is here. The Gateway
+    // group is all four's worst case: both its rows are gated, so the heading
+    // goes with them.
+    expect(screen.queryByText("Gateway")).toBeNull()
   })
 
   it("hides a destination whose surface the deployment does not host", async () => {
@@ -418,19 +449,25 @@ describe("AppShell surface gating", () => {
     expect(screen.queryByRole("link", { name: "API keys" })).toBeNull()
     // Ungated and still present: the index is the deployment's front page.
     expect(screen.getByRole("link", { name: "Overview" })).toBeInTheDocument()
-    expect(
-      screen.getByRole("link", { name: "Provider credentials" }),
-    ).toBeInTheDocument()
+    expect(screen.getByRole("link", { name: "Providers" })).toBeInTheDocument()
   })
 
   it("drops a section header once its whole group is gated away", async () => {
     mockMatchMedia(false)
     await renderShell(bootstrap({ surfaces: ["models"] }))
 
-    // "Observe" labels Activity and Usage; with neither served, an empty
-    // heading over nothing is worse than no heading.
-    expect(screen.queryByText("Observe")).toBeNull()
+    // "Access" labels keys, providers and the workspace roster; with none of
+    // them served, an empty heading over nothing is worse than no heading.
+    expect(screen.queryByText("Access")).toBeNull()
     expect(screen.getByText("Gateway")).toBeInTheDocument()
+    // "Observe" goes with them. It labels the request log and the usage
+    // rollups, both gated on the usage surface, and the index that used to keep
+    // the heading alive now sits in its own group above it. The front page is
+    // still there, which is the part that matters: a deployment with no
+    // management surface at all is left with a landing row and no headings it
+    // cannot fill.
+    expect(screen.queryByText("Observe")).toBeNull()
+    expect(screen.getByRole("link", { name: "Overview" })).toBeInTheDocument()
   })
 })
 
@@ -468,7 +505,7 @@ describe("AppShell entitlement and flag gating", () => {
     })
 
     expect(
-      await screen.findByText("Provider credentials is not available here"),
+      await screen.findByText("Providers is not available here"),
     ).toBeInTheDocument()
     expect(screen.queryByText("PAGE CONTENT")).toBeNull()
   })
@@ -483,9 +520,14 @@ describe("AppShell entitlement and flag gating", () => {
     await renderShell(bootstrap(), { url: "/organization/members" })
 
     const members = await screen.findByRole("link", { name: "Members & roles" })
-    const parent = screen.getByRole("link", { name: "Organization" })
-    expect(members.className).toContain("bg-primary-subtle")
-    expect(parent.className).not.toContain("bg-primary-subtle")
+    const parent = screen.getByRole("link", { name: "Org settings" })
+    // The selected fill, which the navigation design draws as a lifted chip
+    // (`--color-surface-muted`, reached through `bg-surface-alt`) rather than the
+    // tinted `bg-primary-subtle` this rail used to wear. Asserted as the class
+    // because it is what a reader of the rail actually sees; `aria-current` is
+    // covered separately.
+    expect(members.className).toContain("bg-surface-alt")
+    expect(parent.className).not.toContain("bg-surface-alt")
   })
 
   it("names a gated-off child route after the child, not its parent", async () => {
@@ -545,6 +587,41 @@ describe("AppShell entitlement and flag gating", () => {
     expect(screen.queryByText(/^Back to /)).toBeNull()
   })
 
+  it("offers Create workspace to a role the server would let create one", async () => {
+    mockMatchMedia(false)
+    const user = userEvent.setup()
+    await renderShell()
+
+    await user.click(
+      await screen.findByRole("button", { name: /^Switch workspace/ }),
+    )
+    const menu = await screen.findByRole("dialog")
+    expect(
+      within(menu).getByRole("button", { name: "Create workspace" }),
+    ).toBeInTheDocument()
+  })
+
+  it("withholds Create workspace from a role the server would refuse", async () => {
+    mockMatchMedia(false)
+    const user = userEvent.setup()
+    // `POST /v1/workspaces` is owners and admins only, and the Workspaces page
+    // gates its own create control on the same predicate. Offering it here would
+    // hand a member the whole form and report the refusal as a 403 after they
+    // had typed a name.
+    await renderShell(bootstrap(), { context: { role: "member" } })
+
+    await user.click(
+      await screen.findByRole("button", { name: /^Switch workspace/ }),
+    )
+    const menu = await screen.findByRole("dialog")
+    expect(
+      within(menu).queryByRole("button", { name: "Create workspace" }),
+    ).toBeNull()
+    // The organization row is still there, so this is the create row missing
+    // rather than the menu failing to open.
+    expect(within(menu).getByText("Default Organization")).toBeInTheDocument()
+  })
+
   it("leaves the organization rail by its own way back", async () => {
     mockMatchMedia(false)
     await renderShell(bootstrap(), { url: "/organization/members" })
@@ -558,14 +635,74 @@ describe("AppShell entitlement and flag gating", () => {
     ).toBeNull()
   })
 
+  it("returns you to where you were on each rail rather than to its landing", async () => {
+    mockMatchMedia(false)
+    // The design's A ⇄ B note: crossing a rail should resume it, not reset it.
+    // Seeded through the memory rather than by navigating twice, because the
+    // controls under test are what read it.
+    window.localStorage.setItem(
+      "otari.dashboard.lastOrganizationLocation",
+      "/budgets",
+    )
+    await renderShell()
+
+    expect(
+      await screen.findByRole("link", { name: "Organization" }),
+    ).toHaveAttribute("href", "/budgets")
+  })
+
+  it("lands on the rail's own first page when there is nothing to resume", async () => {
+    mockMatchMedia(false)
+    // The solo-operator path: nothing remembered, so the way in must still be one
+    // click to somewhere useful rather than a dead control.
+    await renderShell()
+
+    expect(
+      await screen.findByRole("link", { name: "Organization" }),
+    ).toHaveAttribute("href", "/organization/members")
+  })
+
+  it("does not resume onto a destination this deployment gates off", async () => {
+    mockMatchMedia(false)
+    // Registered and still an organization destination, so the registry check
+    // passes it; the gateway was restarted against a config that no longer
+    // reports the surface. The only way onto that rail must not land on the
+    // "not available here" panel.
+    window.localStorage.setItem(
+      "otari.dashboard.lastOrganizationLocation",
+      "/settings",
+    )
+    await renderShell(bootstrap({ surfaces: ["organizations", "budgets"] }))
+
+    expect(
+      await screen.findByRole("link", { name: "Organization" }),
+    ).toHaveAttribute("href", "/organization/members")
+  })
+
+  it("does not record a gated-off route it answered with the panel", async () => {
+    mockMatchMedia(false)
+    // Reached by URL, refused by the shell. Recording it would make the panel
+    // the page the rail resumes to.
+    await renderShell(bootstrap({ surfaces: ["organizations"] }), {
+      url: "/settings",
+    })
+    await screen.findByText("Settings is not available here")
+
+    expect(
+      window.localStorage.getItem("otari.dashboard.lastOrganizationLocation"),
+    ).toBeNull()
+  })
+
   it("expands a nav group to reveal its nested destinations", async () => {
     mockMatchMedia(false)
     const user = userEvent.setup()
     await renderShell()
 
-    // Collapsed to start: the children are not in the tree at all, so they are
-    // not reachable by tab or by a screen reader while the group is shut.
+    // Shut to start. The panel stays mounted so it has a height to animate from,
+    // but it is `hidden` and `aria-hidden` while shut, so its rows are reachable
+    // by neither tab nor a screen reader until the group opens.
     expect(screen.queryByRole("link", { name: "Web search" })).toBeNull()
+    expect(screen.getByText("Web search").closest("[hidden]")).not.toBeNull()
 
     await user.click(screen.getByRole("button", { name: "Tools" }))
     expect(screen.getByRole("link", { name: "Web search" })).toBeInTheDocument()
@@ -592,11 +729,26 @@ describe("AppShell entitlement and flag gating", () => {
     await renderShell()
 
     // The header carried this until the sidebar grew an account block.
-    expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Log out" })).toBeNull()
     await user.click(screen.getByRole("button", { name: "Account" }))
     expect(
-      await screen.findByRole("button", { name: "Sign out" }),
+      await screen.findByRole("button", { name: "Log out" }),
     ).toBeInTheDocument()
+  })
+
+  it("keeps the bundled guide reachable from the account menu, for the phone", async () => {
+    mockMatchMedia(false)
+    const user = userEvent.setup()
+    await renderShell()
+
+    // The top bar's cluster is `hidden md:flex`, and this menu is what the
+    // mobile drawer contains, so without this row the guide has no control
+    // pointing at it below the breakpoint. The row carries `md:hidden` for the
+    // mirror-image reason: above it, the top bar already answers.
+    await user.click(screen.getByRole("button", { name: "Account" }))
+    const guideRow = await screen.findByRole("link", { name: "Documentation" })
+    expect(guideRow).toHaveAttribute("href", "/docs")
+    expect(guideRow).toHaveClass("md:hidden")
   })
 
   it("names the scope and the page, leaving out an organization there is one of", async () => {
@@ -637,14 +789,54 @@ describe("AppShell entitlement and flag gating", () => {
 
   it("drops a nested destination whose own surface the deployment lacks", async () => {
     mockMatchMedia(false)
-    const user = userEvent.setup()
     // Guardrails is grouped under Routing but served by the tools surface. The
     // link used to render anyway and land on the "not available here" panel.
     await renderShell(bootstrap({ surfaces: ["routing"] }))
 
-    await user.click(screen.getByRole("button", { name: "Routing" }))
-    expect(screen.getByRole("link", { name: "Policies" })).toBeInTheDocument()
     expect(screen.queryByRole("link", { name: "Guardrails" })).toBeNull()
+    // And with Guardrails gone, Routing holds one child, so it stops being a
+    // group: a disclosure that opens onto a single row asks for a click to tell
+    // you nothing. The row wears the parent's name and goes straight to it.
+    expect(screen.queryByRole("button", { name: "Routing" })).toBeNull()
+    const routing = await screen.findByRole("link", { name: "Routing" })
+    expect(routing).toHaveAttribute("href", "/routing")
+    expect(screen.queryByRole("link", { name: "Policies" })).toBeNull()
+  })
+
+  it("answers a nested route with the panel when the child's own surface is gone", async () => {
+    mockMatchMedia(false)
+    // The other half of the case above: dropping the link is not enough, because
+    // a bookmark still reaches the route. `NAV_CHILD_PARENTS` carries the child's
+    // surface onto the entry `navItemForPath` answers with, which is what lets
+    // the shell refuse a path whose *parent* surface it does host.
+    await renderShell(bootstrap({ surfaces: ["routing"] }), {
+      url: "/tools/guardrails",
+    })
+
+    expect(
+      await screen.findByText("Guardrails is not available here"),
+    ).toBeInTheDocument()
+    expect(screen.queryByText("PAGE CONTENT")).toBeNull()
+  })
+
+  it("reaches a group's nested destinations from the collapsed rail", async () => {
+    mockMatchMedia(false)
+    const user = userEvent.setup()
+    // The gap this closes: collapsed, the group used to link straight to its own
+    // page, so Web search and Code execution had no affordance at all and a
+    // bookmark was the only way back to them.
+    window.localStorage.setItem("otari.dashboard.sidebarCollapsed", "1")
+    await renderShell()
+
+    expect(screen.queryByRole("link", { name: "Tools" })).toBeNull()
+    await user.click(screen.getByRole("button", { name: "Tools" }))
+
+    expect(
+      await screen.findByRole("link", { name: "Web search" }),
+    ).toHaveAttribute("href", "/tools/web-search")
+    expect(
+      screen.getByRole("link", { name: "Code execution" }),
+    ).toBeInTheDocument()
   })
 
   it("marks one link as the current page on a nested route", async () => {

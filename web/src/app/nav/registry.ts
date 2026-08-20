@@ -1,19 +1,23 @@
 import {
-  ActivityIcon,
-  BudgetsIcon,
-  KeysIcon,
-  MembersIcon,
-  ModelsIcon,
-  OrganizationIcon,
-  OverviewIcon,
-  ProvidersIcon,
-  RoutingIcon,
-  SettingsIcon,
-  ToolsIcon,
-  UsageIcon,
-  UsersIcon,
-  WorkspacesIcon,
-} from "./icons"
+  FiActivity,
+  FiBarChart2,
+  FiBox,
+  FiCode,
+  FiCreditCard,
+  FiDollarSign,
+  FiGlobe,
+  FiGrid,
+  FiHome,
+  FiKey,
+  FiLayers,
+  FiRepeat,
+  FiServer,
+  FiShield,
+  FiSliders,
+  FiTag,
+  FiTool,
+  FiUsers,
+} from "react-icons/fi"
 import { OVERLAY_NAV_LABEL_OVERRIDES } from "./overlayLabelOverrides"
 import {
   OVERLAY_NAV_SECTIONS,
@@ -25,14 +29,14 @@ import type { NavItem, NavLabelOverride, NavSection } from "./types"
  * The sidebar the base build ships, and the only place a destination is
  * declared.
  *
- * Sections render in this order. "Observability" is what the gateway did (the
- * request log and the usage rollups over it); "Catalog" is what the gateway
- * serves (providers, their models, and the policies that route over them);
- * "Organization" is the tenant the deployment belongs to (itself, its roster,
- * and the workspaces it is divided into); "Access" is who may call it (users,
- * keys, budgets); the unlabeled first and last groups hold the index and the
- * standalone config, set off by a divider rather than a heading. Grouping keeps
- * the list legible as the dashboard grows.
+ * Sections render in this order. The index leads, alone and unlabeled, because
+ * it is the rail's destination rather than a member of a category: it is where
+ * the sidebar puts you back, not one of the places you go from it. The three
+ * below it are the design's: "Observe" is where you look (the request log and
+ * the usage rollups over it), "Gateway" is what the gateway serves (models, the
+ * policies that route over them, and the tools it can call), and "Access" is who
+ * may call it (keys, the upstream credentials those keys spend, and the
+ * workspace's roster).
  *
  * Each entry declares its own gating, and the three axes are independent:
  * `surface` (does this deployment host it), `capability` (is it entitled), and
@@ -42,11 +46,15 @@ import type { NavItem, NavLabelOverride, NavSection } from "./types"
  */
 const BASE_NAV_SECTIONS = [
   {
-    id: "home",
+    // Headingless on purpose, and the one section in this rail that is. A label
+    // over a single row would read as a category with one member, and the index
+    // is not a category: it is the row every other row is a departure from. The
+    // gap the shell already puts between sections is what separates it.
+    id: "index",
     items: [
       // Ungated on every axis: the index is the deployment's own front page and
       // reads whatever it is allowed to.
-      { to: "/", label: "Overview", icon: OverviewIcon },
+      { to: "/", label: "Overview", icon: FiHome },
     ],
   },
   {
@@ -59,16 +67,16 @@ const BASE_NAV_SECTIONS = [
         to: "/activity",
         label: "Activity",
         surface: "usage",
-        icon: ActivityIcon,
+        icon: FiActivity,
       },
-      { to: "/usage", label: "Usage", surface: "usage", icon: UsageIcon },
+      { to: "/usage", label: "Usage", surface: "usage", icon: FiBarChart2 },
     ],
   },
   {
     id: "gateway",
     label: "Gateway",
     items: [
-      { to: "/models", label: "Models", surface: "models", icon: ModelsIcon },
+      { to: "/models", label: "Models", surface: "models", icon: FiLayers },
       // Deliberately not tagged `capability: "routing"`, though otari.ai's
       // registry tags its own Routing item that way. ARCHITECTURE.md's
       // capability lines mark the routing split (how much is core base, how
@@ -81,7 +89,7 @@ const BASE_NAV_SECTIONS = [
         to: "/routing",
         label: "Routing",
         surface: "routing",
-        icon: RoutingIcon,
+        icon: FiRepeat,
         // Policies and Guardrails as the navigation prototype groups them. The
         // prototype's third entry, Aliases, is deliberately absent: this
         // dashboard lists an alias as the one-target policy it is, in the same
@@ -90,10 +98,11 @@ const BASE_NAV_SECTIONS = [
         // group two entries for one page, and the second could never highlight.
         // It comes back if and when Routing grows a separate alias view.
         children: [
-          { to: "/routing", label: "Policies" },
+          { to: "/routing", label: "Policies", icon: FiRepeat },
           {
             to: "/tools/guardrails",
             label: "Guardrails",
+            icon: FiShield,
             // Grouped with Routing, served by the tools surface.
             surface: "tools",
           },
@@ -103,16 +112,30 @@ const BASE_NAV_SECTIONS = [
         to: "/tools",
         label: "Tools",
         surface: "tools",
-        icon: ToolsIcon,
+        icon: FiTool,
         // Two of the three services the page configures; Guardrails is grouped
         // under Routing, where the prototype puts it. The prototype lists MCP
         // servers here too, and the gateway has no MCP server registry to
         // manage (only per-request config a caller passes in, plus two safety
         // toggles on Settings), so it is left out rather than linked to an
         // empty page.
+        //
+        // `to` gates and names the group; it is not somewhere the rail
+        // navigates. A group with more than one visible child is a disclosure
+        // when expanded and a flyout when collapsed, and neither offers the
+        // parent, so `/tools` (the three services on one page) is reachable by
+        // URL only. Deliberate: each service has its own destination here, and
+        // Guardrails belongs to Routing, so a row for the combined page would
+        // duplicate all three and cross the grouping the design draws. Routing
+        // leads with Policies because `/routing` *is* the policies page, not to
+        // make a parent reachable.
         children: [
-          { to: "/tools/web-search", label: "Web search" },
-          { to: "/tools/code-execution", label: "Code execution" },
+          { to: "/tools/web-search", label: "Web search", icon: FiGlobe },
+          {
+            to: "/tools/code-execution",
+            label: "Code execution",
+            icon: FiCode,
+          },
         ],
       },
     ],
@@ -121,12 +144,15 @@ const BASE_NAV_SECTIONS = [
     id: "access",
     label: "Access",
     items: [
-      { to: "/keys", label: "API keys", surface: "keys", icon: KeysIcon },
+      { to: "/keys", label: "API keys", surface: "keys", icon: FiKey },
+      // "Providers", not "Provider credentials": the page manages the
+      // credential *and* the instance it belongs to, the rail has one line for
+      // it, and a two-word label is what the rest of this group reads like.
       {
         to: "/providers",
-        label: "Provider credentials",
+        label: "Providers",
         surface: "providers",
-        icon: ProvidersIcon,
+        icon: FiBox,
       },
       // The selected workspace's roster, not the organization's. The
       // organization roster is "Members & roles" in the other context, and the
@@ -135,7 +161,7 @@ const BASE_NAV_SECTIONS = [
         to: "/members",
         label: "Members",
         surface: "workspaces",
-        icon: MembersIcon,
+        icon: FiUsers,
       },
     ],
   },
@@ -152,45 +178,122 @@ const BASE_NAV_SECTIONS = [
  * provisioned for itself. The gate is written anyway because it is the thing
  * that becomes load-bearing the moment per-user sign-in lands (otari-ai#1716).
  *
- * Four entries in the prototype have no page here and are deliberately absent
- * rather than stubbed: Billing, Gateways, Guardrail ceiling, and a separate
- * org-scoped provider-credentials view.
+ * Four of the design's rows are destinations this gateway does not serve:
+ * Billing, Gateways, the organization's own provider credentials, and the
+ * organization guardrail ceiling. Each is **declared and gated on a surface the
+ * standalone bootstrap does not report** (`STANDALONE_SURFACES` in
+ * `src/gateway/api/routes/bootstrap.py` is that list), so the row is absent here
+ * and present on a deployment that serves it, and a group whose every row is
+ * gated drops entirely, heading included.
+ *
+ * The surface axis rather than the capability one, and that is a constraint
+ * rather than a preference: `registry.test.ts` requires every capability a base
+ * entry names to be in `BASE_CAPABILITIES`, that is, to be granted, so a
+ * capability gate cannot express "declared but not served" without relaxing that
+ * invariant. A surface gate says exactly this and needs no test change.
+ *
+ * Two of the four have a page on the *workspace* rail that looks like them and
+ * is not: `/providers` is this process's credentials, and `/tools/guardrails` is
+ * what this process refuses. The organization copies would be a tenant-wide
+ * credential set and a ceiling over every workspace, which are different tables
+ * behind different endpoints. Pointing the organization rows at the workspace
+ * pages would put one destination on both rails, which `navContextForPath`
+ * cannot express and `registry.test.ts` forbids.
  */
 const ORGANIZATION_NAV_SECTIONS = [
   {
     id: "org-people",
     label: "People & access",
     items: [
-      {
-        to: "/organization/members",
-        label: "Members & roles",
-        surface: "organizations",
-        icon: MembersIcon,
-      },
+      // Absent from the design, which switches workspace from the scope menu and
+      // has no list page. Kept because this is the only place a workspace is
+      // renamed, deleted, or has its roster read, and the scope menu offers none
+      // of that.
       {
         to: "/workspaces",
         label: "Workspaces",
         surface: "workspaces",
-        icon: WorkspacesIcon,
+        icon: FiGrid,
+      },
+      {
+        to: "/organization/members",
+        label: "Members & roles",
+        surface: "organizations",
+        icon: FiUsers,
+      },
+      // Absent from the design, which folds per-user spend into "Spend &
+      // budgets". Kept because a budget names a `users` row, so this is the only
+      // place a budget is attached to anything. It sits beside the members
+      // rather than beside the budgets it feeds, because what the page edits is
+      // an identity: the two identity tables have not merged yet (M4), and this
+      // row stops being a destination when they do.
+      { to: "/users", label: "Users", surface: "users", icon: FiUsers },
+      // The organization's own upstream credentials, which is a different table
+      // from the workspace rail's `/providers`: over there a credential belongs
+      // to the process, here it would belong to the tenant. This gateway has only
+      // the first, so the row is declared and gated off. See the note below.
+      {
+        to: "/organization/provider-keys",
+        label: "Providers",
+        surface: "organization_providers",
+        icon: FiBox,
       },
     ],
   },
   {
     id: "org-money",
-    label: "Money",
+    label: "Cost & billing",
     items: [
       {
         to: "/budgets",
         label: "Spend & budgets",
         surface: "budgets",
-        icon: BudgetsIcon,
+        icon: FiDollarSign,
       },
-      // Absent from the prototype, which folds per-user spend into "Spend &
-      // budgets". Kept because it is still the only place a budget is attached
-      // to anything: a budget names a `users` row, and that table has not merged
-      // into the tenancy identity yet (M4). It moves under Spend & budgets, and
-      // stops being a destination, when it does.
-      { to: "/users", label: "Users", surface: "users", icon: UsersIcon },
+      {
+        to: "/organization/billing",
+        label: "Billing",
+        surface: "billing",
+        icon: FiCreditCard,
+      },
+      // Tenant-scoped in fact as well as in the design: a rate applies to every
+      // workspace and every key in the deployment. The catalog had no home
+      // before (its refresh flow sat in the gateway's runtime Settings next to
+      // the master key), so this is where it lives, while one model's rate stays
+      // on Models, beside the model it prices.
+      {
+        to: "/organization/pricing",
+        label: "Model pricing",
+        // `pricing`, not `settings`: the table and the refresh flow are
+        // `/v1/pricing`, its own router, and this page reads `/v1/settings` only
+        // for the policy banner. This gateway serves the surfaces as one set, so
+        // the two are the same answer here; the axis exists for the deployment
+        // where they come apart, and there this row would otherwise offer a page
+        // whose data is not served.
+        surface: "pricing",
+        icon: FiTag,
+      },
+    ],
+  },
+  {
+    id: "org-gateway",
+    label: "Gateway",
+    items: [
+      // The organization's guardrail ceiling, which is not the workspace rail's
+      // `/tools/guardrails`: that page configures what this process refuses, and
+      // this one would cap what any workspace under the tenant may allow.
+      {
+        to: "/organization/guardrails",
+        label: "Guardrails",
+        surface: "organization_guardrails",
+        icon: FiShield,
+      },
+      {
+        to: "/organization/gateways",
+        label: "Gateways",
+        surface: "gateways",
+        icon: FiServer,
+      },
     ],
   },
   {
@@ -199,15 +302,19 @@ const ORGANIZATION_NAV_SECTIONS = [
     items: [
       {
         to: "/organization",
-        label: "Organization",
+        label: "Org settings",
         surface: "organizations",
-        icon: OrganizationIcon,
+        icon: FiSliders,
       },
+      // No slot in the design, which has no gateway of its own to configure: this
+      // is the process's runtime settings (the master key, the safety toggles,
+      // the defaults), and it is the tenant's in the only sense that matters here,
+      // because the tenant is the deployment.
       {
         to: "/settings",
         label: "Settings",
         surface: "settings",
-        icon: SettingsIcon,
+        icon: FiSliders,
       },
     ],
   },
@@ -411,6 +518,29 @@ export function navItemForPath(pathname: string): NavItem | undefined {
   return NAV_ITEMS.filter(
     (item) => item.to !== "/" && pathname.startsWith(`${item.to}/`),
   ).sort((a, b) => b.to.length - a.to.length)[0]
+}
+
+/**
+ * Whether this deployment serves the destination at this pathname.
+ *
+ * One predicate for every caller that asks that question, which is the point:
+ * the shell asks it to decide between a page and the "not available here" panel,
+ * and the rail memory asks it to decide whether a stored destination is still
+ * somewhere to send you. Two implementations of the same rule drift, and they
+ * drift in the direction where the memory resumes onto the panel.
+ *
+ * Nesting is where the rule has an edge: `navItemForPath` answers a child with
+ * its parent carrying the child's `surface`, so a child is gated on *its own*
+ * surface rather than on the group's, plus the parent's capability and flag. A
+ * path the registry does not declare (the guide, the 404 splat) is not gated at
+ * all, and this says so with `true`.
+ */
+export function isPathVisible(
+  pathname: string,
+  isVisible: (item: NavItem) => boolean,
+): boolean {
+  const item = navItemForPath(pathname)
+  return item === undefined || isVisible(item)
 }
 
 /** A section that has at least one visible entry, paired with those entries. */

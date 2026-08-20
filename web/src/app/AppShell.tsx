@@ -1,15 +1,23 @@
+import { Button, Disclosure, Popover } from "@heroui/react"
 import { Link, Outlet, useLocation } from "@tanstack/react-router"
 import { clsx } from "clsx"
-import type {
-  KeyboardEvent as ReactKeyboardEvent,
-  MouseEvent as ReactMouseEvent,
-  PointerEvent as ReactPointerEvent,
-} from "react"
+import type { MouseEvent as ReactMouseEvent } from "react"
 import { useCallback, useEffect, useRef, useState } from "react"
+import type { IconType } from "react-icons"
+import {
+  FiArrowLeft,
+  FiChevronDown,
+  FiMenu,
+  FiSettings,
+  FiSidebar,
+  FiX,
+} from "react-icons/fi"
 import { ConnectionStatus } from "@/app/ConnectionStatus"
 import { AccountMenu } from "@/app/nav/AccountMenu"
 import { Breadcrumbs } from "@/app/nav/Breadcrumbs"
+import { lastLocation, rememberLocation } from "@/app/nav/navigationHistory"
 import {
+  isPathVisible,
   NAV_SECTIONS,
   navContextForPath,
   navItemForPath,
@@ -17,7 +25,14 @@ import {
   ORG_NAV_SECTIONS,
   visibleNavSections,
 } from "@/app/nav/registry"
-import type { NavItem } from "@/app/nav/types"
+import {
+  NAV_ICON_CLASS,
+  NAV_SECTION_HEADING_CLASS,
+  navIndicatorClass,
+  navRowClass,
+} from "@/app/nav/rowStyles"
+import { TopBarActions } from "@/app/nav/TopBarActions"
+import type { NavItem, NavPath } from "@/app/nav/types"
 import { useNavVisibility } from "@/app/nav/useNavVisibility"
 import { WorkspaceSwitcher } from "@/app/nav/WorkspaceSwitcher"
 import { UpdatePrompt } from "@/app/UpdatePrompt"
@@ -27,53 +42,26 @@ import { useOrganizationContext } from "@/shared/api/hooks"
 import { EmptyState } from "@/shared/components/ui"
 import { useSelectedWorkspace } from "@/shared/hooks/SelectedWorkspace"
 
-const MIN_SIDEBAR = 200
-const MAX_SIDEBAR = 480
-const DEFAULT_SIDEBAR = 240
-const COLLAPSED_SIDEBAR = 60
-const SIDEBAR_WIDTH_KEY = "otari.dashboard.sidebarWidth"
+// One width, not a range. The rail used to be draggable between 200 and 480px
+// and to remember where it was left; it is now the design's 264px, or 72px
+// collapsed, which is also what `otari-ai/frontend`'s shell is fixed at
+// (`w-[16.5rem]` / `w-[4.5rem]`). Collapse is the only size control, and the
+// only one either rail needs: the rows inside are a fixed layout, so the width
+// between those two values buys a longer truncation point and nothing else,
+// while a drag handle on the page's main seam is a thing to catch by accident.
+const SIDEBAR_WIDTH = "w-[16.5rem]"
+const COLLAPSED_SIDEBAR_WIDTH = "w-[4.5rem]"
 const SIDEBAR_COLLAPSED_KEY = "otari.dashboard.sidebarCollapsed"
-const SIDEBAR_STEP = 16
 
 // Below this width the sidebar's fixed footprint squashes page content, so it
 // switches to an off-canvas drawer toggled from the header. Matches Tailwind's
 // `md` breakpoint (the classes that hide the trigger and drawer chrome use `md:`).
 const MOBILE_QUERY = "(max-width: 767px)"
 
-const clampSidebar = (width: number) =>
-  Math.min(MAX_SIDEBAR, Math.max(MIN_SIDEBAR, width))
-
 function readIsMobile(): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function")
     return false
   return window.matchMedia(MOBILE_QUERY).matches
-}
-
-const FOCUSABLE_SELECTOR =
-  'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
-
-// Visible, focusable descendants of a container, in DOM order. offsetParent is
-// null for display:none nodes (e.g. the desktop-only collapse chevron on mobile),
-// so filtering on it keeps the focus trap's first/last from landing on a hidden
-// control that can't actually take focus.
-function getFocusable(container: HTMLElement | null): HTMLElement[] {
-  if (!container) return []
-  return Array.from(
-    container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-  ).filter((el) => el.offsetParent !== null || el === document.activeElement)
-}
-
-function readStoredSidebarWidth(): number {
-  if (typeof window === "undefined") return DEFAULT_SIDEBAR
-  try {
-    const raw = window.localStorage.getItem(SIDEBAR_WIDTH_KEY)
-    const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN
-    return Number.isNaN(parsed) ? DEFAULT_SIDEBAR : clampSidebar(parsed)
-  } catch {
-    // Storage can throw when disabled (e.g. blocked cookies / private mode);
-    // fall back to the default rather than white-screening the shell.
-    return DEFAULT_SIDEBAR
-  }
 }
 
 function readStoredCollapsed(): boolean {
@@ -85,38 +73,93 @@ function readStoredCollapsed(): boolean {
   }
 }
 
-// Shared by the nav links and the user-guide link below them, so the two agree
-// on shape and only differ in what marks the current page.
-const navLinkClass = (collapsed: boolean) =>
-  clsx(
-    "flex items-center rounded-lg py-2 text-sm font-medium transition-colors",
-    collapsed ? "justify-center px-0" : "gap-3 px-3",
+/**
+ * One row of the rail, pointing at one destination.
+ *
+ * Shared by the leaves, a group's children, and a group that has collapsed to a
+ * single child, so the three cannot drift: they are the same row with a
+ * different indent and a different label.
+ *
+ * Collapsed, the label survives as the accessible name and as the tooltip,
+ * because the visible text is what a sighted reader loses and the only thing an
+ * assistive one had.
+ */
+function NavRowLink({
+  to,
+  label,
+  icon: Icon,
+  isActive,
+  collapsed,
+  nested,
+  onNavigate,
+}: {
+  to: NavPath
+  label: string
+  icon?: IconType
+  isActive: boolean
+  collapsed?: boolean
+  nested?: boolean
+  onNavigate: () => void
+}) {
+  return (
+    <Link
+      to={to}
+      // Exact, because the default is a prefix match: on /organization/members
+      // that leaves `aria-current` on "Organization" as well as on the child.
+      activeOptions={{ exact: true }}
+      onClick={onNavigate}
+      className={navRowClass({ isActive, collapsed, nested })}
+      aria-label={collapsed ? label : undefined}
+      title={collapsed ? label : undefined}
+    >
+      {/* A nested row draws no glyph: the indent is what marks it as one, and
+          repeating the parent's lane would undo that. The flyout a collapsed
+          group opens is the exception, and it is not nested: those rows hang in
+          a menu with no indent to read. */}
+      {Icon && !nested ? (
+        <Icon className={NAV_ICON_CLASS} aria-hidden="true" />
+      ) : null}
+      {collapsed ? null : (
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+      )}
+    </Link>
   )
-const NAV_ACTIVE = "bg-primary-subtle text-primary-subtle-foreground"
-const NAV_INACTIVE = "text-muted hover:bg-surface-alt hover:text-foreground"
+}
 
 /**
- * A sidebar entry with destinations nested under it, drawn the way the
- * navigation prototype draws Routing and Tools: a row that expands rather than
- * navigates, and indented children below it.
+ * A sidebar entry with destinations nested under it, drawn the way the design
+ * draws Routing and Tools: a row that expands rather than navigates, and
+ * indented children below it.
  *
  * Open when the current route is one of its children, so arriving by URL shows
  * where you are rather than a collapsed group. Held in state after that, so
  * closing it stays closed while you read the page it opened.
  *
- * Not rendered when the rail is collapsed: there is no width for the labels, and
- * the parent's icon links straight to its own page instead.
+ * Three shapes, and which one it takes is decided by how many children survive
+ * gating and whether the rail is collapsed:
+ *
+ * **One child** and it is not a group at all, but that child wearing the
+ * parent's name and glyph. A disclosure that opens onto a single row asks for a
+ * click to tell you nothing, and this is reachable: a deployment without the
+ * tools surface leaves Routing holding only Policies.
+ *
+ * **Collapsed** and it is an icon that opens a flyout of the children. This is
+ * the case the rail used to lose: the parent linked straight to its own page, so
+ * Guardrails, Web search and Code execution had no collapsed affordance at all
+ * and a bookmark was the only way back to them.
  */
 function NavGroup({
   item,
   currentPath,
   onNavigate,
   isVisible,
+  collapsed,
 }: {
   item: NavItem
   currentPath: string
   onNavigate: () => void
   isVisible: (item: NavItem) => boolean
+  collapsed: boolean
 }) {
   // A child declaring its own surface is gated on it. Without this the field
   // was decoration: Guardrails is grouped under Routing but served by the tools
@@ -127,6 +170,7 @@ function NavGroup({
   )
   const holdsCurrent = children.some((child) => child.to === currentPath)
   const [open, setOpen] = useState(holdsCurrent)
+  const [flyoutOpen, setFlyoutOpen] = useState(false)
   // Follows the route when navigation lands inside the group from elsewhere
   // (a link on a page, a bookmark), without fighting a manual close.
   const [lastHeld, setLastHeld] = useState(holdsCurrent)
@@ -135,56 +179,115 @@ function NavGroup({
     if (holdsCurrent) setOpen(true)
   }
 
-  return (
-    <div className="flex flex-col gap-1">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-        className={clsx(
-          navLinkClass(false),
-          "justify-between",
-          holdsCurrent ? NAV_ACTIVE : NAV_INACTIVE,
-        )}
-      >
-        <span className="flex items-center gap-3">
-          {item.icon}
-          {item.label}
-        </span>
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          className={clsx(
-            "h-4 w-4 shrink-0 transition-transform motion-reduce:transition-none",
-            open && "rotate-90",
-          )}
+  const only = children.length === 1 ? children[0] : undefined
+  if (only) {
+    return (
+      <NavRowLink
+        to={only.to}
+        label={item.label}
+        icon={item.icon}
+        isActive={currentPath === only.to}
+        collapsed={collapsed}
+        onNavigate={onNavigate}
+      />
+    )
+  }
+
+  if (collapsed) {
+    return (
+      <Popover isOpen={flyoutOpen} onOpenChange={setFlyoutOpen}>
+        {/* HeroUI's Button, not a plain one: the popover wires its trigger
+            through react-aria, and a bare <button> leaves it unopenable. */}
+        <Button
+          variant="ghost"
+          aria-label={item.label}
+          className={`${navRowClass({ isActive: holdsCurrent, collapsed: true })} w-auto!`}
         >
-          <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
-      {open
-        ? children.map((child) => (
-            <Link
-              key={child.to}
-              to={child.to}
-              activeOptions={{ exact: true }}
-              onClick={onNavigate}
-              className={clsx(
-                navLinkClass(false),
-                // Indented to the parent's label rather than its icon, which is
-                // what marks it as nested without repeating a glyph.
-                "pl-11",
-                currentPath === child.to ? NAV_ACTIVE : NAV_INACTIVE,
-              )}
-            >
-              {child.label}
-            </Link>
-          ))
-        : null}
-    </div>
+          <item.icon className={NAV_ICON_CLASS} aria-hidden="true" />
+        </Button>
+        <Popover.Content placement="right top">
+          <Popover.Dialog
+            aria-label={item.label}
+            className="flex w-56 flex-col gap-0.5"
+          >
+            {/* Named, because the icon that opened this is the only other thing
+                saying which group these belong to, and it is off to the side. */}
+            <p className="flex min-h-8 items-center px-3 text-overline">
+              {item.label}
+            </p>
+            {children.map((child) => (
+              <NavRowLink
+                key={child.to}
+                to={child.to}
+                label={child.label}
+                icon={child.icon}
+                isActive={currentPath === child.to}
+                onNavigate={() => {
+                  setFlyoutOpen(false)
+                  onNavigate()
+                }}
+              />
+            ))}
+          </Popover.Dialog>
+        </Popover.Content>
+      </Popover>
+    )
+  }
+
+  return (
+    // HeroUI's own disclosure, which is what `otari-ai/frontend`'s
+    // `NavigationBranch` opens its branches with, so the two rails expand the
+    // same way. React Aria measures the panel and writes
+    // `--disclosure-panel-height` onto it, which is the variable HeroUI's
+    // `.disclosure__content` transitions (200ms height on `--ease-out-quad`,
+    // 200ms opacity on `--ease-out`), so the rows slide open *and* shut rather
+    // than appearing and vanishing.
+    //
+    // The gap belongs to the expanded state only: the panel stays mounted at
+    // zero height while shut, so an unconditional gap would leave a stray 2px
+    // hanging under every closed group.
+    <Disclosure
+      isExpanded={open}
+      onExpandedChange={setOpen}
+      className={clsx("flex flex-col", open && "gap-0.5")}
+    >
+      <Disclosure.Heading>
+        <Disclosure.Trigger className={navRowClass({ isActive: holdsCurrent })}>
+          <item.icon className={NAV_ICON_CLASS} aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate text-left">
+            {item.label}
+          </span>
+          <FiChevronDown
+            aria-hidden="true"
+            className={navIndicatorClass({ open })}
+          />
+        </Disclosure.Trigger>
+      </Disclosure.Heading>
+      {/* The rows sit straight in the panel rather than in a `Disclosure.Body`,
+          which wraps its children in a div carrying 0.5rem of padding that no
+          className can reach: it would inset these rows from the lane their
+          siblings share and clip their fill short at both edges. */}
+      {/* `focus-within:overflow-visible` because HeroUI's `.disclosure__content`
+          is `overflow: clip` (that is what keeps the rows out of sight while the
+          panel animates), and a nested row is exactly the panel's width, so the
+          2px its focus ring paints outside its border box was being cut off on
+          every edge. The clip is only needed while the panel is moving, and it
+          cannot be moving while something inside it holds focus: closing the
+          group puts focus on the trigger, which is outside the panel. */}
+      <Disclosure.Content className="flex flex-col focus-within:overflow-visible">
+        {children.map((child) => (
+          <NavRowLink
+            key={child.to}
+            to={child.to}
+            label={child.label}
+            icon={child.icon}
+            isActive={currentPath === child.to}
+            nested
+            onNavigate={onNavigate}
+          />
+        ))}
+      </Disclosure.Content>
+    </Disclosure>
   )
 }
 
@@ -199,7 +302,11 @@ export function AppShell() {
   // server would refuse. An unregistered path (the guide, the 404 splat) has no
   // entry and is never gated.
   const currentItem = navItemForPath(pathname)
-  const routeIsGatedOff = currentItem !== undefined && !isVisible(currentItem)
+  // Through the registry's predicate rather than `isVisible(currentItem)` here,
+  // so this and the rail memory cannot answer "is this destination served"
+  // differently: whichever way the nested case resolves, both read it from one
+  // place.
+  const routeIsGatedOff = !isPathVisible(pathname, isVisible)
   // Which of the two sidebars this path belongs under. The organization context
   // is a separate rail reached from the footer, not a section inside the
   // workspace one, so the two never render together.
@@ -225,19 +332,32 @@ export function AppShell() {
   const managesOrganization =
     canManage(organization.data) || organization.isError
 
+  // Both rails remember where you were, so the controls that cross between them
+  // return you rather than resetting you. Recorded here rather than on those
+  // controls' clicks, so leaving a rail by a link on a page or by a bookmark
+  // updates the memory too.
+  // Both halves take the visibility predicate: a gated-off destination is
+  // registered and reachable by URL, so without it the memory would both record
+  // the visit that landed on "not available here" and resume onto it.
+  useEffect(() => {
+    rememberLocation(pathname, isVisible)
+  }, [pathname, isVisible])
+  const organizationLanding = lastLocation("organization", isVisible)
+  const workspaceLanding = lastLocation("workspace", isVisible)
+  // Named once: the same string is the row's visible text, its accessible name
+  // when collapsed, and its tooltip, and three copies of it is three chances for
+  // the name a screen reader hears to drift from the one on screen.
+  const backLabel = `Back to ${selectedWorkspace?.name ?? "workspace"}`
+
   const asideRef = useRef<HTMLElement>(null)
   const mainRef = useRef<HTMLElement>(null)
   const toggleRef = useRef<HTMLButtonElement>(null)
-  const [sidebarWidth, setSidebarWidth] = useState<number>(
-    readStoredSidebarWidth,
-  )
   const [collapsed, setCollapsed] = useState<boolean>(readStoredCollapsed)
-  const [resizing, setResizing] = useState(false)
   const [isMobile, setIsMobile] = useState<boolean>(readIsMobile)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   // Track the mobile breakpoint so the sidebar can render as an off-canvas
-  // drawer below it and as the resizable rail above it. Closing the drawer when
+  // drawer below it and as the fixed-width rail above it. Closing the drawer when
   // the viewport grows past the breakpoint keeps a stale open state from leaving
   // a fixed overlay stranded over the desktop layout.
   useEffect(() => {
@@ -286,39 +406,6 @@ export function AppShell() {
     }
   }, [isMobile, mobileNavOpen])
 
-  // Keep Tab within the open drawer so focus cannot wander to the page behind the
-  // backdrop. Paired with the aside being inert while closed, this bounds keyboard
-  // focus to whichever surface is actually interactive.
-  const trapFocus = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key !== "Tab") return
-    const focusables = getFocusable(asideRef.current)
-    if (focusables.length === 0) return
-    const first = focusables[0]
-    const last = focusables[focusables.length - 1]
-    const active = document.activeElement
-    if (event.shiftKey && (active === first || active === asideRef.current)) {
-      event.preventDefault()
-      last.focus()
-    } else if (!event.shiftKey && active === last) {
-      event.preventDefault()
-      first.focus()
-    }
-  }, [])
-
-  useEffect(() => {
-    const id = window.setTimeout(() => {
-      try {
-        window.localStorage.setItem(
-          SIDEBAR_WIDTH_KEY,
-          String(Math.round(sidebarWidth)),
-        )
-      } catch {
-        // Ignore storage errors; the width still applies for this session.
-      }
-    }, 200)
-    return () => window.clearTimeout(id)
-  }, [sidebarWidth])
-
   useEffect(() => {
     try {
       window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0")
@@ -326,28 +413,6 @@ export function AppShell() {
       // Ignore storage errors; the collapse state still applies for this session.
     }
   }, [collapsed])
-
-  const startResize = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      event.preventDefault()
-      event.currentTarget.setPointerCapture(event.pointerId)
-      setResizing(true)
-    },
-    [],
-  )
-
-  const moveResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
-    const left = asideRef.current?.getBoundingClientRect().left ?? 0
-    setSidebarWidth(clampSidebar(event.clientX - left))
-  }, [])
-
-  const endResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-    setResizing(false)
-  }, [])
 
   // Move focus (and scroll) to the page's main region, past the header and the
   // whole nav. A plain anchor to `#main-content` can't do this: the router runs
@@ -363,36 +428,18 @@ export function AppShell() {
     [],
   )
 
-  const nudgeResize = useCallback(
-    (event: ReactKeyboardEvent<HTMLDivElement>) => {
-      if (event.key === "ArrowLeft") {
-        event.preventDefault()
-        setSidebarWidth((width) => clampSidebar(width - SIDEBAR_STEP))
-      } else if (event.key === "ArrowRight") {
-        event.preventDefault()
-        setSidebarWidth((width) => clampSidebar(width + SIDEBAR_STEP))
-      }
-    },
-    [],
-  )
-
-  const width = collapsed ? COLLAPSED_SIDEBAR : sidebarWidth
-  // The collapse rail and resize handle are desktop-only affordances; on mobile
-  // the drawer always shows the full-width, labeled nav.
+  // Collapse is a desktop-only affordance; on mobile the drawer always shows
+  // the full-width, labeled nav.
   const effectiveCollapsed = isMobile ? false : collapsed
-  // While the mobile drawer is open, make everything behind it (header + page)
-  // inert so a modal really is modal: aria-modal alone isn't universally honored,
-  // so this is what keeps an AT virtual cursor and Tab out of the obscured
-  // controls, not just the aside's own focus trap.
+  // While the mobile drawer is open, the page behind it is inert: that is what
+  // keeps an AT virtual cursor and Tab out of controls nobody can see. The top
+  // bar is deliberately not included, because the control that closes the drawer
+  // is in it, and the trail beside that control is the one thing worth reading
+  // while the drawer is open.
   const backgroundInert = isMobile && mobileNavOpen ? true : undefined
 
   return (
-    <div
-      className={clsx(
-        "relative flex h-full flex-col overflow-hidden",
-        resizing && "cursor-col-resize select-none",
-      )}
-    >
+    <div className="relative flex h-full flex-col overflow-hidden">
       {/* The first tab stop: a keyboard user can jump straight to the page body
           instead of tabbing through the whole nav on every route. Visually hidden
           until focused, then pinned top-left over the header (z above it). Goes
@@ -410,42 +457,49 @@ export function AppShell() {
       <UpdatePrompt />
       <ConnectionStatus />
       <PricingWarning />
-      <div className="flex min-h-0 flex-1">
-        {/* On mobile the drawer floats over the page; a backdrop dims the content
-            behind it and dismisses it on tap. A non-interactive div (not a
-            button): dismissal by pointer is a convenience, keyboard users close
-            with Escape, and an aria-hidden interactive element is a contradiction. */}
-        {isMobile && mobileNavOpen ? (
-          <div
-            aria-hidden="true"
-            onClick={() => setMobileNavOpen(false)}
-            className="fixed inset-0 z-30 bg-backdrop/40 md:hidden"
-          />
-        ) : null}
-        {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: the role is conditional (dialog on mobile), which the rule cannot evaluate */}
+      {/* `relative` so the mobile drawer can be offset from *this row* rather
+          than from the viewport. The row's top edge is the header's top edge,
+          and the banners above it (the update prompt, the connection status, the
+          pricing alarm) are in flow, so a viewport-relative offset would leave
+          the drawer covering the header by however tall they are, taking the
+          only control that closes it with them. */}
+      <div className="relative flex min-h-0 flex-1">
         <aside
           ref={asideRef}
           id="app-sidebar"
-          // On mobile the drawer is a modal dialog; give it a name and mark it
-          // modal while open. While closed it is off-canvas, so inert takes its
+          // Named on mobile, where it is a panel that slides over the page
+          // rather than the page's own rail. Not a dialog and not modal: the
+          // design fills the viewport below the top bar, so nothing is left
+          // behind it to trap focus away from, and the control that dismisses it
+          // lives in that bar. While closed it is off-canvas, so inert takes its
           // links out of the tab order and the accessibility tree until opened.
-          role={isMobile ? "dialog" : undefined}
-          aria-modal={isMobile && mobileNavOpen ? true : undefined}
           aria-label={isMobile ? "Navigation" : undefined}
           tabIndex={isMobile ? -1 : undefined}
           inert={isMobile && !mobileNavOpen ? true : undefined}
-          onKeyDown={isMobile && mobileNavOpen ? trapFocus : undefined}
-          style={isMobile ? undefined : { width }}
           className={clsx(
-            "flex flex-col border-r border-border bg-background-alt focus:outline-none",
+            "flex flex-col gap-4 border-r border-border bg-background-alt p-3 focus:outline-none",
             isMobile
               ? clsx(
-                  "fixed inset-y-0 left-0 z-40 w-[17rem] shadow-xl transition-transform duration-200",
+                  // Full width, starting below the top bar: `top-14` pairs with
+                  // the header's `min-h-14`, which is exact because everything in
+                  // that bar truncates rather than wrapping. Absolute within the
+                  // row the header leads, not fixed to the viewport, so a banner
+                  // above that row moves the drawer down with the header instead
+                  // of leaving it over the top of it: the header holds the only
+                  // control that closes this, since the design fills the
+                  // viewport below the bar and so has no backdrop to dim, no
+                  // shadow to lift it off a page you cannot see, and nothing
+                  // behind it to dismiss it by.
+                  // 250ms on `--ease-out-fluid` is what HeroUI slides its
+                  // own Drawer in on, and this is the same gesture.
+                  "absolute inset-x-0 top-14 bottom-0 z-40 w-full transition-transform duration-250 ease-out-fluid motion-reduce:transition-none",
                   mobileNavOpen ? "translate-x-0" : "-translate-x-full",
                 )
               : clsx(
-                  "relative shrink-0",
-                  !resizing && "transition-[width] duration-150",
+                  // 150ms, which is what `otari-ai/frontend`'s shell collapses
+                  // its own rail in.
+                  "relative shrink-0 transition-[width] duration-150 motion-reduce:transition-none",
+                  collapsed ? COLLAPSED_SIDEBAR_WIDTH : SIDEBAR_WIDTH,
                 ),
           )}
         >
@@ -453,152 +507,112 @@ export function AppShell() {
               is the switcher; in the organization context it is the way back
               out, which is how the prototype leaves that rail. */}
           {inOrganization ? (
-            <Link
-              to="/"
-              onClick={() => setMobileNavOpen(false)}
-              className={clsx(
-                navLinkClass(effectiveCollapsed),
-                NAV_INACTIVE,
-                effectiveCollapsed ? "mx-2 mt-3" : "mx-3 mt-3",
-              )}
-              aria-label={
-                effectiveCollapsed
-                  ? `Back to ${selectedWorkspace?.name ?? "workspace"}`
-                  : undefined
-              }
-              title={
-                effectiveCollapsed
-                  ? `Back to ${selectedWorkspace?.name ?? "workspace"}`
-                  : undefined
-              }
-            >
-              <svg
-                aria-hidden="true"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                className="h-5 w-5 shrink-0"
+            <div className="flex min-h-14 items-center">
+              <Link
+                to={workspaceLanding?.to ?? "/"}
+                onClick={() => setMobileNavOpen(false)}
+                className={navRowClass({ collapsed: effectiveCollapsed })}
+                aria-label={effectiveCollapsed ? backLabel : undefined}
+                title={effectiveCollapsed ? backLabel : undefined}
               >
-                <path
-                  d="M15 6l-6 6 6 6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              {effectiveCollapsed
-                ? null
-                : `Back to ${selectedWorkspace?.name ?? "workspace"}`}
-            </Link>
-          ) : (
-            <div className="pt-3">
-              <WorkspaceSwitcher collapsed={effectiveCollapsed} />
+                <FiArrowLeft aria-hidden="true" className={NAV_ICON_CLASS} />
+                {effectiveCollapsed ? null : (
+                  <span className="min-w-0 flex-1 truncate">{backLabel}</span>
+                )}
+              </Link>
             </div>
+          ) : (
+            <WorkspaceSwitcher collapsed={effectiveCollapsed} />
           )}
           <nav
             // Named because the header's breadcrumb is a navigation landmark
             // too, and two unnamed ones give a screen-reader user no way to tell
             // the rail from the trail.
             aria-label="Sidebar"
+            // Expanded, one 2px rhythm runs through rows *and* between groups:
+            // the 32px heading block is what separates one group from the next.
+            // Collapsed there are no headings, so the gap has to do that work.
             className={clsx(
-              "flex flex-col py-4",
-              effectiveCollapsed ? "px-2" : "px-3",
+              "flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden",
+              effectiveCollapsed ? "gap-3" : "gap-0.5",
             )}
           >
-            {visibleSections.map(({ section, items }, sectionIndex) => {
+            {visibleSections.map(({ section, items }) => {
               return (
-                <div
+                <section
                   key={section.id}
-                  className={sectionIndex > 0 ? "mt-4" : undefined}
+                  aria-label={section.label}
+                  className="flex flex-col gap-0.5"
                 >
-                  {/* A header labels each group when expanded; a thin divider stands
-                      in for it when the sidebar is collapsed, or when a group has no
-                      header of its own (e.g. Settings) to set it off from the group
-                      above. */}
+                  {/* A heading labels each group when expanded. Collapsed there is
+                      no width for one, and an unlabeled group never had one, so in
+                      both cases the rhythm above does the separating instead of a
+                      rule: a divider between every pair of groups reads as five
+                      lists rather than one rail. */}
                   {!effectiveCollapsed && section.label ? (
-                    <div className="px-3 pb-1 text-[11px] font-semibold tracking-wider text-muted uppercase">
-                      {section.label}
-                    </div>
+                    <p className={NAV_SECTION_HEADING_CLASS}>{section.label}</p>
                   ) : null}
-                  {sectionIndex > 0 &&
-                  (effectiveCollapsed || !section.label) ? (
-                    <div className="mx-1 mb-2 border-t border-border" />
-                  ) : null}
-                  <div className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-0.5">
                     {items.map((item) =>
-                      item.children && !effectiveCollapsed ? (
+                      item.children ? (
                         <NavGroup
                           key={item.to}
                           item={item}
                           currentPath={pathname}
                           onNavigate={() => setMobileNavOpen(false)}
                           isVisible={isVisible}
+                          collapsed={effectiveCollapsed}
                         />
                       ) : (
-                        <Link
+                        // Highlighted from the registry's own answer rather than
+                        // from `activeProps`, whose default match is a prefix
+                        // one: on `/organization/members` that lights up
+                        // "General" as well, since `/organization` is its parent
+                        // route. `navItemForPath` prefers the exact entry, and a
+                        // future child route (`/routing/new`) still resolves to
+                        // its parent, which is the highlight that route wants.
+                        <NavRowLink
                           key={item.to}
                           to={item.to}
-                          // Exact, because the default is a prefix match: on
-                          // /organization/members that leaves `aria-current` on
-                          // "Organization" as well as on the child. The class
-                          // below was already driven from the registry; this is
-                          // the half a screen reader reads.
-                          activeOptions={{ exact: true }}
-                          // Highlighted from the registry's own answer rather than
-                          // from `activeProps`, whose default match is a prefix
-                          // one: on `/organization/members` that lights up
-                          // "General" as well, since `/organization` is its parent
-                          // route. `navItemForPath` prefers the exact entry, and a
-                          // future child route (`/routing/new`) still resolves to
-                          // its parent, which is the highlight that route wants.
-                          className={clsx(
-                            navLinkClass(effectiveCollapsed),
-                            currentItem?.to === item.to
-                              ? NAV_ACTIVE
-                              : NAV_INACTIVE,
-                          )}
-                          // Tapping a destination dismisses the mobile drawer so the
-                          // page it navigated to is visible, not hidden behind it.
-                          onClick={() => setMobileNavOpen(false)}
-                          aria-label={
-                            effectiveCollapsed ? item.label : undefined
-                          }
-                          title={effectiveCollapsed ? item.label : undefined}
-                        >
-                          {item.icon}
-                          {effectiveCollapsed ? null : item.label}
-                        </Link>
+                          label={item.label}
+                          icon={item.icon}
+                          isActive={currentItem?.to === item.to}
+                          collapsed={effectiveCollapsed}
+                          // Tapping a destination dismisses the mobile drawer so
+                          // the page it landed on is visible, not behind it.
+                          onNavigate={() => setMobileNavOpen(false)}
+                        />
                       ),
                     )}
                   </div>
-                </div>
+                </section>
               )
             })}
           </nav>
           {/* The account block, set off by a rule as in the navigation prototype:
               the way onto the organization rail, the bundled guide, and the
               account control whose menu carries appearance and sign-out. */}
-          <div className="mt-auto flex flex-col gap-1 border-t border-border pt-2 pb-3">
+          <div className="flex flex-col gap-1 border-t border-border pt-1 pb-[env(safe-area-inset-bottom)]">
             {/* The way into the organization rail. Only in the workspace
                 context, since the organization one has its own way back, and
                 only for someone who manages the organization: it is the single
-                destination the prototype hides outright rather than degrading
-                to read-only.
+                destination the design hides outright rather than degrading to
+                read-only (artboard A2 is the member variant, and this row is
+                what it drops).
 
-                Drawn as a bordered row with a trailing chevron rather than as
-                another muted link, because it is the only control here that
-                changes context rather than opening a page, and because Users,
-                Budgets and Settings all moved behind it: an operator upgrading
-                from a sidebar that listed them needs to find this. */}
+                Drawn as an ordinary nav row, which is how the design draws it.
+                It used to be a bordered box with a trailing chevron, on the
+                argument that a context switch should not look like a page and
+                that an operator whose sidebar used to list Users, Budgets and
+                Settings needed to find where they went. Both were true and
+                neither survives the design: the box makes the footer read as a
+                button bar under the rail rather than as the end of it, and the
+                chevron promises a submenu that never opens. */}
             {!inOrganization && managesOrganization ? (
               <Link
-                to="/organization/members"
+                to={organizationLanding?.to ?? "/organization/members"}
                 onClick={() => setMobileNavOpen(false)}
-                className={clsx(
-                  navLinkClass(effectiveCollapsed),
-                  "border border-border bg-surface text-foreground transition-colors hover:border-accent hover:bg-surface-alt",
-                  effectiveCollapsed ? "mx-2" : "mx-3",
-                )}
+                className={navRowClass({ collapsed: effectiveCollapsed })}
                 aria-label={effectiveCollapsed ? "Organization" : undefined}
                 title={
                   effectiveCollapsed
@@ -606,76 +620,33 @@ export function AppShell() {
                     : undefined
                 }
               >
-                <svg
-                  aria-hidden="true"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  className="h-5 w-5 shrink-0"
-                >
-                  <circle cx="12" cy="12" r="3" />
-                  <path
-                    d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
-                    strokeLinejoin="round"
-                  />
-                </svg>
+                <FiSettings aria-hidden="true" className={NAV_ICON_CLASS} />
                 {effectiveCollapsed ? null : (
-                  <>
-                    Organization
-                    <svg
-                      aria-hidden="true"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      className="ml-auto h-4 w-4 shrink-0 text-muted"
-                    >
-                      <path
-                        d="M9 6l6 6-6 6"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </>
+                  <span className="min-w-0 flex-1 truncate">Organization</span>
                 )}
               </Link>
             ) : null}
             {/* One control, not a stack of links: the guide, appearance, and
                 sign-out all live in its menu, which is how the prototype ends
                 the rail. Sign-out used to sit in the page header. */}
+            {/* The design rules the account row off from the row above it, so
+                the control that ends the rail is not read as one more
+                destination in the group that changes context. */}
+            {!inOrganization && managesOrganization ? (
+              <div aria-hidden="true" className="h-px shrink-0 bg-border" />
+            ) : null}
             <AccountMenu collapsed={effectiveCollapsed} />
           </div>
-          {collapsed || isMobile ? null : (
-            // biome-ignore lint/a11y/useSemanticElements: <hr> is a thematic break; this is a keyboard-operable resize handle
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize sidebar"
-              aria-valuenow={Math.round(sidebarWidth)}
-              aria-valuemin={MIN_SIDEBAR}
-              aria-valuemax={MAX_SIDEBAR}
-              tabIndex={0}
-              onPointerDown={startResize}
-              onPointerMove={moveResize}
-              onPointerUp={endResize}
-              onKeyDown={nudgeResize}
-              className={clsx(
-                "absolute top-0 right-0 z-10 h-full w-1.5 cursor-col-resize touch-none transition-colors",
-                "hover:bg-accent focus-visible:bg-accent focus:outline-none",
-                resizing ? "bg-accent" : "bg-transparent",
-              )}
-            />
-          )}
         </aside>
         {/* The right-hand pane: the header sits beside the rail rather than above
             it, which is what lets the sidebar run the full height of the window. */}
         <div className="flex min-w-0 flex-1 flex-col">
           <header
-            inert={backgroundInert}
-            className="flex shrink-0 items-center justify-between border-b border-border bg-surface px-5 py-3"
+            // The design's top bar sits on the page ground rather than on a
+            // card fill, so the rail is the only chrome that reads as a surface.
+            className="flex min-h-14 shrink-0 items-center gap-4 border-b border-border bg-background pr-5 pl-4"
           >
-            <div className="flex items-center gap-2.5">
+            <div className="flex min-w-0 flex-1 items-center gap-4">
               <button
                 type="button"
                 ref={toggleRef}
@@ -685,50 +656,33 @@ export function AppShell() {
                 }
                 aria-expanded={mobileNavOpen}
                 aria-controls="app-sidebar"
-                className="-ml-1 flex h-8 w-8 items-center justify-center rounded-lg text-muted transition-colors hover:bg-surface-alt hover:text-foreground md:hidden"
+                className="-ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-surface-alt hover:text-foreground md:hidden"
               >
-                <svg
-                  aria-hidden="true"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  className="h-5 w-5"
-                >
-                  <path
-                    d="M4 6h16M4 12h16M4 18h16"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
+                {mobileNavOpen ? (
+                  <FiX aria-hidden="true" className="size-5" />
+                ) : (
+                  <FiMenu aria-hidden="true" className="size-5" />
+                )}
               </button>
               {/* Collapse lives here, at the head of the content pane, rather
                   than floating on the rail's edge: the rail now runs the full
                   height of the window and has no edge above the fold to hang it
                   on. Desktop-only, as before; on mobile the drawer is dismissed
-                  from the control to its left or from the backdrop. */}
+                  from the control to its left, which is why that control stays
+                  visible under an open drawer. */}
               <button
                 type="button"
                 onClick={() => setCollapsed((value) => !value)}
                 aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
                 aria-pressed={collapsed}
                 title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-                className="-ml-1 hidden h-7 w-7 items-center justify-center rounded-lg text-muted transition-colors hover:bg-surface-alt hover:text-foreground md:flex"
+                className="-ml-1 hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-alt hover:text-foreground md:flex"
               >
-                <svg
-                  aria-hidden="true"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  className="h-4 w-4"
-                >
-                  <rect x="3" y="4" width="18" height="16" rx="2" />
-                  <path d="M9 4v16" strokeLinecap="round" />
-                </svg>
+                <FiSidebar aria-hidden="true" className="size-4" />
               </button>
               <Breadcrumbs pathname={pathname} />
             </div>
+            <TopBarActions />
           </header>
           <main
             ref={mainRef}
@@ -744,7 +698,10 @@ export function AppShell() {
                 <EmptyState
                   // The leaf's name, not the group's: someone who followed a
                   // link to Guardrails should not be told "Routing" is missing.
-                  title={`${navLabelForPath(pathname) ?? currentItem.label} is not available here`}
+                  // `navLabelForPath` answers for every registered path, and only
+                  // a registered path can be gated off, so the fallback is there
+                  // for the type rather than for a case that happens.
+                  title={`${navLabelForPath(pathname) ?? currentItem?.label ?? "That page"} is not available here`}
                   description="This deployment does not serve that page. Pick a destination from the sidebar."
                 />
               ) : (
