@@ -481,6 +481,43 @@ class InvitationAlreadyUsedError(TenancyValidationError):
         super().__init__("This invitation has already been used or is no longer valid")
 
 
+class VerificationTokenInvalidError(TenancyValidationError):
+    """A verification token that is unknown, expired, or already consumed.
+
+    One message for all three, the same reasoning ``InvitationNotFoundError``
+    gives an unknown-or-foreign invitation: distinguishing "expired" from
+    "already used" from "never existed" would let a caller narrow down which
+    is true of a token they do not hold.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("This verification link is invalid, expired, or already used")
+
+
+class ResetTokenInvalidError(TenancyValidationError):
+    """A password-reset token that is unknown, expired, or already consumed.
+
+    Same collapse as ``VerificationTokenInvalidError``, for the same reason.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("This password reset link is invalid, expired, or already used")
+
+
+class EmailNotVerifiedError(TenancyForbiddenError):
+    """A password sign-in on an identity that has not verified its address.
+
+    Raised only after the password itself has already checked out, which is
+    why it is allowed to say what is actually wrong: the distinction the
+    module docstring on ``authenticate`` promises survives once a caller has
+    proven something, the same way ``CurrentPasswordIncorrectError`` and
+    ``PasswordNotSetError`` do.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Verify your email before signing in; request a new verification email if yours expired")
+
+
 class WorkspaceBudgetDefaultNotFoundError(TenancyNotFoundError):
     def __init__(self, default_id: object):
         super().__init__(f"Workspace budget default {default_id} not found")
@@ -518,6 +555,7 @@ __all__ = [
     "CurrentPasswordRequiredError",
     "EmailAlreadyInUseError",
     "EmailChangeNotSupportedError",
+    "EmailNotVerifiedError",
     "ForeignTenancyError",
     "InvalidCredentialsError",
     "InvalidEmailError",
@@ -547,6 +585,7 @@ __all__ = [
     "OrganizationPricingOverlapError",
     "PasswordNotSetError",
     "PasswordPolicyError",
+    "ResetTokenInvalidError",
     "SecretBoxUnavailableTenancyError",
     "SignInAddressRequiredError",
     "TenancyConflictError",
@@ -555,6 +594,7 @@ __all__ = [
     "TenancyNotFoundError",
     "TenancyValidationError",
     "UnmodifiedPasswordError",
+    "VerificationTokenInvalidError",
     "WorkspaceAlreadyExistsError",
     "WorkspaceActivationUnavailableError",
     "WorkspaceAlreadyActivatedError",
