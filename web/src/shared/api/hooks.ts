@@ -51,6 +51,9 @@ import type {
   RankCandidatesRequest,
   RankCandidatesResponse,
   ReencryptProviderCredentialsResult,
+  RequestPasswordResetResponse,
+  ResendVerificationResponse,
+  ResetPasswordRequest,
   RotateMasterKeyResponse,
   RouterStatus,
   RoutingPolicyResponse,
@@ -62,6 +65,8 @@ import type {
   SetPasswordRequest,
   SetPricingRequest,
   SetRoutingPolicyRequest,
+  SignupRequest,
+  SignupResponse,
   StoredProvider,
   StoredSearchTool,
   SummaryDimension,
@@ -94,6 +99,7 @@ import type {
   UsageSetPriceResult,
   UsageSummary,
   User,
+  VerifyEmailResponse,
   Workspace,
   WorkspaceActivation,
   WorkspaceBudgetDefault,
@@ -1735,6 +1741,105 @@ export function useAcceptInvitation() {
       apiFetch<AcceptInvitationResult>("/v1/invitations/accept", {
         method: "POST",
         body: JSON.stringify({ token }),
+      }),
+  })
+}
+
+// The public auth flows (otari#650). Same shape as the two invitation calls
+// above and for the same reason: nothing here is gated on a session or the
+// master key, because a caller completing a signup or opening an emailed link
+// holds neither. The gateway answers 400 for a bad token, 429 when the shared
+// sign-in limiter fires, and 503 when this deployment cannot send mail, so
+// apiFetch's session-bounce on 401/403 never triggers on any of them.
+//
+// None of them invalidates anything. They write to an identity this
+// unauthenticated caller cannot read back, and the cache they would touch
+// belongs to a session that does not exist yet.
+
+// Claims a roster identity by setting its password, then mails a verification
+// link. The response is the same sentence whether the address was unknown,
+// already claimed, or genuinely just claimed, so nothing here may branch on it.
+export function useSignup() {
+  return useMutation({
+    mutationFn: (body: SignupRequest) =>
+      apiFetch<SignupResponse>("/v1/auth/signup", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  })
+}
+
+// A query rather than a mutation, the same shape `useValidateInvitation` takes
+// and for a reason that outranks the fact that this one does write: the page
+// verifies on arrival rather than behind a button, so *whatever* fires it has
+// to fire exactly once per token, and a query keyed on the token is the only
+// one of the two that the cache makes idempotent for free. A mutation fired
+// from an effect is not: `main.tsx` runs under StrictMode, whose
+// mount/unmount/mount would spend a single-use token twice and land the second
+// call's `400` over the first call's success.
+//
+// The knobs are what keep it a one-shot, and they are spelled out here rather
+// than leaning on the provider's defaults, because "fires once" is this hook's
+// contract and not a coincidence of how the app is configured. Never stale and
+// never collected, so a remount reads the answer back instead of asking again.
+// No retry, because a spent token's `400` is the final answer and not a blip.
+// And the three automatic refetches are off by name: staleness alone does not
+// hold them back once a query has failed, since a failure leaves no data for
+// `staleTime` to keep fresh, so without these a reconnect or a remount would
+// re-POST a token that is already gone.
+//
+// POST with the token in the body rather than a GET with it in the URL, the
+// same reasoning `useValidateInvitation` gives: the token is a bearer
+// credential and a URL is what an access log or an intermediate proxy
+// routinely retains.
+export function useVerifyEmail(token: string) {
+  return useQuery({
+    queryKey: ["verify-email", token],
+    queryFn: () =>
+      apiFetch<VerifyEmailResponse>("/v1/auth/verify-email", {
+        method: "POST",
+        body: JSON.stringify({ token }),
+      }),
+    // A malformed link is never worth a round trip; the page says so itself.
+    enabled: token.length > 0,
+    retry: false,
+    retryOnMount: false,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: Number.POSITIVE_INFINITY,
+  })
+}
+
+export function useResendVerification() {
+  return useMutation({
+    mutationFn: (email: string) =>
+      apiFetch<ResendVerificationResponse>("/v1/auth/resend-verification", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      }),
+  })
+}
+
+export function useRequestPasswordReset() {
+  return useMutation({
+    mutationFn: (email: string) =>
+      apiFetch<RequestPasswordResetResponse>("/v1/auth/password/reset", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      }),
+  })
+}
+
+// 204, so there is nothing to read back: the caller learns it worked by the
+// call not raising, and signs in with the new password from the sign-in screen.
+export function useResetPassword() {
+  return useMutation({
+    mutationFn: (body: ResetPasswordRequest) =>
+      apiFetch<void>("/v1/auth/password/reset/confirm", {
+        method: "POST",
+        body: JSON.stringify(body),
       }),
   })
 }
