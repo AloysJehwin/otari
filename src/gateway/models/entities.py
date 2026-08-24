@@ -3,7 +3,19 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Index, Text, UniqueConstraint, Uuid, text
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    func,
+    text,
+    true,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlmodel import SQLModel
 
@@ -787,7 +799,9 @@ class FileObject(Base):
     bytes: Mapped[int] = mapped_column()
     purpose: Mapped[str] = mapped_column(default="user_data")
     storage_ref: Mapped[str] = mapped_column()
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None, index=True)
 
@@ -830,7 +844,9 @@ class BatchRecord(Base):
     # this record is the strict ownership anchor, so it must always name an owner.
     # CASCADE: deleting the user drops the ownership record (the user's keys are
     # gone too, and usage_logs remain the billing history).
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True
+    )
     # SET NULL: a key may be revoked while its batch is still in flight.
     api_key_id: Mapped[str | None] = mapped_column(ForeignKey("api_keys.id", ondelete="SET NULL"), index=True)
     # The workspace this batch was CREATED in (otari#643 follow-up), so
@@ -1489,4 +1505,83 @@ class WorkspaceCodeExecutionPolicy(Base):
         UtcDateTime(),
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class WorkspaceWebSearchConfig(Base):
+    """A workspace's configuration over the deployment-wide web-search backend.
+
+    The backend itself stays deployment-wide (``web_search_url`` and the
+    credential the adapter in front of it holds are operator concerns and never
+    move here, see ``src/gateway/AGENTS.md``); this row says which workspaces
+    may reach it and how their searches are constrained. Resolved at admission
+    by ``prepare_gateway_tools``, the standalone counterpart of the hybrid
+    path's ``/gateway/web-search/resolve``.
+
+    A row may only *narrow*: ``enabled=False`` refuses ``otari_web_search`` for
+    the workspace, ``max_results`` is floored against what the request asked
+    for, ``blocked_domains`` is added to the request's own block-list, and
+    ``allowed_domains`` intersects the request's. No row means no narrowing,
+    which is what keeps a deployment that configures nothing behaving as it did
+    (#655/#678).
+
+    ``workspace_id`` is the primary key, and a real foreign key with
+    ``CASCADE``, for the same reasons as :class:`WorkspaceCodeExecutionPolicy`
+    next door: one row per workspace, and nothing else names it.
+
+    There is deliberately no ``provider`` column, which the hosted config
+    carries: on this deployment the operator picks the backend by pointing
+    ``web_search_url`` somewhere, so a provider named here would either be inert
+    or would ask the gateway to reach an endpoint the operator did not choose,
+    which is the one thing the narrowing rule forbids.
+    """
+
+    __tablename__ = "workspace_web_search_configs"
+    __table_args__ = (
+        # ``max_results`` is floored into an effective value, so zero or less is
+        # a storage error rather than a stricter policy: it would ask for a
+        # search that can return nothing while reading as configured. The
+        # request schema refuses it first; this is the backstop for a writer
+        # that is not the service.
+        CheckConstraint(
+            "max_results IS NULL OR max_results > 0",
+            name="ck_workspace_web_search_configs_max_results_positive",
+        ),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("workspace.id", ondelete="CASCADE"), primary_key=True
+    )
+    # ``server_default`` mirrors the migration so autogenerate sees no drift, and
+    # so a row written by anything other than this mapping still gets a value.
+    enabled: Mapped[bool] = mapped_column(default=True, nullable=False, server_default=true())
+    # NULL means "no workspace ceiling": the request's own value, then the
+    # deployment's, then the backend's built-in, exactly as today.
+    max_results: Mapped[int | None] = mapped_column(default=None)
+    # NULL means "no workspace default": the request's own hint, then the
+    # deployment's, then the backend's built-in.
+    purpose_hint: Mapped[str | None] = mapped_column(Text, default=None)
+    # Two domain lists and an opaque provider bag, stored as JSON for the same
+    # reason the hosted table does: they are short, they are read whole, and
+    # nothing queries into them. ``JSON`` rather than ``JSONB`` to match every
+    # other JSON column here, which has to work on SQLite too.
+    allowed_domains: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    blocked_domains: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    # Provider-specific knobs (Tavily's ``search_depth``, say). Opaque here and
+    # forwarded to the backend, which is what lets a new provider need no
+    # migration; the adapter in front of it whitelists what it understands.
+    provider_options: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    # ``UtcDateTime`` for the same reason ``WorkspaceCodeExecutionPolicy`` uses
+    # it: these are serialized with ``.isoformat()`` for the dashboard, and a
+    # plain ``DateTime(timezone=True)`` round-trips naive on SQLite. The Python
+    # default is what every write here uses; ``server_default`` is the backstop
+    # for a writer that is not this mapping, matching ``workspace`` itself.
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime(), default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime(),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
