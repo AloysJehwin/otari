@@ -497,6 +497,170 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/webauthn/authenticate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Authenticate Passkey
+         * @description Verify an assertion and set the HttpOnly session cookie.
+         *
+         *     The session is bound to the identity whose passkey signed, exactly as a
+         *     password sign-in binds one to the identity that authenticated, so every
+         *     request it later authenticates resolves the same caller.
+         *
+         *     A refusal is counted like the other sign-in failures
+         *     (``record_auth_failure``) and answered as a 401 by the tenancy error
+         *     handler. Unlike the password path there is no separate post-failure
+         *     throttle: this route is throttled unconditionally on the way in, because
+         *     unlike a password there is no legitimate caller here whose correct
+         *     credential must never be blocked (a passkey ceremony is one round trip a
+         *     browser drives, not something a person retries by hand).
+         *
+         *     **Maintenance mode freezes this the way it freezes the password sign-in.**
+         *     The freeze is on starting a session, not on a credential, so a passkey has
+         *     to answer to it or the switch is bypassable by anybody holding one, which is
+         *     the whole population it exists to hold off during a redeploy. Refused before
+         *     the assertion is verified, so a frozen deployment does no crypto and counts
+         *     no auth failure: nobody failed to authenticate, the gateway declined to try.
+         */
+        post: operations["authenticate_passkey_v1_auth_webauthn_authenticate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/webauthn/authenticate/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Authentication Options
+         * @description Start a passkey sign-in. Public, throttled, and names no credentials.
+         *
+         *     The options carry no ``allowCredentials``, so this publishes nothing about
+         *     who holds a passkey here; see ``webauthn_service.begin_authentication``.
+         */
+        post: operations["authentication_options_v1_auth_webauthn_authenticate_options_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/webauthn/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Passkeys
+         * @description The caller's own passkeys. Never anybody else's, and never key material.
+         *
+         *     Deliberately *not* behind ``require_passkey_support``, and not filtered to
+         *     the current relying-party ID. A deployment that has changed or lost that ID
+         *     still holds the rows registered under the old one, and refusing to list them
+         *     would leave somebody looking at an empty page with no way to clean up and no
+         *     hint as to why. Each row carries ``is_usable`` instead, so an orphan is
+         *     visible, explained, and deletable.
+         */
+        get: operations["list_passkeys_v1_auth_webauthn_credentials_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/webauthn/credentials/{credential_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Passkey
+         * @description Remove one of the caller's passkeys.
+         *
+         *     Removing the last one is allowed: an email and password is still this
+         *     deployment's login, so this is not a lockout, and refusing would strand
+         *     whoever lost the authenticator.
+         */
+        delete: operations["delete_passkey_v1_auth_webauthn_credentials__credential_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Rename Passkey
+         * @description Relabel one of the caller's passkeys, which is all that is editable.
+         *
+         *     Ungated like the list, and for the same reason: naming an orphan before
+         *     deleting it is not something a lost relying-party ID should prevent.
+         */
+        patch: operations["rename_passkey_v1_auth_webauthn_credentials__credential_id__patch"];
+        trace?: never;
+    };
+    "/v1/auth/webauthn/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register Passkey
+         * @description Verify a registration ceremony and store the passkey it produced.
+         */
+        post: operations["register_passkey_v1_auth_webauthn_register_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/webauthn/register/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Registration Options
+         * @description Start registering a passkey for the signed-in identity.
+         *
+         *     A POST rather than a GET even though it reads like one: it issues a
+         *     server-side challenge and writes it, so it is not safe to repeat, cache, or
+         *     prefetch.
+         */
+        post: operations["registration_options_v1_auth_webauthn_register_options_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/batches": {
         parameters: {
             query?: never;
@@ -3918,6 +4082,19 @@ export interface components {
             /** Voice */
             voice: string;
         };
+        /**
+         * AuthenticatePasskeyRequest
+         * @description A completed sign-in ceremony.
+         */
+        AuthenticatePasskeyRequest: {
+            /**
+             * Credential
+             * @description The browser's PublicKeyCredential assertion, serialized.
+             */
+            credential: {
+                [key: string]: unknown;
+            };
+        };
         /** BatchRequestItem */
         BatchRequestItem: {
             /** Body */
@@ -4079,6 +4256,20 @@ export interface components {
             position: number;
             /** Selection Reason */
             selection_reason: string;
+        };
+        /**
+         * CeremonyOptions
+         * @description The `PublicKeyCredentialCreationOptions`/`RequestOptions` a browser needs.
+         *
+         *     Passed through as an opaque object rather than modeled field by field. The
+         *     shape is the W3C's, the browser is the only consumer, and it is what
+         *     ``navigator.credentials`` is handed verbatim after the two base64url fields
+         *     are decoded. Restating it here would produce a second, slightly wrong copy
+         *     of a spec this deployment does not own, and every field the library adds
+         *     later would have to be added again to keep the client from dropping it.
+         */
+        CeremonyOptions: {
+            [key: string]: unknown;
         };
         /**
          * ChatCompletionRequest
@@ -4618,6 +4809,11 @@ export interface components {
              */
             management_url: string | null;
             /**
+             * Passkeys Ready
+             * @description Whether this deployment can run a passkey ceremony at all: it has a relying-party ID (webauthn_rp_id, or derived from public_base_url) and an origin to serve one from. Distinct from 'passkey' in sign_in_methods, which is narrower and answers whether a registered passkey could sign somebody in *right now*: an operator with none yet needs this one, or the page that registers the first would be hidden from them. False for a hybrid gateway, which issues no session of its own.
+             */
+            passkeys_ready: boolean;
+            /**
              * Session Type
              * @description The kind of session this deployment issues, not whether the caller holds one. 'local_operator' is the standalone operator sign-in (see sign_in_methods for which credential it currently accepts), 'hosted_user' an otari.ai account, and 'none' a deployment that issues no management session at all.
              * @enum {string}
@@ -4625,9 +4821,9 @@ export interface components {
             session_type: "local_operator" | "hosted_user" | "none";
             /**
              * Sign In Methods
-             * @description How POST /v1/auth/session may be authenticated right now, sorted. 'master_key' is the first-boot credential and is offered until the operator identity has a password, which is what claiming the deployment means; 'password' replaces it from then on, and the master key stays the credential for the management API. Empty for a hybrid gateway, which issues no session. The login page renders from this rather than trying a credential to find out.
+             * @description How POST /v1/auth/session may be authenticated right now, sorted. 'master_key' is the first-boot credential and is offered until the operator identity has a password, which is what claiming the deployment means; 'password' replaces it from then on, and the master key stays the credential for the management API. 'passkey' appears alongside either one when this deployment is configured for WebAuthn and holds at least one passkey that its current relying-party ID can assert. Empty for a hybrid gateway, which issues no session. The login page renders from this rather than trying a credential to find out.
              */
-            sign_in_methods: ("master_key" | "password")[];
+            sign_in_methods: ("master_key" | "password" | "passkey")[];
             /**
              * Surfaces
              * @description Management API groups this deployment serves, sorted, which is what its dashboard pages gate on. Named surfaces, not capabilities: capability is otari.ai's word for the entitlement (licensing) axis, and this is the deployment (topology) axis. Empty for a hybrid gateway.
@@ -5977,6 +6173,33 @@ export interface components {
             updated_at?: string | null;
         };
         /**
+         * PasskeySessionResponse
+         * @description A dashboard session minted by a passkey (the token travels only in the cookie).
+         *
+         *     The same three fields ``POST /v1/auth/session`` answers, deliberately: the
+         *     dashboard's sign-in path does not care which credential got it here.
+         */
+        PasskeySessionResponse: {
+            /**
+             * Active Organization Id
+             * Format: uuid
+             * @description The organization that identity is acting in, which scopes every tenancy surface.
+             */
+            active_organization_id: string;
+            /**
+             * Expires At
+             * Format: date-time
+             * @description When the session cookie stops being accepted.
+             */
+            expires_at: string;
+            /**
+             * User Id
+             * Format: uuid
+             * @description The identity this session speaks for.
+             */
+            user_id: string;
+        };
+        /**
          * PasswordResponse
          * @description What the identity signs in with now.
          */
@@ -6349,6 +6572,24 @@ export interface components {
              * @description Number of encrypted keys left untouched because they could not be decrypted.
              */
             unreadable: number;
+        };
+        /**
+         * RegisterPasskeyRequest
+         * @description A completed registration ceremony, with the label to file it under.
+         */
+        RegisterPasskeyRequest: {
+            /**
+             * Credential
+             * @description The browser's PublicKeyCredential, serialized.
+             */
+            credential: {
+                [key: string]: unknown;
+            };
+            /**
+             * Name
+             * @description What to call this passkey in the credential list. Optional: an unnamed one is numbered rather than refused, so a browser that offers no prompt still works.
+             */
+            name?: string | null;
         };
         /** RequestPasswordResetRequest */
         RequestPasswordResetRequest: {
@@ -7954,6 +8195,60 @@ export interface components {
             email: string;
         };
         /**
+         * WebAuthnCredentialPublic
+         * @description A passkey as the settings page lists it.
+         *
+         *     Carries no key material. ``credential_id`` is here because the browser needs
+         *     it to tell the passkey it just used from the others in the list, and it is
+         *     a public identifier the authenticator hands to any site that asks: it is
+         *     what ``allowCredentials`` publishes to an unauthenticated caller during a
+         *     ceremony.
+         */
+        WebAuthnCredentialPublic: {
+            /** Backed Up */
+            backed_up: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Credential Id */
+            credential_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Usable */
+            is_usable: boolean;
+            /** Last Used At */
+            last_used_at: string | null;
+            /** Name */
+            name: string;
+            /** Rp Id */
+            rp_id: string;
+            /** Transports */
+            transports: string[];
+        };
+        /**
+         * WebAuthnCredentialUpdate
+         * @description Renaming a passkey, which is the only thing about one that is editable.
+         *
+         *     Everything else on the row is what the authenticator asserted, so there is
+         *     nothing else a person could correct.
+         */
+        WebAuthnCredentialUpdate: {
+            /** Name */
+            name: string;
+        };
+        /** WebAuthnCredentialsPublic */
+        WebAuthnCredentialsPublic: {
+            /** Count */
+            count: number;
+            /** Data */
+            data: components["schemas"]["WebAuthnCredentialPublic"][];
+        };
+        /**
          * WorkspaceActivationPublic
          * @description Where a workspace stands on its first successful request.
          */
@@ -9092,6 +9387,196 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    authenticate_passkey_v1_auth_webauthn_authenticate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthenticatePasskeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasskeySessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    authentication_options_v1_auth_webauthn_authenticate_options_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CeremonyOptions"];
+                };
+            };
+        };
+    };
+    list_passkeys_v1_auth_webauthn_credentials_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebAuthnCredentialsPublic"];
+                };
+            };
+        };
+    };
+    delete_passkey_v1_auth_webauthn_credentials__credential_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                credential_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_passkey_v1_auth_webauthn_credentials__credential_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                credential_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebAuthnCredentialUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebAuthnCredentialPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    register_passkey_v1_auth_webauthn_register_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterPasskeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebAuthnCredentialPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    registration_options_v1_auth_webauthn_register_options_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CeremonyOptions"];
                 };
             };
         };
