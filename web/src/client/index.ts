@@ -457,5 +457,17 @@ export type UpdateWorkspaceCodeExecutionPolicyRequest =
 export type WorkspaceWebSearchConfig = Schemas["WorkspaceWebSearchConfigPublic"]
 export type UpdateWorkspaceWebSearchConfigRequest =
   Schemas["WorkspaceWebSearchConfigUpdate"]
+// The organization-level guardrail plane above the deployment-wide guardrail
+// settings; see `src/gateway/services/tenancy/organization_guardrail_service.py`.
+export type OrganizationGuardrail = Schemas["OrganizationGuardrailPublic"]
+// `enabled`, `on_unavailable`, `mode` and `applies_to_all_workspaces` all carry
+// schema defaults, which the generator emits as required; the add form omits the
+// two the operator has no control for, so `Defaulted` puts them back.
+export type CreateOrganizationGuardrailRequest = Defaulted<
+  Schemas["OrganizationGuardrailCreate"],
+  "enabled" | "on_unavailable" | "mode" | "applies_to_all_workspaces"
+>
+export type UpdateOrganizationGuardrailRequest =
+  Schemas["OrganizationGuardrailUpdate"]
 
 export type * from "./local"

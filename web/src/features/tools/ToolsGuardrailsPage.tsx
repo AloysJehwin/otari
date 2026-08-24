@@ -6,6 +6,7 @@ import type {
   ToolSettingField,
   UpdateToolSettingsRequest,
 } from "@/client"
+import { OrganizationGuardrailsCard } from "@/features/tools/OrganizationGuardrailsCard"
 import { SearchToolsCard } from "@/features/tools/SearchToolsCard"
 import { WorkspaceCodeExecutionPolicyCard } from "@/features/tools/WorkspaceCodeExecutionPolicyCard"
 import { WorkspaceWebSearchCard } from "@/features/tools/WorkspaceWebSearchCard"
@@ -21,6 +22,7 @@ import {
   ErrorBanner,
   errorMessage,
   FilterSelect,
+  INPUT_CLASS,
   PageHeader,
   PageLoading,
 } from "@/shared/components/ui"
@@ -123,9 +125,6 @@ function SaveToast({ message }: { message: string | null }) {
     </div>
   )
 }
-
-const INPUT_CLASS =
-  "rounded-md border border-border bg-surface px-2 py-1 text-sm focus:border-accent focus:outline-none disabled:opacity-50"
 
 // Every field renders as one grid row with three fixed-width tracks:
 // label | input (16rem) | actions (10rem). Because the input and action tracks
@@ -796,6 +795,12 @@ export function ToolsGuardrailsPage({ only }: { only?: ToolServiceName } = {}) {
                 just above it, and reads as nonsense apart from it. */}
               {service.key === "sandbox" ? (
                 <WorkspaceCodeExecutionPolicyCard onSaved={showToast} />
+              ) : null}
+              {/* And directly below the guardrail settings, which are the
+                deployment-wide half of the same feature: an entry with no
+                endpoint of its own is sent to the URL set just above it. */}
+              {service.key === "guardrails" ? (
+                <OrganizationGuardrailsCard onSaved={showToast} />
               ) : null}
             </Fragment>
           )
