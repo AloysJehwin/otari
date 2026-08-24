@@ -38,6 +38,7 @@ import type {
   KnownProvider,
   KnownProviderSummary,
   MailSettings,
+  MaintenanceMode,
   ModelListResponse,
   ModelMetadataResponse,
   OrganizationContext,
@@ -115,6 +116,9 @@ const MODELS = "models"
 const PRICING = "pricing"
 const SETTINGS = "settings"
 const MAIL_SETTINGS = "mail-settings"
+const MAINTENANCE_MODE = "maintenance-mode"
+// One indexed single-row read, and only while the settings page is mounted.
+const MAINTENANCE_MODE_POLL_MS = 30_000
 const TOOL_SETTINGS = "tool-settings"
 const TOOLS = "tools"
 const SEARCH_TOOLS = "search-tools"
@@ -616,6 +620,53 @@ export function useUpdateSettings() {
       // Toggling discovery changes which models the catalog and picker report.
       void queryClient.invalidateQueries({ queryKey: [MODELS] })
       void queryClient.invalidateQueries({ queryKey: [DISCOVERABLE] })
+    },
+  })
+}
+
+/**
+ * Whether this deployment is refusing new dashboard sign-ins.
+ *
+ * Not read from the bootstrap, which carries the same flag: that one is fetched
+ * once per page load and cached for the life of the tab, which is right for the
+ * sign-in screen (it renders before there is anything to poll with) and wrong
+ * for the switch that changes it. This is the live value the card renders.
+ */
+export function useMaintenanceMode() {
+  return useQuery({
+    queryKey: [MAINTENANCE_MODE],
+    queryFn: () => apiFetch<MaintenanceMode>("/v1/settings/maintenance-mode"),
+    // Polled and refreshed on focus, unlike every other settings read here.
+    // A `staleTime` alone schedules nothing, and this app turns
+    // `refetchOnWindowFocus` off globally, so a card left open would keep
+    // showing whatever it fetched on mount. That is the one wrong answer this
+    // card can give: another operator or an API client can flip the freeze, and
+    // reporting a deployment open when it is frozen (or frozen when it is back)
+    // is worse than a moment's blank. Same treatment as `useDashboardBuild`,
+    // for the same reason: the value changes underneath the tab.
+    refetchInterval: MAINTENANCE_MODE_POLL_MS,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
+  })
+}
+
+/**
+ * Freeze or unfreeze dashboard sign-ins.
+ *
+ * Nothing else is invalidated: the freeze changes no data any other page shows,
+ * and it deliberately does not touch the caller's own session, so the tab that
+ * flipped it keeps working either way.
+ */
+export function useSetMaintenanceMode() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (enabled: boolean) =>
+      apiFetch<MaintenanceMode>("/v1/settings/maintenance-mode", {
+        method: "PATCH",
+        body: JSON.stringify({ enabled }),
+      }),
+    onSuccess: (data) => {
+      queryClient.setQueryData([MAINTENANCE_MODE], data)
     },
   })
 }
