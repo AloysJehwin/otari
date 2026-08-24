@@ -170,9 +170,14 @@ describe("createSession", () => {
         }),
       )
 
+      // The status rides along with the wording so a caller can tell the three
+      // refusals apart without re-reading the message, which is the one part of
+      // a refusal that must not be recorded anywhere. A deployment frozen for
+      // maintenance and a wrong credential are not the same funnel step.
       await expect(createSession({ masterKey: "test-key" })).resolves.toEqual({
         ok: false,
         message: "refused, and here is why",
+        status,
       })
     },
   )
@@ -212,9 +217,13 @@ describe("createSession credentials", () => {
         }),
       )
 
+      // The status rides along with the message so a caller can tell the two
+      // refusals apart without re-reading the wording, which is the one part of
+      // a refusal that must not be recorded anywhere.
       await expect(createSession({ masterKey: "k" })).resolves.toEqual({
         ok: false,
         message: detail,
+        status,
       })
     }
   })

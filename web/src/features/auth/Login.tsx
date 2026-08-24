@@ -2,9 +2,15 @@ import { Button, Card, Input, Label, Link, TextField } from "@heroui/react"
 import { useState } from "react"
 import { useAuth } from "@/features/auth/AuthContext"
 import type { SignInCredential } from "@/shared/api/client"
-import { createSession } from "@/shared/api/client"
+import { ApiError, createSession } from "@/shared/api/client"
 import { errorMessage } from "@/shared/components/ui"
 import { useDeployment } from "@/shared/hooks/useDeployment"
+import {
+  analyticsErrorCode,
+  analyticsStatusCode,
+} from "@/shared/telemetry/errorCode"
+import { TELEMETRY_EVENTS } from "@/shared/telemetry/events"
+import { useTelemetry } from "@/shared/telemetry/overlayTelemetry"
 
 import { PublicAuthLink } from "./PublicAuthLayout"
 
@@ -242,6 +248,7 @@ function LabelRow({
  */
 export function Login() {
   const { login, isSigningOut } = useAuth()
+  const { recordEvent } = useTelemetry()
   const { sign_in_methods, mail_ready, maintenance_mode } = useDeployment()
   const usesPassword = sign_in_methods.includes("password")
   // An empty list is the gateway saying it cannot mint a session at all right
@@ -281,30 +288,71 @@ export function Login() {
   }
 
   /**
+   * A refusal this form made itself, before any request went out.
+   *
+   * Recorded separately from a refusal the gateway made, because they are
+   * different steps of the same funnel: this one is a form that could not be
+   * sent, and `LOGIN_FAILED` is a credential the gateway would not take. The
+   * reason is a code from a fixed set, never the box's contents.
+   */
+  const failValidation = (
+    field: CredentialField,
+    message: string,
+    reason: string,
+  ) => {
+    recordEvent(TELEMETRY_EVENTS.FORM_VALIDATION_FAILED, {
+      form_name: "login",
+      errors: [reason],
+    })
+    fail(field, message)
+  }
+
+  /**
    * The credential, or `null` with the missing box already named. Emptiness is
    * checked here rather than by disabling the button: a disabled primary button
    * is white on the brand tint at 1.95:1, and an empty form is this screen's
    * resting state, so that unreadable pairing was the first thing an operator
    * saw on every visit. Submitting says which box to fill instead.
    */
+  /**
+   * Which credential an attempt actually presented, read off the credential
+   * itself rather than off what the deployment offers.
+   *
+   * `sign_in_methods.includes("password")` answers the same question only while
+   * that list has exactly two values. #652 adds `passkey`, and on a deployment
+   * publishing `["password", "passkey"]` a passkey sign-in would report itself
+   * as a password one with nothing failing. The platform's own vocabulary for
+   * this property, minus the OAuth values whose buttons are still #651's.
+   */
+  const authenticationMethod = (credential: SignInCredential) =>
+    "masterKey" in credential ? "master_key" : "password"
+
   const readCredential = (): SignInCredential | null => {
     if (usesPassword) {
       if (!email.trim()) {
-        fail("email", "Enter your email.")
+        failValidation("email", "Enter your email.", "email_required")
         return null
       }
       if (!EMAIL_PATTERN.test(email.trim())) {
-        fail("email", "Enter a valid email address.")
+        failValidation(
+          "email",
+          "Enter a valid email address.",
+          "email_invalid_format",
+        )
         return null
       }
       if (!password) {
-        fail("password", "Enter your password.")
+        failValidation("password", "Enter your password.", "password_required")
         return null
       }
       return { email: email.trim(), password }
     }
     if (!masterKey.trim()) {
-      fail("masterKey", "Enter your master key.")
+      failValidation(
+        "masterKey",
+        "Enter your master key.",
+        "master_key_required",
+      )
       return null
     }
     return { masterKey: masterKey.trim() }
@@ -327,8 +375,19 @@ export function Login() {
     try {
       const result = await createSession(credential)
       if (result.ok) {
+        recordEvent(TELEMETRY_EVENTS.LOGIN_SUCCESS, {
+          authentication_method: authenticationMethod(credential),
+        })
         login()
       } else {
+        // The status, not a bucket of our own: a 401 is a wrong credential and
+        // a 403 is a master key presented to a deployment that has retired it,
+        // a distinction this screen already calls load-bearing, and collapsing
+        // the two would throw it away in the one place it is measurable.
+        recordEvent(TELEMETRY_EVENTS.LOGIN_FAILED, {
+          authentication_method: authenticationMethod(credential),
+          error_code: analyticsStatusCode(result.status),
+        })
         // The gateway's own wording, not a guess: it distinguishes a wrong
         // credential from a master key presented to a deployment that has
         // retired it as a sign-in, and only it knows which happened. It is
@@ -343,6 +402,14 @@ export function Login() {
         )
       }
     } catch (caught) {
+      // The gateway's message is not recorded, only its status: a refusal's
+      // wording is the one part of it that can carry something the operator
+      // typed.
+      recordEvent(TELEMETRY_EVENTS.LOGIN_FAILED, {
+        authentication_method: authenticationMethod(credential),
+        error_code: analyticsErrorCode(caught),
+        status: caught instanceof ApiError ? caught.status : undefined,
+      })
       setErrorField(usesPassword ? "password" : "masterKey")
       setError(caught)
     } finally {
