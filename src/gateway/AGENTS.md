@@ -12,7 +12,7 @@ read that first if a change touches mode selection.
 ## Ports, container, bootstrap
 `ports/` holds the domain-named `Protocol` interfaces the core depends on, `adapters/` holds Otari's own implementation of each, and `container.py` is the composition root that binds them, built once per app in `create_app` and read through the port dependencies in `api/deps.py`. `OTARI_BOOTSTRAP=module:callable` points at an overlay's register function, imported after the defaults are bound; unset, nothing is imported. Why the seam is shaped this way, and the rules for keeping it, are in [../../ARCHITECTURE.md](../../ARCHITECTURE.md); `scripts/check_architecture.py` enforces them.
 
-Two local consequences worth knowing before you use it. A port factory receives `AsyncSession | None`, because hybrid mode runs with no local database and an adapter resolved on a hybrid request has to say what it does without one. `TelemetryStoragePort` is the exception that proves the rule: every surface resolving it is standalone-only, so `get_telemetry_storage_port` names `get_db` rather than `PortSessionDep`, which hands the adapter the caller's session instead of opening a second one for the same request. And a capability earns its port when a second implementation is real, not before: four of the five that exist are still mechanism alone, with no core caller.
+Two local consequences worth knowing before you use it. A port factory receives `AsyncSession | None`, because hybrid mode runs with no local database and an adapter resolved on a hybrid request has to say what it does without one. `TelemetryStoragePort` is the exception that proves the rule: every surface resolving it is standalone-only, so `get_telemetry_storage_port` names `get_db` rather than `PortSessionDep`, which hands the adapter the caller's session instead of opening a second one for the same request. And a capability earns its port when a second implementation is real, not before: of the five that exist, two have core callers, `TelemetryStoragePort` and `ModelProviderPort` (the last rung of the credential ladder below), and the other three are still mechanism alone.
 
 ## Request lifecycle (chat completions)
 Read these together before changing request behavior, the flow spans several files.
@@ -93,6 +93,12 @@ wired into the lifespan, standalone-only.
   `POST /v1/search` work with no config file. Tools defined in the config file stay read-only.
 
 Their pages are in [../../web/AGENTS.md](../../web/AGENTS.md).
+
+Below both stores is one more rung, deliberately last: when a candidate needed a credential
+and none of them had one, `resolve_dispatch_provider` asks `ModelProviderPort` whether this
+build serves it from a deployment-owned fleet. `_serve_from_hosted_credential` in
+`api/routes/_pipeline.py` is the whole of it and says why on each branch. Nothing here may
+move above BYO.
 
 Neither store becomes workspace-keyed. Per-tenant tool configuration (web search, code
 execution, MCP servers, guardrails) is resolved at admission in `prepare_gateway_tools`
