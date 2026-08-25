@@ -19,6 +19,7 @@ from gateway.models.tenancy import User as TenancyUser
 from gateway.ports.billing_port import BillingPort
 from gateway.ports.entitlement_port import EntitlementPort
 from gateway.ports.growth_signal_port import GrowthSignalPort
+from gateway.ports.identity_provider_port import IdentityProviderPort
 from gateway.ports.model_provider_port import ModelProviderPort
 from gateway.ports.telemetry_storage_port import TelemetryStoragePort
 from gateway.services.dashboard_session_service import SESSION_COOKIE_NAME, resolve_dashboard_session
@@ -475,6 +476,24 @@ def get_growth_signal_port(db: PortSessionDep, container: ContainerDep) -> Growt
     return container.resolve(GrowthSignalPort, db)
 
 
+# ``get_db`` rather than ``PortSessionDep``, for the reason
+# ``get_telemetry_storage_port`` below gives: the only surface resolving this is
+# the OAuth sign-in route, which is standalone-only and already holds a session
+# from ``get_db``, and FastAPI caches a dependency per callable. Naming the same
+# one hands the adapter the caller's session instead of opening a second,
+# independent one against the same database for the same request. That sharing
+# is load-bearing here and not just tidy: the adapter writes (it links a
+# provider, and may stamp a verification) and deliberately does not commit, so
+# its writes have to be in the transaction the route commits or they are in one
+# nobody does.
+def get_identity_provider_port(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    container: ContainerDep,
+) -> IdentityProviderPort:
+    """Resolve the identity adapter this build bound at startup."""
+    return container.resolve(IdentityProviderPort, db)
+
+
 def get_model_provider_port(db: PortSessionDep, container: ContainerDep) -> ModelProviderPort:
     """Resolve the model-provider adapter this build bound at startup."""
     return container.resolve(ModelProviderPort, db)
@@ -497,6 +516,7 @@ def get_telemetry_storage_port(
 BillingPortDep = Annotated[BillingPort, Depends(get_billing_port)]
 EntitlementPortDep = Annotated[EntitlementPort, Depends(get_entitlement_port)]
 GrowthSignalPortDep = Annotated[GrowthSignalPort, Depends(get_growth_signal_port)]
+IdentityProviderPortDep = Annotated[IdentityProviderPort, Depends(get_identity_provider_port)]
 ModelProviderPortDep = Annotated[ModelProviderPort, Depends(get_model_provider_port)]
 TelemetryStoragePortDep = Annotated[TelemetryStoragePort, Depends(get_telemetry_storage_port)]
 
@@ -538,6 +558,7 @@ __all__ = [
     "CurrentIdentity",
     "EntitlementPortDep",
     "GrowthSignalPortDep",
+    "IdentityProviderPortDep",
     "ModelProviderPortDep",
     "TelemetryStoragePortDep",
     "get_config",
