@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Sequence
@@ -46,7 +48,7 @@ from typing import Any, Generic, Literal, NamedTuple, NoReturn, Protocol, TypeVa
 from urllib.parse import ParseResult, urlparse
 
 from any_llm import LLMProvider
-from any_llm.exceptions import AnyLLMError
+from any_llm.exceptions import AnyLLMError, UnsupportedParameterError
 from any_llm.types.completion import (
     ChatCompletion,
     ChatCompletionChunk,
@@ -317,12 +319,32 @@ class _PendingUsageReport(NamedTuple):
 def _is_unsupported_feature_error(exc: BaseException) -> bool:
     """True when any-llm refused a request feature its backend cannot express.
 
-    Unwraps ``original_exception`` as well: once
-    ``ANY_LLM_UNIFIED_EXCEPTIONS=1`` becomes the default, the raw
-    ``NotImplementedError`` arrives wrapped in a generic ``ProviderError`` and a
-    check against ``exc`` alone would stop matching.
+    Newer any-llm releases use ``UnsupportedParameterError`` for typed provider
+    capability checks, while older feature checks still raise
+    ``NotImplementedError``. Unwrap ``original_exception`` as well so either
+    signal survives the unified-exception wrapper.
     """
-    return any(isinstance(candidate, NotImplementedError) for candidate in upstream_exception_chain(exc))
+    unsupported_types = (NotImplementedError, UnsupportedParameterError)
+    return any(isinstance(candidate, unsupported_types) for candidate in upstream_exception_chain(exc))
+
+
+def _unsupported_feature_detail(exc: BaseException) -> str:
+    """Return one actionable reason for a locally rejected request feature."""
+    for candidate in upstream_exception_chain(exc):
+        if isinstance(candidate, UnsupportedParameterError):
+            # AnyLLMError.__str__ prefixes the provider to ``message``. Feeding
+            # both through upstream_error_message would repeat the same reason.
+            return _redacted_caller_fault_detail(candidate.message, PROVIDER_BAD_REQUEST_DETAIL)
+    return _caller_fault_detail(exc, PROVIDER_BAD_REQUEST_DETAIL)
+
+
+def _redacted_caller_fault_detail(message: str, fallback: str) -> str:
+    """Return redacted explanatory text, or a fixed detail when none remains."""
+    redacted = redact_upstream_message(message)
+    explanatory = redacted.replace("[redacted]", "")
+    if not any(char.isalpha() for char in explanatory):
+        return fallback
+    return redacted
 
 
 def _caller_fault_detail(exc: BaseException, fallback: str) -> str:
@@ -339,11 +361,7 @@ def _caller_fault_detail(exc: BaseException, fallback: str) -> str:
     A message made entirely of redaction placeholders is empty for this
     purpose, too.
     """
-    redacted = redact_upstream_message(upstream_error_message(exc))
-    explanatory = redacted.replace("[redacted]", "")
-    if not any(char.isalpha() for char in explanatory):
-        return fallback
-    return redacted
+    return _redacted_caller_fault_detail(upstream_error_message(exc), fallback)
 
 
 def classify_provider_error(exc: BaseException) -> ProviderErrorMapping | None:
@@ -372,16 +390,14 @@ def classify_provider_error(exc: BaseException) -> ProviderErrorMapping | None:
     kind, status_code = upstream_exception_shape(exc)
     if kind == "timeout":
         return ProviderErrorMapping(status.HTTP_504_GATEWAY_TIMEOUT, PROVIDER_TIMEOUT_DETAIL)
-    # any-llm raises NotImplementedError when a request asks a provider for
-    # something its backend cannot express: context_management/betas against a
-    # provider with no native Anthropic Messages API is the case that surfaced
-    # this (#530). It carries no HTTP status, so it would otherwise fall through
-    # to the generic 502/500 and tell the caller a guaranteed-permanent failure
-    # was a transient one. The exception type is the whole signal here, so this
-    # needs no probe into any-llm's wording, and the message it carries already
-    # names the unsupported feature.
+    # any-llm raises UnsupportedParameterError for typed provider-capability
+    # checks and still uses NotImplementedError for older feature checks such as
+    # context_management/betas (#530). Neither carries an HTTP status, so either
+    # would otherwise fall through to a generic 502/500 and tell the caller a
+    # guaranteed-permanent failure was transient. The exception type is the
+    # whole signal here, and its message names the unsupported feature.
     if _is_unsupported_feature_error(exc):
-        return ProviderErrorMapping(status.HTTP_400_BAD_REQUEST, _caller_fault_detail(exc, PROVIDER_BAD_REQUEST_DETAIL))
+        return ProviderErrorMapping(status.HTTP_400_BAD_REQUEST, _unsupported_feature_detail(exc))
     if status_code is None:
         return None
     # Account billing exhaustion, which several providers report as a 400/422
@@ -688,6 +704,45 @@ class RequestContext:
         # without a shared id they would be unrelated rows in the activity log.
         # `None` for an unrouted request, which writes exactly one row.
         self.request_group_id = request_group_id
+
+
+def scope_prompt_cache_key(request_fields: dict[str, Any], ctx: RequestContext) -> dict[str, Any]:
+    """Bind a caller-supplied prompt cache key to its authenticated scope.
+
+    Provider prompt caches can be shared by every tenant using one upstream
+    account. Including the resolved identity in the routing key prevents two
+    callers from deliberately choosing the same provider cache namespace and
+    using cached-token counts as an exact-prefix oracle.
+    """
+    caller_key = request_fields.get("prompt_cache_key")
+    if not isinstance(caller_key, str):
+        return request_fields
+
+    scope: tuple[str, str] | None = None
+    if ctx.hybrid_mode:
+        if ctx.route is not None and ctx.route.user_id:
+            scope = ("user", ctx.route.user_id)
+        elif ctx.route is not None and ctx.route.workspace_id:
+            # Older platform peers may omit user_id. The workspace still keeps
+            # their cache-routing key out of every other tenant's namespace.
+            scope = ("workspace", ctx.route.workspace_id)
+    elif ctx.user_id:
+        scope = ("user", ctx.user_id)
+
+    if scope is None:
+        # Never forward an unscoped caller-controlled key when the peer did not
+        # provide an authenticated identity. Provider-side automatic caching
+        # still works without the routing hint.
+        request_fields.pop("prompt_cache_key", None)
+        return request_fields
+
+    payload = json.dumps(
+        ["otari-prompt-cache-v1", scope[0], scope[1], caller_key],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    request_fields["prompt_cache_key"] = hashlib.sha256(payload.encode()).hexdigest()
+    return request_fields
 
 
 def unresolvable_model_detail(model_selector: str) -> str:
