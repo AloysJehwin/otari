@@ -9,6 +9,7 @@ import type {
 import { OrganizationGuardrailsCard } from "@/features/tools/OrganizationGuardrailsCard"
 import { SearchToolsCard } from "@/features/tools/SearchToolsCard"
 import { WorkspaceCodeExecutionPolicyCard } from "@/features/tools/WorkspaceCodeExecutionPolicyCard"
+import { WorkspaceMcpServersCard } from "@/features/tools/WorkspaceMcpServersCard"
 import { WorkspaceWebSearchCard } from "@/features/tools/WorkspaceWebSearchCard"
 import {
   usePricing,
@@ -806,6 +807,11 @@ export function ToolsGuardrailsPage({ only }: { only?: ToolServiceName } = {}) {
           )
         },
       )}
+
+      {/* Beside the services rather than under one of them, and left out of
+        every narrowed view, each of which is one service. `/tools/mcp-servers`
+        renders the same card. */}
+      {only ? null : <WorkspaceMcpServersCard />}
 
       <SaveToast message={toast} />
     </div>

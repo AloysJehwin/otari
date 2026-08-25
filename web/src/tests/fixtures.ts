@@ -24,6 +24,7 @@ import type {
   WorkspaceActivation,
   WorkspaceBudgetDefault,
   WorkspaceCodeExecutionPolicy,
+  WorkspaceMcpServer,
   WorkspaceMember,
   WorkspaceWebSearchConfig,
 } from "@/client"
@@ -427,6 +428,28 @@ export function workspaceWebSearchConfig(
     provider_options: null,
     created_at: null,
     updated_at: null,
+    ...overrides,
+  }
+}
+
+export function workspaceMcpServer(
+  overrides: Partial<WorkspaceMcpServer> = {},
+): WorkspaceMcpServer {
+  return {
+    id: "55555555-5555-5555-5555-555555555555",
+    workspace_id: "44444444-4444-4444-4444-444444444444",
+    name: "github",
+    url: "https://mcp.example.com/github",
+    purpose_hint: null,
+    // Null is how "no allow-list" is stored, which is the neutral state a
+    // builder wants. Not interchangeable with `[]` as a stored value, even
+    // though `mcp_client` happens to read both as "expose everything".
+    allowed_tools: null,
+    enabled: true,
+    // The token is write-only, so this is all a response ever says about it.
+    has_token: false,
+    created_at: "2026-08-01T00:00:00+00:00",
+    updated_at: "2026-08-01T00:00:00+00:00",
     ...overrides,
   }
 }
