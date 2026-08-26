@@ -27,6 +27,7 @@ from gateway.services.file_store import FileStore
 from gateway.services.log_writer import LogWriter
 from gateway.services.master_key_service import hash_master_key, is_generated_master_key, load_master_key_hash
 from gateway.services.routing import clear_router_backend_cache
+from gateway.services.tenancy.deployment_user_service import DeploymentUserService
 from gateway.services.tenancy.provisioning_service import ensure_bootstrap_identity
 
 # Legacy module-level fallback. Config now lives on ``app.state.config`` (set in
@@ -223,12 +224,15 @@ async def get_session_identity(
 ) -> TenancyUser | None:
     """The identity a valid dashboard session cookie authenticates, or None.
 
-    A session cookie grants master-key authority *and* names who is using it, so
-    this is both the credential check and the identity resolution: the callers
-    below treat a non-None result as authenticated, and ``get_current_identity``
-    reuses the same resolved identity. Declared as a dependency rather than
-    called directly so FastAPI's per-request cache means one lookup however many
-    of them a route pulls in.
+    A session cookie *authenticates* the management API and names who is using
+    it, so this is both the credential check and the identity resolution: the
+    callers below treat a non-None result as authenticated, and
+    ``get_current_identity`` reuses the same resolved identity. It is not by
+    itself an answer to *what* the caller may do: a deployment-wide route asks
+    ``require_deployment_operator`` on top, and a tenant-scoped one asks a
+    service about the organization or workspace named. Declared as a dependency
+    rather than called directly so FastAPI's per-request cache means one lookup
+    however many of them a route pulls in.
 
     ``SameSite=Strict`` on the cookie is the primary CSRF control; the
     Sec-Fetch-Site check is belt-and-braces for clients that send the header.
@@ -348,22 +352,76 @@ async def verify_master_key(
     )
 
 
+async def require_deployment_operator(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    session_identity: Annotated[TenancyUser | None, Depends(get_session_identity)],
+    _master_key: Annotated[str | None, Depends(verify_master_key)],
+) -> None:
+    """Refuse a deployment-wide management request from a non-operator identity.
+
+    ``verify_master_key`` answers *authenticated*, not *authorized*: a dashboard
+    session clears it for any active, email-verified identity. That is right for
+    the tenant-scoped routers (`organizations.py`, `workspaces.py`,
+    `org_provider_keys.py`, `admin.py`), which declare it as their authentication
+    gate and then re-check the caller's role against the organization, workspace
+    or deployment they are acting on. It is wrong for the deployment-wide
+    routers, where clearing it *is* the whole authorization: `/v1/keys` mints a
+    key into any workspace, `/v1/provider-credentials` holds process-global
+    provider secrets, and `POST /v1/settings/master-key/rotate` replaces the
+    deployment credential. On a single-operator deployment every login is that
+    operator and the distinction is invisible; once mutually-untrusting tenants
+    sign in to one process, a member of one organization holding master-key
+    authority is a cross-organization breach (otari-ai#1880).
+
+    A **header master key** is the deployment credential itself, so it passes; it
+    names nobody, and ``get_current_identity`` resolves it to the bootstrap
+    operator. A **session** is put to
+    ``DeploymentUserService.has_administration_access``, which `/v1/admin`
+    already treats as the answer to "may this caller act deployment-wide": a
+    superuser, or the bootstrap operator whatever its flag says. Reused rather
+    than re-derived so the routers guarded here and the account administration
+    that can grant the authority cannot come to disagree about who holds it.
+
+    Declared as a dependency and not a check inside each handler so it composes
+    the way the router it guards already declares auth, and so ``Depends``
+    caching means the master-key verification underneath runs once per request
+    however many of these a route pulls in.
+    """
+    if session_identity is not None and not await DeploymentUserService(db).has_administration_access(
+        session_identity
+    ):
+        record_auth_failure("not_deployment_operator")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint requires deployment operator access.",
+        )
+
+
 async def verify_api_key_or_master_key(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     config: Annotated[GatewayConfig, Depends(get_config)],
-    session_identity: Annotated[TenancyUser | None, Depends(get_session_identity)],
 ) -> tuple[APIKey | None, bool]:
     """Verify either API key or master key from Otari-Key header.
 
-    A valid dashboard session cookie also grants master-key authority, but only
-    when the request carries no header credentials at all.
+    Deliberately does **not** consult the dashboard session cookie. It used to,
+    on the same "a session grants master-key authority" premise
+    ``require_deployment_operator`` exists to retire, and here that premise was
+    worse than on the management plane: ``is_master_key`` is what makes
+    ``resolve_request_context`` bill and resolve credentials through the
+    deployment's *default* workspace, so a signed-in member of any organization
+    could spend another organization's BYO provider credential on a completion,
+    or file usage rows into a tenant they do not belong to, without holding a key
+    at all (otari-ai#1880).
+
+    A browser has no reason to reach this plane: the dashboard mentions these
+    endpoints in its copy and calls none of them. The three catalog reads it does
+    call take :func:`verify_catalog_reader` instead.
 
     Args:
         request: FastAPI request object
         db: Database session
         config: Gateway configuration
-        session_identity: The identity behind a dashboard session cookie, if any
 
     Returns:
         Tuple of (APIKey object or None, is_master_key boolean)
@@ -372,9 +430,6 @@ async def verify_api_key_or_master_key(
         HTTPException: If key is invalid, inactive, or expired
 
     """
-    if session_identity is not None:
-        return None, True
-
     token = _extract_bearer_token(request, config)
 
     if await is_valid_master_key(token, config, db):
@@ -382,6 +437,30 @@ async def verify_api_key_or_master_key(
 
     api_key = await _verify_and_update_api_key(db, token)
     return api_key, False
+
+
+async def verify_catalog_reader(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    config: Annotated[GatewayConfig, Depends(get_config)],
+    session_identity: Annotated[TenancyUser | None, Depends(get_session_identity)],
+) -> tuple[APIKey | None, bool]:
+    """As :func:`verify_api_key_or_master_key`, and a dashboard session also reads.
+
+    The narrow exception to the rule above, for the catalog reads that describe
+    the deployment rather than act on it: ``GET /v1/models``, ``GET /v1/pricing``
+    and ``GET /v1/tools`` (with their by-id variants). The dashboard's Models and
+    Pricing pages are built on these, so a session has to reach them; they call
+    no provider, write nothing, and bill nothing, so reaching them
+    deployment-wide costs a signed-in caller's own organization nothing.
+
+    Split out rather than left as a branch inside the other dependency so that
+    adding a route to this plane defaults to refusing the cookie, and admitting
+    one is a decision spelled at the route.
+    """
+    if session_identity is not None:
+        return None, True
+    return await verify_api_key_or_master_key(request, db, config)
 
 
 async def get_db_if_needed(
@@ -576,5 +655,6 @@ __all__ = [
     "require_capability",
     "verify_api_key",
     "verify_api_key_or_master_key",
+    "verify_catalog_reader",
     "verify_master_key",
 ]

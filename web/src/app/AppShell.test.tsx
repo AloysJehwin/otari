@@ -97,10 +97,12 @@ function renderShell(
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     const path = String(input)
     // The caller axis, which unlike the other two is a request rather than a
-    // context. Refused by default: that is what every other test here is, and
-    // it is the answer for a deployment nobody has granted operator access on.
+    // context. Granted by default, because the nine deployment-wide rows now
+    // declare it and every case below that is about the *surface* or
+    // *entitlement* axis wants a whole sidebar to reason about. The three cases
+    // that are about this axis say so explicitly.
     if (path.startsWith("/v1/admin/access")) {
-      return Response.json({ granted: options.operator ?? false })
+      return Response.json({ granted: options.operator ?? true })
     }
     if (path.startsWith("/v1/admin/users")) {
       return Response.json({ data: [], count: 0 })
@@ -512,6 +514,13 @@ describe("AppShell surface gating", () => {
     // Same reasoning as above, for the other context: the organization rail is
     // its own registry, and nothing else compares it against a full list.
     await renderShell(bootstrap(), { url: "/organization/members" })
+    // Awaited, not assumed: Accounts is the one row gated `operatorOnly:
+    // "unlisted"`, so it is absent until `GET /v1/admin/access` answers. Taking
+    // the snapshot without waiting for it is a race that passes on a fast
+    // machine and fails on CI, which is what it did.
+    await within(
+      screen.getByRole("navigation", { name: "Sidebar" }),
+    ).findByRole("link", { name: "Accounts" })
 
     expect(
       within(screen.getByRole("navigation", { name: "Sidebar" }))
@@ -524,6 +533,10 @@ describe("AppShell surface gating", () => {
       "Model pricing",
       "Org settings",
       "Settings",
+      // Present because this harness signs in as an operator by default. It is
+      // the one row gated `operatorOnly: "unlisted"`, so a member does not see
+      // it and neither does anyone until `GET /v1/admin/access` has answered.
+      "Accounts",
     ])
     // The design's rail has two more rows (the organization's own Providers and
     // Guardrails), and each is gated on a surface a standalone gateway does not
