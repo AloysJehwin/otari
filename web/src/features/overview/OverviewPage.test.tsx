@@ -155,6 +155,90 @@ describe("OverviewPage", () => {
     expect(screen.getByText("Elevated")).toBeInTheDocument() // error-rate status word (non-hue)
   })
 
+  it("renders period-over-period change as a trend chip, not a glyph", async () => {
+    mockApi({
+      today: { cost: 5, request_count: 100, error_count: 1 },
+      period: { cost: 200, request_count: 2000, error_count: 40 },
+      prev: { cost: 100, request_count: 1600, error_count: 8 },
+    })
+    renderPage(<OverviewPage />)
+    // Await a chip, not "$200.00": every assertion below is about text derived
+    // from the *previous* window, while the value comes from the period query.
+    // Awaiting the value assumes the two land in one commit, so a skew between
+    // the responses would fail the sync assertions that follow.
+    await screen.findByText("+100.0% vs prev")
+
+    // The chip carries the caption the old plain-text hint carried, so the
+    // comparison still says what it is being compared against. Distinct
+    // percentages per tile, so each assertion is about one chip: spend doubled,
+    // requests rose a quarter, and the error rate went 0.5% -> 2.0%.
+    expect(screen.getByText("+100.0% vs prev")).toBeInTheDocument()
+    expect(screen.getByText("+25.0% vs prev")).toBeInTheDocument()
+    expect(screen.getByText("+300.0% vs prev")).toBeInTheDocument()
+    // And each announces a direction, which the glyph never did: "▲" is
+    // decoration a screen reader skips. TrendChip.test.tsx owns the direction
+    // and polarity mapping; this only asserts the three tiles go through it.
+    // Anchored and counted: unanchored, `up` and `down` also match this page's
+    // own prose, so the assertion would pass with the announcement deleted.
+    expect(
+      screen.getAllByText(/^(no change|up|down)(, (better|worse))?$/),
+    ).toHaveLength(3)
+    // The hand-rolled arrow glyphs are gone from the tiles. queryAllByText for
+    // the same reason as below: queryByText throws on a multiple match, so a
+    // regression restoring the glyph on all three tiles would report a broken
+    // test rather than a broken tile.
+    expect(screen.queryAllByText(/[▲▼]/)).toHaveLength(0)
+  })
+
+  it("reads a chip against the metric's own polarity, not the direction alone", async () => {
+    // Spend and the error rate both rose, and both improve by falling, so both
+    // are regressions and say so: direction plus judgment, because polarity puts
+    // good and bad in hue alone. Request volume rose too, but volume carries no
+    // polarity, so it announces the direction and nothing more.
+    mockApi({
+      today: { cost: 5, request_count: 100, error_count: 1 },
+      period: { cost: 200, request_count: 2000, error_count: 40 },
+      prev: { cost: 100, request_count: 1600, error_count: 8 },
+    })
+    renderPage(<OverviewPage />)
+
+    // The chip again, not the value: same previous-window dependency as above.
+    expect(await screen.findByText("+100.0% vs prev")).toBeInTheDocument()
+    expect(screen.getAllByText("up, worse")).toHaveLength(2)
+    expect(screen.getAllByText("up")).toHaveLength(1)
+  })
+
+  it("reserves no trend row for a tile with no comparable previous window", async () => {
+    // No previous window on the wire leaves every delta null, and TrendChip
+    // renders nothing for a null fraction. The chip has to be gated on the
+    // fraction rather than on the query, or StatCard reserves the aside row for
+    // an element that draws nothing.
+    mockApi({
+      today: { cost: 5 },
+      period: { cost: 200, request_count: 2000, error_count: 40 },
+      prev: { cost: 0, request_count: 0, error_count: 0 },
+    })
+    renderPage(<OverviewPage />)
+    await screen.findByText("$200.00")
+
+    // queryAllByText, not queryByText: a regression that renders all three
+    // chips makes queryByText throw on the multiple match rather than fail on
+    // the assertion, which reads as a broken test instead of a broken tile.
+    expect(screen.queryAllByText(/vs prev/)).toHaveLength(0)
+    expect(
+      screen.queryAllByText(/^(no change|up|down)(, (better|worse))?$/),
+    ).toHaveLength(0)
+    // And the row itself is not reserved, which is the half the assertions
+    // above cannot see: TrendChip renders no text for a null fraction either
+    // way, so gating the chip on `periodTotals` instead of on the fraction
+    // leaves them green while the tile keeps 42px of dead space. Asserted on
+    // the utility for the reason ui.test.tsx does it: jsdom performs no layout,
+    // so the reservation is observable only as the class. Scoped to this tile,
+    // since Budget health reserves the row off its own hint.
+    const tile = screen.getByText("Spend, last 30 days").parentElement!
+    expect(tile.querySelector(".min-h-10\\.5")).toBeNull()
+  })
+
   it("renders spend and request-volume sparklines from the 30-day series", async () => {
     const series = [
       {
