@@ -15,11 +15,19 @@ export function AuthEmailField({
   value,
   onChange,
   description,
+  isReadOnly = false,
 }: {
   label?: string
   value: string
   onChange: (next: string) => void
   description?: string
+  /**
+   * Shows the address without letting it be edited, for a form whose address
+   * was decided elsewhere; `SignupPage` is the caller and says why. Still a
+   * field rather than a line of text, so a password manager files the
+   * credential it is being set beside against a username.
+   */
+  isReadOnly?: boolean
 }) {
   return (
     <TextField
@@ -27,6 +35,7 @@ export function AuthEmailField({
       onChange={onChange}
       type="email"
       isRequired
+      isReadOnly={isReadOnly}
       className="flex flex-col gap-1"
     >
       <Label className="text-sm font-medium text-foreground">{label}</Label>
@@ -37,7 +46,18 @@ export function AuthEmailField({
           mount raises the soft keyboard over the explanation above it before
           the visitor has asked to type (frontend-standards/responsiveness.md,
           and the same call `features/account/PasswordCard` makes). */}
-      <Input placeholder="you@example.com" autoComplete="username" />
+      {/* A rule against the rendered input rather than a token or a HeroUI
+          prop, which is the order the house style asks for and neither of
+          which reaches this: HeroUI styles `isReadOnly` identically to an
+          editable field, so without it the one field on the page that ignores
+          typing looks exactly like the ones that do not. `bg-surface-alt` is
+          the registered utility for `--color-surface-muted`; `bg-surface-muted`
+          is declared nowhere and compiles to nothing (see `Login`'s CODE_CHIP). */}
+      <Input
+        placeholder="you@example.com"
+        autoComplete="username"
+        className="read-only:bg-surface-alt read-only:text-muted"
+      />
       {description ? (
         // HeroUI's Description reaches the input as aria-describedby through
         // the TextField's "description" slot, which a raw span does not.
