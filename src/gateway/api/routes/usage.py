@@ -27,6 +27,7 @@ from gateway.core.sql import (
     match_any,
     utc_bound,
 )
+from gateway.core.usage_source import not_served_here
 from gateway.inflight import get_registry
 from gateway.models.entities import APIKey, UsageLog, User
 from gateway.models.money import as_float
@@ -611,6 +612,13 @@ async def count_usage(
         workspace_id=workspace_id,
         scope=None,
     )
+    if counts_toward_budget is False:
+        # This is the "select all N matching" affordance, and the delete / set-price it
+        # feeds scope to imported rows via _selection_conditions. counts_toward_budget
+        # alone does not say "imported": gateway traffic on an exclude_from_budget key
+        # is also False. Without the same provenance guard the count promises rows the
+        # mutation then refuses to touch.
+        conditions.append(not_served_here(UsageLog.source))
     stmt: Any = select(func.count()).select_from(UsageLog).where(*conditions)
     total = (await db.execute(stmt)).scalar_one()
     return UsageCount(total=total)

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from conftest import seed_workspace_id
 from gateway.core.sql import MAX_FILTER_VALUES
+from gateway.core.usage_source import SERVED_HERE_SLUG
 from gateway.models.entities import UsageLog, User
 
 DELETE_PATH = "/v1/usage"
@@ -758,3 +759,28 @@ def test_count_scopes_to_imported_rows(
     resp = client.get(COUNT_PATH, params={"counts_toward_budget": "false"}, headers=master_key_header)
     assert resp.status_code == 200
     assert resp.json()["total"] == 2
+
+
+def test_count_and_delete_agree_on_budget_exempt_gateway_rows(
+    client: TestClient, master_key_header: dict[str, str], db_session: Session
+) -> None:
+    """counts_toward_budget=False is not the same question as "imported".
+
+    Gateway traffic on an exclude_from_budget key is also False, so the count behind
+    "select all N matching" has to apply the provenance guard the mutation applies,
+    or the dialog promises a row the delete then refuses to touch.
+    """
+    _make_log(db_session, log_id="imp-1", counts_toward_budget=False, source="claude_code")
+    _make_log(db_session, log_id="gw-exempt", counts_toward_budget=False, source=SERVED_HERE_SLUG)
+    db_session.commit()
+
+    counted = client.get(COUNT_PATH, params={"counts_toward_budget": "false"}, headers=master_key_header)
+    assert counted.status_code == 200
+    assert counted.json()["total"] == 1
+
+    deleted = client.request("DELETE", DELETE_PATH, json={"by_filter": True}, headers=master_key_header)
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] == counted.json()["total"]
+
+    db_session.expire_all()
+    assert _get(db_session, "gw-exempt") is not None
