@@ -33,6 +33,7 @@ import { BulkActionBar } from "@/shared/components/BulkActionBar"
 import { ConfirmDialog } from "@/shared/components/ConfirmDialog"
 import { DataTable, type DataTableColumn } from "@/shared/components/DataTable"
 import { Field } from "@/shared/components/Field"
+import { MissingGatewayAddressNotice } from "@/shared/components/MissingGatewayAddressNotice"
 import {
   CopyField,
   EmptyState,
@@ -45,6 +46,7 @@ import { formatDate } from "@/shared/helpers/format"
 import {
   buildCurlSnippet,
   buildPythonSnippet,
+  resolveSnippetBaseUrl,
   SNIPPET_MODEL_PLACEHOLDER,
 } from "@/shared/helpers/requestSnippets"
 import {
@@ -52,6 +54,7 @@ import {
   useTableSelection,
 } from "@/shared/helpers/tableSelection"
 import { useSelectedWorkspace } from "@/shared/hooks/SelectedWorkspace"
+import { useDeployment } from "@/shared/hooks/useDeployment"
 
 // ---------- helpers ----------
 
@@ -112,7 +115,10 @@ function RevealSecretModal({
 }) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const secretRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
-  const origin = typeof window !== "undefined" ? window.location.origin : ""
+  // Where a request from this deployment belongs, which is not always the address
+  // that served this page: a hosted control plane serves the dashboard and not
+  // the API. Undefined when it has not said where its gateway is (otari#823).
+  const baseUrl = resolveSnippetBaseUrl(useDeployment())
   const secret = result.key
 
   useEffect(() => {
@@ -142,8 +148,14 @@ function RevealSecretModal({
 
   // The same two calls the setup guide hands out with its own key; the builders
   // are shared so an operator cannot be shown two dialects of one request.
-  const curl = buildCurlSnippet({ origin, apiKey: secret })
-  const python = buildPythonSnippet({ origin, apiKey: secret })
+  // One value rather than two, so a deployment that named no gateway drops both
+  // together and the copy under the heading cannot disagree with the fields.
+  const snippets = baseUrl
+    ? {
+        curl: buildCurlSnippet({ baseUrl, apiKey: secret }),
+        python: buildPythonSnippet({ baseUrl, apiKey: secret }),
+      }
+    : undefined
 
   return (
     <div
@@ -174,13 +186,25 @@ function RevealSecretModal({
             <div className="text-sm font-medium text-foreground">
               Make your first call
             </div>
-            <p className="text-xs text-muted">
-              Replace <code>{SNIPPET_MODEL_PLACEHOLDER}</code> with a model from
-              the Models page.
-            </p>
+            {snippets === undefined ? (
+              <MissingGatewayAddressNotice />
+            ) : (
+              <p className="text-xs text-muted">
+                Replace <code>{SNIPPET_MODEL_PLACEHOLDER}</code> with a model
+                from the Models page.
+              </p>
+            )}
           </div>
-          <CopyField label="curl" value={curl} multiline />
-          <CopyField label="Python (OpenAI SDK)" value={python} multiline />
+          {snippets !== undefined ? (
+            <>
+              <CopyField label="curl" value={snippets.curl} multiline />
+              <CopyField
+                label="Python (OpenAI SDK)"
+                value={snippets.python}
+                multiline
+              />
+            </>
+          ) : null}
         </div>
         <div className="flex justify-end">
           <Button variant="primary" onPress={onClose}>
