@@ -444,7 +444,10 @@ class GatewayConfig(BaseSettings):
         default=None,
         description=(
             "Where this deployment's inference traffic belongs, as an absolute http(s) URL "
-            "with no trailing slash (e.g. 'https://gateway.otari.ai'). Only a hosted control "
+            "with no trailing slash and no '/v1' path segment anywhere in it, not even as part "
+            "of a full endpoint like '/v1/chat/completions' (e.g. 'https://gateway.otari.ai'): "
+            "the dashboard appends that path itself. It carries no credential either, so no "
+            "query string, fragment, or user:password. Only a hosted control "
             "plane needs it: a standalone gateway and a hybrid one both serve inference at "
             "their own address, so whatever reached the dashboard reaches the API, and this "
             "stays unset. A control plane serving many organizations does not, so it has to "
@@ -1760,6 +1763,19 @@ class GatewayConfig(BaseSettings):
         reach the deployment's root with a very strange parameter. Unlike
         ``docs_url``, which is a link a person follows, nothing downstream can
         recover from that.
+
+        A ``/v1`` suffix is refused too, and it is the likelier mistake of the
+        two: everywhere else a client meets one, "base URL" means the ``/v1``
+        address (the OpenAI SDK's own ``base_url`` includes it), so writing that
+        here is the natural error, and it renders a snippet posting to
+        ``/v1/v1/chat/completions``, which looks right and 404s on first use.
+        Refused rather than stripped, because stripping would be silent and
+        would be wrong for a gateway genuinely mounted under such a path, while
+        refusing costs one edit. Any segment counts and not just the last, so
+        pasting the whole endpoint (``https://host/v1/chat/completions``, the
+        likelier copy-paste of the two) is refused as well rather than rendering
+        that path twice. Any other prefix is left alone: a gateway proxied at
+        ``https://api.example.com/otari`` is a real deployment.
         """
         normalized = (value or "").strip().rstrip("/")
         if not normalized:
@@ -1770,6 +1786,29 @@ class GatewayConfig(BaseSettings):
             raise ValueError(msg)
         if parsed.query or parsed.fragment:
             msg = f"data_plane_url must carry no query string or fragment, got '{value}'"
+            raise ValueError(msg)
+        # Userinfo is refused rather than redacted downstream, because this value
+        # is published *unauthenticated*: `GET /v1/bootstrap` hands it to any
+        # browser that asks, which no redaction in the operator-gated config
+        # viewer would cover. A credential has no business here either way, since
+        # the snippet built from this puts the whole address in a curl command
+        # somebody pastes into a terminal and a shell history.
+        if parsed.username is not None or parsed.password is not None:
+            # The message does not repeat the value, unlike the refusals above,
+            # since the offending part of it is the credential. That is tidiness
+            # and not redaction: pydantic renders the input on the error either
+            # way, and a value set here was already sitting in a config file or
+            # an environment variable. The guarantee this refusal buys is the
+            # one that matters, that the credential never reaches the
+            # unauthenticated bootstrap.
+            msg = "data_plane_url must carry no username or password"
+            raise ValueError(msg)
+        if any(segment.lower() == "v1" for segment in parsed.path.split("/")):
+            msg = (
+                "data_plane_url must not contain a /v1 segment: the dashboard appends that path "
+                f"itself, so give the gateway's own address (for example 'https://gateway.otari.ai'). "
+                f"Got '{value}'"
+            )
             raise ValueError(msg)
         return normalized
 

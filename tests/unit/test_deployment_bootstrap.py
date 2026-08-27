@@ -532,10 +532,88 @@ def test_a_data_plane_url_carrying_a_query_or_fragment_is_refused_at_load(config
         GatewayConfig(data_plane_url=configured)
 
 
+@pytest.mark.parametrize(
+    "configured",
+    ["https://token@gateway.otari.ai", "https://user:secret@gateway.otari.ai"],
+)
+def test_a_data_plane_url_carrying_a_credential_is_refused(configured: str) -> None:
+    """Refused at load, because this value is published to anyone who asks.
+
+    ``GET /v1/bootstrap`` is unauthenticated, so a credential here would reach
+    any browser that requested it, which no redaction in the operator-gated
+    config viewer would cover. The snippet built from it would also put the
+    whole address into a curl command somebody pastes into a shell history.
+    """
+    with pytest.raises(ValidationError, match="no username or password"):
+        GatewayConfig(data_plane_url=configured)
+
+
+def test_the_unauthenticated_bootstrap_cannot_publish_a_credential(tmp_path: Path) -> None:
+    """The end the refusal above exists to protect, asserted through the route.
+
+    A unit test on the validator says the value cannot be built; this says the
+    published payload is what a browser gets, so the two cannot drift apart if
+    somebody later relaxes one of them.
+    """
+    app = create_app(_hosted(tmp_path, data_plane_url="https://gateway.otari.ai"))
+
+    with TestClient(app) as client:
+        body = client.get("/v1/bootstrap").text
+
+    assert "@" not in body.split('"data_plane_url"')[1].split(",")[0]
+
+
 @pytest.mark.parametrize("configured", ["", "   "])
 def test_a_blank_data_plane_url_is_an_unset_one(configured: str) -> None:
     """A container templating an empty value has named no data plane."""
     assert GatewayConfig(data_plane_url=configured).data_plane_url is None
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        "https://gateway.otari.ai/v1",
+        "https://gateway.otari.ai/v1/",
+        "https://gateway.otari.ai/V1",
+        "https://api.example.com/otari/v1",
+        # The whole endpoint, which is the likelier copy-paste of the two: it is
+        # what a curl example on this very page shows. Caught because any
+        # segment counts, not only the last one, which an earlier version of
+        # this guard got wrong and let render the path twice over.
+        "https://gateway.otari.ai/v1/chat/completions",
+        "https://gateway.otari.ai/v1/messages",
+    ],
+)
+def test_a_data_plane_url_that_already_names_v1_is_refused(configured: str) -> None:
+    """The likelier mistake, refused where it is cheap.
+
+    Everywhere else a client meets one, "base URL" means the ``/v1`` address, so
+    writing that here is the natural error, and it renders a snippet posting to
+    ``/v1/v1/chat/completions``: it looks right and 404s on first use. Refused
+    rather than stripped, because stripping would be silent and would be wrong
+    for a gateway genuinely mounted under such a path.
+    """
+    with pytest.raises(ValidationError, match="must not contain a /v1 segment"):
+        GatewayConfig(data_plane_url=configured)
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        "https://api.example.com/otari",
+        # Not a ``v1`` segment, so it survives: the guard matches whole segments
+        # rather than a prefix, or a real deployment would be refused for the
+        # first three characters of its path.
+        "https://api.example.com/v1beta",
+    ],
+)
+def test_a_path_that_does_not_name_v1_is_left_alone(configured: str) -> None:
+    """A gateway proxied at a sub-path is a real deployment, not a typo.
+
+    The guard has to stay narrow enough that it cannot cost an operator a
+    deployment shape the gateway otherwise supports.
+    """
+    assert GatewayConfig(data_plane_url=configured).data_plane_url == configured
 
 
 def test_a_trailing_slash_is_trimmed_from_the_data_plane_url() -> None:
