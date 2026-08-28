@@ -93,6 +93,7 @@ SeriesGroupBy = Literal["model", "user_id", "api_key_id", "source"]
 # switch on it exhaustively instead of string-matching whatever the server sent.
 ErrorClass = Literal["pricing", "rate_limit", "auth", "provider_error", "client_error", "unknown"]
 
+
 # Every breakdown ``/summary`` can compute, mapped to the column it groups by and
 # its top-N cap. A dimension name is the ``by_<name>`` response field it fills, so
 # a caller reads the selector and the payload with one vocabulary.
@@ -362,11 +363,26 @@ def _usage_filters(
     status_code: int | None = None,
     request_group_id: list[str] | None = None,
     workspace_id: uuid.UUID | None = None,
+    scope: ColumnElement[bool] | None,
 ) -> list[ColumnElement[bool]]:
     """Build the shared WHERE conditions for the list and count endpoints.
 
     Keeping this in one place guarantees the paginator's total (``/count``)
     always matches the rows ``list_usage`` returns for the same filters.
+
+    ``scope`` is the one condition that is not a filter. The deployment-wide
+    routes here pass ``None`` and read every row; the organization-scoped routes
+    in ``organization_usage.py`` pass the predicate their caller's membership
+    resolved to, so it is ANDed in alongside whatever the client asked for and a
+    client-supplied ``workspace_id`` can only ever narrow it further.
+
+    Deliberately **without a default**, unlike every filter beside it. It is a
+    parameter so that a route building these conditions cannot forget the half
+    that makes them safe, and a default is exactly what would let it: the
+    forgotten case reads every tenant's rows and says nothing. Required, a new
+    scoped route that omits it is a ``TypeError`` at import rather than a
+    cross-tenant read in production, which is the difference between the
+    docstring asserting the property and the signature enforcing it.
 
     Bounds are pinned to UTC here rather than only in ``_resolve_window``, which
     the summary endpoints route through but the list and count endpoints do not:
@@ -374,6 +390,8 @@ def _usage_filters(
     timezone, so the same query would size a different set of rows per deployment.
     """
     conditions: list[ColumnElement[bool]] = []
+    if scope is not None:
+        conditions.append(scope)
     if workspace_id is not None:
         conditions.append(UsageLog.workspace_id == workspace_id)
     if start_date is not None:
@@ -428,9 +446,7 @@ async def list_usage(
     db: Annotated[AsyncSession, Depends(get_db)],
     start_date: datetime | None = Query(default=None, description=_START_DESC),
     end_date: datetime | None = Query(default=None, description=_END_DESC),
-    user_id: Annotated[
-        list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_USER_MULTI_DESC)
-    ] = None,
+    user_id: Annotated[list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_USER_MULTI_DESC)] = None,
     status: str | None = Query(default=None, description=_STATUS_DESC),
     status_code: int | None = Query(default=None, description=_STATUS_CODE_DESC),
     model: Annotated[list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_MODEL_MULTI_DESC)] = None,
@@ -479,6 +495,7 @@ async def list_usage(
         counts_toward_budget=counts_toward_budget,
         request_group_id=request_group_id,
         workspace_id=workspace_id,
+        scope=None,
     )
     # Outer-joined rather than looked up per row, and rather than left to the
     # client: naming a page of rows must not cost a round trip each, nor oblige a
@@ -495,8 +512,7 @@ async def list_usage(
     )
     result = await db.execute(stmt)
     return [
-        UsageEntry.from_model(log, user_alias=alias, api_key_name=key_name)
-        for log, alias, key_name in result.all()
+        UsageEntry.from_model(log, user_alias=alias, api_key_name=key_name) for log, alias, key_name in result.all()
     ]
 
 
@@ -534,9 +550,7 @@ async def count_usage(
     db: Annotated[AsyncSession, Depends(get_db)],
     start_date: datetime | None = Query(default=None, description=_START_DESC),
     end_date: datetime | None = Query(default=None, description=_END_DESC),
-    user_id: Annotated[
-        list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_USER_MULTI_DESC)
-    ] = None,
+    user_id: Annotated[list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_USER_MULTI_DESC)] = None,
     status: str | None = Query(default=None, description=_STATUS_DESC),
     status_code: int | None = Query(default=None, description=_STATUS_CODE_DESC),
     model: Annotated[list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_MODEL_MULTI_DESC)] = None,
@@ -580,6 +594,7 @@ async def count_usage(
         counts_toward_budget=counts_toward_budget,
         request_group_id=request_group_id,
         workspace_id=workspace_id,
+        scope=None,
     )
     stmt: Any = select(func.count()).select_from(UsageLog).where(*conditions)
     total = (await db.execute(stmt)).scalar_one()
@@ -1258,6 +1273,7 @@ async def _summary_context(
     counts_toward_budget: bool | None = None,
     status_code: int | None = None,
     workspace_id: uuid.UUID | None = None,
+    scope: ColumnElement[bool] | None,
 ) -> tuple[datetime, datetime, list[ColumnElement[bool]], UsageTotals]:
     """Resolve the bounded window, the shared WHERE conditions, and the grand
     totals: the common preamble both summary endpoints run, kept in one place so a
@@ -1280,6 +1296,7 @@ async def _summary_context(
         tool=tool,
         counts_toward_budget=counts_toward_budget,
         workspace_id=workspace_id,
+        scope=scope,
     )
     totals = await _totals(db, conditions, status)
     return start, end, conditions, totals
@@ -1333,68 +1350,24 @@ def _dense_series(
     return points
 
 
-@router.get("/summary", dependencies=[Depends(require_deployment_operator)])
-async def usage_summary(
-    db: Annotated[AsyncSession, Depends(get_db)],
-    start_date: datetime | None = Query(default=None, description=_START_DESC),
-    end_date: datetime | None = Query(default=None, description=_END_DESC),
-    user_id: Annotated[
-        list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_USER_MULTI_DESC)
-    ] = None,
-    status: str | None = Query(default=None, description=_STATUS_DESC),
-    status_code: int | None = Query(default=None, description=_STATUS_CODE_DESC),
-    model: Annotated[list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_MODEL_MULTI_DESC)] = None,
-    endpoint: str | None = Query(default=None, description=_ENDPOINT_DESC),
-    provider: str | None = Query(default=None, description=_PROVIDER_DESC),
-    source: str | None = Query(default=None, description=_SOURCE_DESC),
-    source_label: str | None = Query(default=None, description=_SOURCE_LABEL_DESC),
-    api_key_id: Annotated[
-        list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_API_KEY_MULTI_DESC)
-    ] = None,
-    priced: bool | None = Query(default=None, description=_PRICED_DESC),
-    tool: ToolFilter | None = Query(default=None, description=_TOOL_DESC),
-    counts_toward_budget: bool | None = Query(default=None, description=_COUNTS_DESC),
-    workspace_id: Annotated[uuid.UUID | None, Query(description=_WORKSPACE_DESC)] = None,
-    bucket: Bucket = Query(default="day", description="Time-series granularity: 'hour' or 'day'"),
-    dimensions: list[SummaryDimension] | None = Query(default=None, description=_DIMENSIONS_DESC),
+async def _summary_response(
+    db: AsyncSession,
+    *,
+    start: datetime,
+    end: datetime,
+    conditions: list[ColumnElement[bool]],
+    totals: UsageTotals,
+    status: str | None,
+    bucket: Bucket,
+    dimensions: list[SummaryDimension] | None,
 ) -> UsageSummary:
-    """Aggregate spend, tokens, and request volume for the dashboard Usage page.
+    """Assemble the summary from an already-resolved window and condition set.
 
-    Range-bounded (default last 30 days, hard-capped): unlike the raw ``/v1/usage``
-    list, every aggregate is scoped to a bounded window so it stays served by the
-    timestamp index. Returns grand totals, breakdowns by model / user / API key /
-    source / session (``source_label``) / endpoint / provider (top rows plus a
-    reconciling ``other`` fold, billed token counts), the error taxonomy grouped
-    by failure status code, and a UTC-bucketed time series carrying each bucket's
-    error count and billed token composition (input incl. cache, cache read/write,
-    output).
-
-    Each breakdown is its own ``GROUP BY`` pass, so a caller that reads only the
-    totals or the series should narrow ``dimensions`` rather than pay for all eight
-    (the dashboard's tiles, timeline context, and model typeahead all do). Omitting
-    the parameter keeps the full set.
-
-    ``model``, ``user_id``, and ``api_key_id`` are repeatable: several values match
-    any of them, so one chart can compare a handful of models, users, or keys.
+    Split from the route so the organization-scoped copy of this endpoint runs
+    the same aggregation rather than a second one that could drift from it: the
+    only thing the two differ in is the scope predicate already folded into
+    ``conditions``.
     """
-    start, end, conditions, totals = await _summary_context(
-        db,
-        start_date=start_date,
-        end_date=end_date,
-        user_id=user_id,
-        status=status,
-        status_code=status_code,
-        model=model,
-        endpoint=endpoint,
-        provider=provider,
-        source=source,
-        source_label=source_label,
-        api_key_id=api_key_id,
-        priced=priced,
-        tool=tool,
-        counts_toward_budget=counts_toward_budget,
-        workspace_id=workspace_id,
-    )
     # ``none`` is dropped rather than rejected: it exists only so a caller can send
     # an empty selection, and it never contributes a dimension of its own.
     requested: set[str] = _ALL_SUMMARY_DIMENSIONS if dimensions is None else {d for d in dimensions if d != "none"}
@@ -1464,23 +1437,12 @@ async def usage_summary(
     )
 
 
-_GROUP_COLUMNS: dict[str, tuple[Any, "_LabelJoin | None"]] = {
-    "model": (UsageLog.model, None),
-    "user_id": (UsageLog.user_id, _USER_LABEL),
-    "api_key_id": (UsageLog.api_key_id, _API_KEY_LABEL),
-    "source": (UsageLog.source, None),
-}
-
-
-@router.get("/series", dependencies=[Depends(require_deployment_operator)])
-async def usage_series(
+@router.get("/summary", dependencies=[Depends(require_deployment_operator)])
+async def usage_summary(
     db: Annotated[AsyncSession, Depends(get_db)],
-    group_by: SeriesGroupBy = Query(description="Dimension to split the series by"),
     start_date: datetime | None = Query(default=None, description=_START_DESC),
     end_date: datetime | None = Query(default=None, description=_END_DESC),
-    user_id: Annotated[
-        list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_USER_MULTI_DESC)
-    ] = None,
+    user_id: Annotated[list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_USER_MULTI_DESC)] = None,
     status: str | None = Query(default=None, description=_STATUS_DESC),
     status_code: int | None = Query(default=None, description=_STATUS_CODE_DESC),
     model: Annotated[list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_MODEL_MULTI_DESC)] = None,
@@ -1496,18 +1458,26 @@ async def usage_series(
     counts_toward_budget: bool | None = Query(default=None, description=_COUNTS_DESC),
     workspace_id: Annotated[uuid.UUID | None, Query(description=_WORKSPACE_DESC)] = None,
     bucket: Bucket = Query(default="day", description="Time-series granularity: 'hour' or 'day'"),
-) -> UsageGroupedSeries:
-    """Time series split by one dimension, for the dashboard's stacked charts.
+    dimensions: list[SummaryDimension] | None = Query(default=None, description=_DIMENSIONS_DESC),
+) -> UsageSummary:
+    """Aggregate spend, tokens, and request volume for the dashboard Usage page.
 
-    Same filters and window bounds as ``/summary`` (kept in lockstep: the
-    dashboard serializes one filter object for both, and a filter this endpoint
-    silently ignored would make the stacked chart disagree with the tiles beside
-    it). The window's top groups by spend are returned as their own series;
-    everything past the top eight folds into a single ``other`` series per
-    bucket, so the stack always reconciles with the summary totals. Points are
-    sparse (populated cells only); the bucket grid is bounded like ``/summary``'s
-    series, so an hourly bucket over a too-wide window is rejected rather than
-    ballooning the payload.
+    Range-bounded (default last 30 days, hard-capped): unlike the raw ``/v1/usage``
+    list, every aggregate is scoped to a bounded window so it stays served by the
+    timestamp index. Returns grand totals, breakdowns by model / user / API key /
+    source / session (``source_label``) / endpoint / provider (top rows plus a
+    reconciling ``other`` fold, billed token counts), the error taxonomy grouped
+    by failure status code, and a UTC-bucketed time series carrying each bucket's
+    error count and billed token composition (input incl. cache, cache read/write,
+    output).
+
+    Each breakdown is its own ``GROUP BY`` pass, so a caller that reads only the
+    totals or the series should narrow ``dimensions`` rather than pay for all eight
+    (the dashboard's tiles, timeline context, and model typeahead all do). Omitting
+    the parameter keeps the full set.
+
+    ``model``, ``user_id``, and ``api_key_id`` are repeatable: several values match
+    any of them, so one chart can compare a handful of models, users, or keys.
     """
     start, end, conditions, totals = await _summary_context(
         db,
@@ -1526,7 +1496,40 @@ async def usage_series(
         tool=tool,
         counts_toward_budget=counts_toward_budget,
         workspace_id=workspace_id,
+        scope=None,
     )
+    return await _summary_response(
+        db,
+        start=start,
+        end=end,
+        conditions=conditions,
+        totals=totals,
+        status=status,
+        bucket=bucket,
+        dimensions=dimensions,
+    )
+
+
+_GROUP_COLUMNS: dict[str, tuple[Any, "_LabelJoin | None"]] = {
+    "model": (UsageLog.model, None),
+    "user_id": (UsageLog.user_id, _USER_LABEL),
+    "api_key_id": (UsageLog.api_key_id, _API_KEY_LABEL),
+    "source": (UsageLog.source, None),
+}
+
+
+async def _grouped_series_response(
+    db: AsyncSession,
+    *,
+    start: datetime,
+    end: datetime,
+    conditions: list[ColumnElement[bool]],
+    totals: UsageTotals,
+    status: str | None,
+    bucket: Bucket,
+    group_by: SeriesGroupBy,
+) -> UsageGroupedSeries:
+    """Assemble the grouped series, for the same reason :func:`_summary_response` exists."""
     # Finding-5 guard: /summary densifies then caps at _MAX_SERIES_POINTS; this
     # endpoint is sparse, so cap the bucket *grid* instead (hourly over the
     # 366-day max window would otherwise be ~8.8k buckets x 10 groups per call).
@@ -1596,6 +1599,72 @@ async def usage_series(
     )
 
 
+@router.get("/series", dependencies=[Depends(require_deployment_operator)])
+async def usage_series(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    group_by: SeriesGroupBy = Query(description="Dimension to split the series by"),
+    start_date: datetime | None = Query(default=None, description=_START_DESC),
+    end_date: datetime | None = Query(default=None, description=_END_DESC),
+    user_id: Annotated[list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_USER_MULTI_DESC)] = None,
+    status: str | None = Query(default=None, description=_STATUS_DESC),
+    status_code: int | None = Query(default=None, description=_STATUS_CODE_DESC),
+    model: Annotated[list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_MODEL_MULTI_DESC)] = None,
+    endpoint: str | None = Query(default=None, description=_ENDPOINT_DESC),
+    provider: str | None = Query(default=None, description=_PROVIDER_DESC),
+    source: str | None = Query(default=None, description=_SOURCE_DESC),
+    source_label: str | None = Query(default=None, description=_SOURCE_LABEL_DESC),
+    api_key_id: Annotated[
+        list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_API_KEY_MULTI_DESC)
+    ] = None,
+    priced: bool | None = Query(default=None, description=_PRICED_DESC),
+    tool: ToolFilter | None = Query(default=None, description=_TOOL_DESC),
+    counts_toward_budget: bool | None = Query(default=None, description=_COUNTS_DESC),
+    workspace_id: Annotated[uuid.UUID | None, Query(description=_WORKSPACE_DESC)] = None,
+    bucket: Bucket = Query(default="day", description="Time-series granularity: 'hour' or 'day'"),
+) -> UsageGroupedSeries:
+    """Time series split by one dimension, for the dashboard's stacked charts.
+
+    Same filters and window bounds as ``/summary`` (kept in lockstep: the
+    dashboard serializes one filter object for both, and a filter this endpoint
+    silently ignored would make the stacked chart disagree with the tiles beside
+    it). The window's top groups by spend are returned as their own series;
+    everything past the top eight folds into a single ``other`` series per
+    bucket, so the stack always reconciles with the summary totals. Points are
+    sparse (populated cells only); the bucket grid is bounded like ``/summary``'s
+    series, so an hourly bucket over a too-wide window is rejected rather than
+    ballooning the payload.
+    """
+    start, end, conditions, totals = await _summary_context(
+        db,
+        start_date=start_date,
+        end_date=end_date,
+        user_id=user_id,
+        status=status,
+        status_code=status_code,
+        model=model,
+        endpoint=endpoint,
+        provider=provider,
+        source=source,
+        source_label=source_label,
+        api_key_id=api_key_id,
+        priced=priced,
+        tool=tool,
+        counts_toward_budget=counts_toward_budget,
+        workspace_id=workspace_id,
+        scope=None,
+    )
+    return await _grouped_series_response(
+        db,
+        start=start,
+        end=end,
+        conditions=conditions,
+        totals=totals,
+        status=status,
+        bucket=bucket,
+        group_by=group_by,
+    )
+
+
 # Leading characters a spreadsheet may interpret as a formula. Any cell starting
 # with one is prefixed with a single quote so opening the CSV in Excel/Sheets can
 # never execute attacker-influenced text (model / user ids are caller-supplied).
@@ -1617,9 +1686,7 @@ async def usage_summary_csv(
     db: Annotated[AsyncSession, Depends(get_db)],
     start_date: datetime | None = Query(default=None, description=_START_DESC),
     end_date: datetime | None = Query(default=None, description=_END_DESC),
-    user_id: Annotated[
-        list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_USER_MULTI_DESC)
-    ] = None,
+    user_id: Annotated[list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_USER_MULTI_DESC)] = None,
     status: str | None = Query(default=None, description=_STATUS_DESC),
     status_code: int | None = Query(default=None, description=_STATUS_CODE_DESC),
     model: Annotated[list[str] | None, Query(max_length=MAX_FILTER_VALUES, description=_MODEL_MULTI_DESC)] = None,
@@ -1662,6 +1729,7 @@ async def usage_summary_csv(
         tool=tool,
         counts_toward_budget=counts_toward_budget,
         workspace_id=workspace_id,
+        scope=None,
     )
     # Driven off the same dimension table as ``/summary`` so a new breakdown lands
     # in the export without a second edit here.
