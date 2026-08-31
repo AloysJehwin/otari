@@ -9,8 +9,8 @@ which mode the gateway is in.
 Registered in both modes, and unauthenticated by necessity: this is what tells a
 browser whether a sign-in screen is even the right thing to show. It therefore
 carries no secret. In particular it never carries the platform token, and
-``management_url``, ``data_plane_url`` and ``docs_url`` are addresses an operator
-configured, not credentials.
+``management_url``, ``data_plane_url``, ``docs_url``, ``terms_url`` and
+``privacy_url`` are addresses an operator configured, not credentials.
 
 The contract is shared with otari.ai, which serves the same shape for its hosted
 deployment (mozilla-ai/otari-ai#1591). ``deployment_type`` and ``session_type``
@@ -180,7 +180,25 @@ class DeploymentBootstrap(BaseModel):
             "bundled with the gateway. Set, the dashboard's Documentation links open it in a "
             "new tab; null, they go to the bundled guide at /#/docs, which stays served either "
             "way. A link target an operator configured, validated at startup as an absolute "
-            "http(s) URL."
+            "http(s) URL carrying no credential, since this response is unauthenticated."
+        )
+    )
+    terms_url: str | None = Field(
+        description=(
+            "Where this deployment's terms of service live. Set, the account menu carries a "
+            "Terms of service row pointing at them; null, no address is configured and the "
+            "menu carries no such row. A link target an operator configured, validated at "
+            "startup as an absolute http(s) URL carrying no credential, since this response "
+            "is unauthenticated."
+        )
+    )
+    privacy_url: str | None = Field(
+        description=(
+            "Where this deployment's privacy notice lives. Set, the account menu's Data & "
+            "Privacy row links to it; null, no address is configured and that row stays "
+            "disabled, carrying the standing note that there is nothing to configure there "
+            "yet. A link target an operator configured, validated at startup as an absolute "
+            "http(s) URL carrying no credential, since this response is unauthenticated."
         )
     )
     sign_in_methods: list[SignInMethod] = Field(
@@ -266,6 +284,8 @@ async def get_bootstrap(
             # page is the address that reaches the API.
             data_plane_url=None,
             docs_url=config.docs_url,
+            terms_url=config.terms_url,
+            privacy_url=config.privacy_url,
             maintenance_mode=False,
             passkeys_ready=False,
             oauth_providers=[],
@@ -289,6 +309,8 @@ async def get_bootstrap(
         # plane is not, and publishes wherever its operator says the gateway is.
         data_plane_url=config.data_plane_url if hosted else None,
         docs_url=config.docs_url,
+        terms_url=config.terms_url,
+        privacy_url=config.privacy_url,
         maintenance_mode=await _maintenance_mode(db),
         passkeys_ready=config.webauthn_enabled,
         oauth_providers=list(config.oauth_providers),
