@@ -214,7 +214,21 @@ function KeyForm({
 
 export function OrganizationProviderKeysPage() {
   const context = useOrganizationContext()
-  const keys = useOrgProviderKeys()
+  // One predicate for the whole page now that the list read is
+  // organization-management-gated on the server too (otari-ai#1944): a member
+  // cannot see these rows, not only leave them alone. Withheld rather than
+  // fired and refused, the way `OrganizationGuardrailsCard` gates its own read
+  // and WorkspacesPage withholds the operator-only budget ones.
+  //
+  // Deliberately not widened to `isDeploymentOperator`: the server also admits
+  // a superuser whatever their organization role, and `roles.ts` records that
+  // divergence, why it narrows in the safe direction, and that closing it means
+  // growing the membership context a superuser field. `deployment_operator` is
+  // not that field, since it also admits a non-superuser bootstrap identity the
+  // server would refuse, and the rail row is `canManage`-gated too, so no such
+  // caller had a route here to lose.
+  const canEdit = canManage(context.data)
+  const keys = useOrgProviderKeys(canEdit)
   // Same gate the `/providers` page applies, for the same reason: without
   // `OTARI_SECRET_KEY` the gateway cannot encrypt a credential, so the write
   // would fail at submit time.
@@ -228,7 +242,6 @@ export function OrganizationProviderKeysPage() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [showArchived, setShowArchived] = useState(false)
 
-  const canEdit = canManage(context.data)
   const editing = keys.data?.find((key) => key.id === editingId) ?? null
   const archivedCount = (keys.data ?? []).filter((key) =>
     Boolean(key.archived_at),
@@ -398,7 +411,8 @@ export function OrganizationProviderKeysPage() {
           of the truth. */}
       {context.data && !canEdit ? (
         <InfoBanner>
-          Only organization owners and admins can add or change provider keys.
+          Only organization owners and admins can see this organization's
+          provider keys.
         </InfoBanner>
       ) : null}
 
@@ -432,14 +446,23 @@ export function OrganizationProviderKeysPage() {
         </Checkbox>
       ) : null}
 
-      <DataTable
-        ariaLabel="Organization provider keys"
-        columns={columns}
-        rows={rows}
-        getRowKey={(row) => row.id}
-        isLoading={keys.isLoading}
-        emptyContent="No provider keys yet. Add one to let every workspace in this organization call that provider."
-      />
+      {/* Withheld from a member along with the read that fills it: the banner
+          above is their whole answer, and an empty table would tell them the
+          organization has no keys rather than that they cannot see them. Drawn
+          as loading while the role is still resolving, so an admin's first
+          paint is the table they are about to get rather than an empty state,
+          and withheld again if the context read is what failed, since neither
+          an empty table nor a spinner is a true answer there. */}
+      {canEdit || context.isPending ? (
+        <DataTable
+          ariaLabel="Organization provider keys"
+          columns={columns}
+          rows={rows}
+          getRowKey={(row) => row.id}
+          isLoading={context.isPending || keys.isLoading}
+          emptyContent="No provider keys yet. Add one to let every workspace in this organization call that provider."
+        />
+      ) : null}
     </div>
   )
 }

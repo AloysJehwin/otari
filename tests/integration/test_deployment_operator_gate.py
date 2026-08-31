@@ -98,11 +98,11 @@ _CATALOG_PROBES: list[tuple[str, str]] = [
 # member reaches these by design, so a 403 from any of them means the gate was
 # applied to the wrong family. Only the routes a *member* may reach are listed:
 # several of these routers hold owner/admin routes as well (organization
-# guardrails and pricing are entirely owner/admin), and their own 403 is
-# indistinguishable here from the one this file is about.
+# guardrails and pricing are entirely owner/admin, and the provider-keys list
+# joined them in otari-ai#1944), and their own 403 is indistinguishable here
+# from the one this file is about.
 _TENANT_SCOPED_PROBES: list[tuple[str, str]] = [
     ("GET", "/v1/organizations/me"),
-    ("GET", "/v1/organizations/me/provider-keys"),
     ("GET", "/v1/workspaces"),
     ("GET", "/v1/admin/access"),
 ]
@@ -221,11 +221,18 @@ def test_an_organization_owner_is_still_not_a_deployment_operator(
         refused = _call(client, "GET", "/v1/keys")
         # ...while the organization they do own answers as before.
         own = _call(client, "GET", "/v1/organizations/me")
+        # Probed at owner rather than member because the provider-keys list is
+        # organization-management-gated (otari-ai#1944), which is what took it
+        # out of `_TENANT_SCOPED_PROBES`. Its own 403 would be
+        # indistinguishable there from this file's; here it says the
+        # deployment-operator gate is still off that router.
+        keys = _call(client, "GET", "/v1/organizations/me/provider-keys")
     finally:
         client.cookies.clear()
 
     assert refused == 403
     assert own == 200
+    assert keys == 200
 
 
 # =============================================================================
