@@ -5,13 +5,11 @@ description: Guidelines for the otari admin dashboard (`web/`), React 19 + TypeS
 
 # Frontend Standards: otari dashboard (`web/`)
 
-`web/` is the standalone admin dashboard: a React SPA that talks to the gateway's management
-API with the master key. It is an operator tool, not a general-purpose app; keep its footprint
-small and its conventions consistent with what is already there. There is no analytics and no
-marketing surface here; do not add either to match some other repo. `src/shared/telemetry/`
-is not a counterexample: it is a no-op seam an overlay build replaces, it declares no vendor
-dependency, and the base tracker records nothing. Wiring a call site to it is fine; giving it
-an implementation here is not.
+`web/` is the dashboard shared by standalone, hosted, and hybrid deployments. It renders the
+management UI or hybrid landing page from `/v1/bootstrap` and uses an HttpOnly session for
+management calls. It is an operator tool, not a marketing surface. The base tracker under
+`src/shared/telemetry/` is a no-op seam an overlay may replace; do not give it an analytics
+implementation in this repository.
 
 Stack: React 19 (with the React Compiler), TypeScript (`strict`), HeroUI v3 (`@heroui/react`),
 Tailwind CSS v4, TanStack Query, TanStack Router (file-based, `web/src/routes/`), Vite,
@@ -104,8 +102,9 @@ can link Vite's esbuild binary at all.
 - Manual polling with bare `setInterval`/`setTimeout`. Use TanStack Query's `refetchInterval`
   (see `useDashboardBuild`).
 - A raw `fetch()` for **authenticated** management requests. Go through `apiFetch`, which owns the
-  Bearer key, error extraction, and 401/403 sign-out. `validateMasterKey` is the one sanctioned
-  exception, and [data-fetching.md](./data-fetching.md) says why.
+  HttpOnly session-cookie flow, error extraction, and 401 sign-out. Pre-authentication helpers such
+  as `createSession` use public requests so a refused sign-in does not trigger that sign-out path;
+  [data-fetching.md](./data-fetching.md) says why.
 - Client-side filtering/sorting/pagination of large server datasets when the endpoint can do
   it. (Small, already-loaded lists rendered in a `Table` are fine.)
 - Memoization by reflex. The React Compiler is enabled; add `useMemo`/`useCallback`/`memo`

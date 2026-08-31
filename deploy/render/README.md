@@ -8,7 +8,7 @@ Deploy Otari and Render Postgres from a Blueprint ([`render.yaml`](./render.yaml
 
 | Resource | Plan | Details |
 | --- | --- | --- |
-| `otari` | Free web service | `docker.io/mzdotai/otari:0.2.0`, Oregon, health check at `/health/readiness` |
+| `otari` | Free web service | Published image pinned in `render.yaml`, Oregon, health check at `/health/readiness` |
 | `otari-db` | Free Render Postgres 16 | Database and user `otari`, private connections only |
 
 The web service is stateless. Postgres stores users, API key hashes, budgets, pricing, and usage history. On first boot, Otari runs its database migrations and creates a bootstrap API key, which is printed once in the service logs.
@@ -46,7 +46,7 @@ Render's `postgresql://` connection string works without modification. Otari sel
 
 During initial setup, Render prompts for `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, and `GEMINI_API_KEY`. Each field is optional, but at least one provider credential is required before the gateway can serve requests. Leave unused fields blank.
 
-The underlying [any-llm](https://github.com/mozilla-ai/any-llm) SDK reads each provider's native environment variables. To use any other provider from [`docs/models.md`](../../docs/models.md), add its variable on the service's Environment tab. Render prompts for variables marked `sync: false` only during initial creation, so add or rotate credentials for an existing service from that tab.
+The underlying [any-llm](https://github.com/mozilla-ai/any-llm) SDK reads each provider's native environment variables. To use another [supported provider](https://docs.mozilla.ai/any-llm/providers/), add its variable on the service's Environment tab. Render prompts for variables marked `sync: false` only during initial creation, so add or rotate credentials for an existing service from that tab.
 
 ### Pricing
 
@@ -101,7 +101,7 @@ The Blueprint pins the Otari image to a release tag, and image-backed services d
 
 ## Hybrid mode
 
-The Blueprint above deploys Otari in standalone mode with its own database. Otari also supports hybrid mode, delegating provider routing, auth, and usage tracking to [otari.ai](https://otari.ai) instead — see [Modes](../../docs/modes.md) for the concept.
+The Blueprint above deploys Otari in standalone mode with its own database. Otari also supports hybrid mode, delegating provider routing, auth, and usage tracking to [otari.ai](https://otari.ai) instead. See [Modes](../../docs/modes.md) for the concept.
 
 A separate Blueprint, [`render.hybrid.yaml`](./render.hybrid.yaml), deploys hybrid mode:
 
@@ -111,7 +111,7 @@ A separate Blueprint, [`render.hybrid.yaml`](./render.hybrid.yaml), deploys hybr
 
 | Resource | Plan | Details |
 | --- | --- | --- |
-| `otari-hybrid` | Free web service | `docker.io/mzdotai/otari:0.2.0`, Oregon, health check at `/health/readiness` |
+| `otari-hybrid` | Free web service | Published image pinned in `render.hybrid.yaml`, Oregon, health check at `/health/readiness` |
 
 No database is created. Otari keeps no local state in hybrid mode: users, budgets, and usage are managed by otari.ai instead.
 
@@ -121,7 +121,7 @@ No database is created. Otari keeps no local state in hybrid mode: users, budget
 | --- | --- | --- |
 | `PORT`, `OTARI_PORT` | `8000` | Keeps Render's detected port aligned with Otari's listening port. |
 | `OTARI_HOST` | `0.0.0.0` | Binds Otari on the container network. |
-| `OTARI_AI_TOKEN` | you provide | The gateway token (`gw-...`) for this Otari instance. Create it in otari.ai under **Organization > Gateways > Create token**. Setting this alone switches Otari into hybrid mode; no `OTARI_MODE` is needed. |
+| `OTARI_AI_TOKEN` | you provide | The gateway token (`gw_...`) for this Otari instance. Create it in otari.ai under **Organization > Gateways > Create token**. Setting this alone switches Otari into hybrid mode; no `OTARI_MODE` is needed. |
 
 `OTARI_MASTER_KEY`, `OTARI_DATABASE_URL`, the pricing flags, and the migration/bootstrap flags from the standalone Blueprint don't apply here: hybrid mode has no local database or management endpoints to protect. Only `/health`, `/health/liveness`, `/health/readiness`, `/v1/chat/completions`, `/v1/messages`, and `/v1/responses` are exposed. Chat requests use `Authorization: Bearer <otari-user-token>` issued by otari.ai, not a locally minted API key.
 

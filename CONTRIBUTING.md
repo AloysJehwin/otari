@@ -54,11 +54,14 @@ make postman-check
 
 - New features need tests covering the happy path and error cases.
 - Unit tests for pure logic (`tests/unit/`), integration tests for route or database behavior (`tests/integration/`).
-- Integration tests require Docker (Testcontainers spins up Postgres automatically).
+- Integration tests require PostgreSQL. They start Testcontainers by default;
+  without Docker, set `TEST_DATABASE_URL` to a test server where workers may
+  create and drop databases. Never use production, and do not run concurrent
+  suites against the same server URL because their worker database names collide.
 
 ## Pull requests
 
-- PR titles must follow [Conventional Commits](https://www.conventionalcommits.org/) — the CI enforces this.
+- PR titles must follow [Conventional Commits](https://www.conventionalcommits.org/); CI enforces this.
 - PRs are squash-merged, so the title is what ends up in the changelog.
 - Keep diffs focused; avoid unrelated refactors in the same PR.
 - Do not hand-edit `CHANGELOG.md`; it is regenerated from commit history at release time.
