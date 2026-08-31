@@ -51,7 +51,13 @@ async def _caller_organization_id(
 CallerOrganization = Annotated[uuid.UUID, Depends(_caller_organization_id)]
 
 
-async def _load_key_in_organization(db: AsyncSession, key_id: str, organization_id: uuid.UUID) -> APIKey:
+async def _load_key_in_organization(
+    db: AsyncSession,
+    key_id: str,
+    organization_id: uuid.UUID,
+    *,
+    owner_user_id: str | None = None,
+) -> APIKey:
     """Load a key by id within one organization, or raise 404.
 
     Joined to the workspace rather than loaded by id alone: a key belongs to
@@ -61,12 +67,19 @@ async def _load_key_in_organization(db: AsyncSession, key_id: str, organization_
     ``resolve_workspace_in_organization`` rule in
     `services/tenancy/authorization.py`: a 403 would confirm the id names a real
     key somewhere.
+
+    ``owner_user_id`` narrows the load to keys billed to that owner, for the
+    member-scoped routes in ``organization_keys.py``: somebody else's key in the
+    caller's own organization answers the same 404, for the same reason.
     """
-    result = await db.execute(
+    statement = (
         select(APIKey)
         .join(Workspace, col(Workspace.id) == col(APIKey.workspace_id))
         .where(col(APIKey.id) == key_id, col(Workspace.organization_id) == organization_id)
     )
+    if owner_user_id is not None:
+        statement = statement.where(col(APIKey.user_id) == owner_user_id)
+    result = await db.execute(statement)
     key = result.scalar_one_or_none()
 
     if not key:
@@ -379,11 +392,16 @@ async def update_key(
     """
     key = await _load_key_in_organization(db, key_id, organization_id)
 
-    if request.key_name is not None:
+    # Tri-state via model_fields_set, like allowed_models below: both columns
+    # are nullable and the dashboard's edit form sends null to clear them
+    # ("Blank clears the expiry"), which an ``is not None`` guard silently
+    # dropped. ``is_active`` and ``exclude_from_budget`` are not nullable, so
+    # ``is not None`` is the whole distinction there.
+    if "key_name" in request.model_fields_set:
         key.key_name = request.key_name
     if request.is_active is not None:
         key.is_active = request.is_active
-    if request.expires_at is not None:
+    if "expires_at" in request.model_fields_set:
         key.expires_at = request.expires_at
     if request.exclude_from_budget is not None:
         key.exclude_from_budget = request.exclude_from_budget
