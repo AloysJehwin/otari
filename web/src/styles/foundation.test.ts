@@ -480,6 +480,70 @@ describe("semantic tokens only", () => {
   })
 })
 
+// A bare heading is not unstyled: the `@layer base` rule in globals.css hands
+// `h1`-`h6` the display face, so a heading that skips the type scale renders in
+// Zilla Slab at whatever size its hand-rolled classes say. otari#810 migrated
+// 35 sites and still left six behind (otari-ai#1933), which is what a rule
+// without a test does.
+describe("headings wear a type role", () => {
+  const SRC = join(WEB, "src")
+  const sources = readdirSync(SRC, { recursive: true })
+    .map((name) => String(name).replaceAll("\\", "/"))
+    .filter((name) => name.endsWith(".tsx") && !name.endsWith(".test.tsx"))
+
+  it("covers the source tree", () => {
+    // Same guard as the token sweep above: an empty list passes vacuously.
+    expect(sources.length).toBeGreaterThan(30)
+  })
+
+  it.each(sources)("puts every heading in %s on the scale", (name) => {
+    // Block comments go first: Login.tsx narrates its layout in JSX comments
+    // that mention `<h1>` in prose.
+    const source = readFileSync(join(SRC, name), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    )
+    for (const match of source.matchAll(/<h[1-6]\b([^>]*)>/g)) {
+      const attributes = match[1]
+      const literal = attributes.match(/className="([^"]*)"/)
+      if (literal) {
+        expect(
+          literal[1],
+          `${match[0]} in ${name} hand-rolls its type; use text-display, text-heading, or text-title`,
+        ).toMatch(/\btext-(?:display|heading|title)\b/)
+      } else {
+        // No string literal, so the one acceptable shape left is an
+        // expression. A heading with no className at all is the bare case
+        // the base layer turns serif.
+        const expression = attributes.match(/className=\{([^}]*)\}/)
+        expect(
+          expression,
+          `${match[0]} in ${name} is a bare heading, which the base layer renders in the display face; give it a type role`,
+        ).not.toBeNull()
+        let value = (expression as RegExpMatchArray)[1].trim()
+        // A lone identifier is read through its declaration in the same
+        // file, which is how Login.tsx spells its HEADING constant. Any
+        // other expression (a ternary, a template) has to name a role in
+        // its own text.
+        if (/^\w+$/.test(value)) {
+          const declaration = source.match(
+            new RegExp(`\\b${value} = "([^"]*)"`),
+          )
+          expect(
+            declaration,
+            `${match[0]} in ${name} reads ${value}, which is not a same-file string constant this test can check; use a literal or a const`,
+          ).not.toBeNull()
+          value = (declaration as RegExpMatchArray)[1]
+        }
+        expect(
+          value,
+          `${match[0]} in ${name} hand-rolls its type; use text-display, text-heading, or text-title`,
+        ).toMatch(/\btext-(?:display|heading|title)\b/)
+      }
+    }
+  })
+})
+
 // The chrome's own type roles, added because the nav files had grown six
 // arbitrary sizes between them (13.5px twice, 13px, 11.5px, 11px, 9px), which is
 // a scale with no single place to read it and nothing to keep it from growing a
