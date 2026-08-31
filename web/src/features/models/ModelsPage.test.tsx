@@ -11,11 +11,12 @@ import type {
   ModelMetadata,
   ModelMetadataResponse,
   ModelObject,
+  OrganizationContext,
   PricingResponse,
 } from "@/client"
 import { ModelsPage } from "@/features/models/ModelsPage"
 import * as apiClient from "@/shared/api/client"
-import { pricingResponse } from "@/tests/fixtures"
+import { organizationContext, pricingResponse } from "@/tests/fixtures"
 import { withRouter } from "@/tests/router"
 import { pickOption, selectTrigger } from "@/tests/select"
 
@@ -208,6 +209,10 @@ function mockApi(
     discoverable?: DiscoverableModelsResponse
     metadata?: ModelMetadataResponse
     settings?: GatewaySettings
+    // The caller's membership context, an operator's by default: the page
+    // gates its deployment-wide reads and every write affordance on
+    // `deployment_operator`, so most tests here are about the operator view.
+    context?: OrganizationContext
   } = {},
 ) {
   return vi
@@ -220,6 +225,9 @@ function mockApi(
       }
       if (method === "DELETE") {
         return null as never
+      }
+      if (url.endsWith("/v1/organizations/me")) {
+        return (opts.context ?? organizationContext()) as never
       }
       if (url.includes("/v1/settings")) {
         return (opts.settings ?? SETTINGS) as never
@@ -347,9 +355,11 @@ describe("ModelsPage", () => {
     await screen.findByText("openai:gpt-4o")
 
     // The explanation lives in a tooltip anchored to the pricing header, reached
-    // via a labeled info trigger, rather than a persistent banner.
+    // via a labeled info trigger, rather than a persistent banner. Awaited: the
+    // trigger waits on the settings read, which itself waits on the membership
+    // context that says an operator is asking.
     expect(
-      within(table()).getByRole("button", {
+      await within(table()).findByRole("button", {
         name: /How unpriced models are metered/,
       }),
     ).toBeInTheDocument()
@@ -1258,5 +1268,107 @@ describe("ModelsPage", () => {
         "not priced",
       ),
     ).toBeInTheDocument()
+  })
+
+  it("keeps cached operator data out of a member's page", async () => {
+    // A disabled query still serves whatever sits under its key, so a caller
+    // demoted mid-session would otherwise keep the discovered models and the
+    // metering tooltip they fetched as an operator.
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    // A model only discovery knows about, so the assertion is about the
+    // operator-only read rather than about the catalog every session reads.
+    client.setQueryData(["discoverable"], {
+      providers: [
+        {
+          provider: "openai",
+          ok: true,
+          error: null,
+          discovery_unsupported: false,
+          models: [{ id: "gpt-secret", key: "openai:gpt-secret" }],
+        },
+      ],
+    } satisfies DiscoverableModelsResponse)
+    client.setQueryData(["settings"], SETTINGS)
+    mockApi({
+      context: organizationContext({
+        deployment_operator: false,
+        role: "member",
+      }),
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <ModelsPage />
+      </QueryClientProvider>,
+      { wrapper: withRouter({ url: "/" }) },
+    )
+    await screen.findByText("openai:gpt-4o")
+
+    expect(
+      screen.queryByRole("button", {
+        name: /How unpriced models are metered/,
+      }),
+    ).not.toBeInTheDocument()
+    // The discovery-only rows are the operator's read; the catalog stands.
+    expect(screen.queryByText("openai:gpt-secret")).not.toBeInTheDocument()
+  })
+
+  it("shows a non-operator the catalog read-only and never fires the operator reads", async () => {
+    // The member half of otari-ai#1942: the catalog and the price list serve
+    // any session, and everything that writes or is operator-only is absent
+    // rather than refused.
+    const fetchMock = mockApi({
+      context: organizationContext({
+        deployment_operator: false,
+        role: "member",
+      }),
+    })
+    const user = userEvent.setup()
+    renderWithClient(<ModelsPage />)
+    await screen.findByText("openai:gpt-4o")
+
+    // The price numbers render as text rather than as edit controls.
+    expect(
+      screen.queryByRole("button", { name: /Edit input price for/ }),
+    ).not.toBeInTheDocument()
+
+    // The detail panel still reports the rates, without the write affordances.
+    await user.click(
+      screen.getByText("openai:gpt-4o").closest("tr") as HTMLElement,
+    )
+    const aside = panel()
+    expect(within(aside).getByText("Input")).toBeInTheDocument()
+    expect(
+      within(aside).queryByRole("button", { name: /Set price|Edit price/ }),
+    ).not.toBeInTheDocument()
+    expect(
+      within(aside).queryByRole("button", { name: "Reset" }),
+    ).not.toBeInTheDocument()
+
+    // Discovery was never read, so the panel says nothing about it rather than
+    // reporting every model as missing from a list it never fetched.
+    expect(within(aside).queryByText("not discovered")).toBeNull()
+
+    // The three filters that read an operator-only endpoint are absent: with
+    // discovery and metadata withheld, every value but "all" would empty the
+    // table.
+    const filterTrigger = (label: string) =>
+      screen.queryByRole("button", {
+        name: (name) => name === label || name.endsWith(` ${label}`),
+      })
+    expect(filterTrigger("Filter by source")).toBeNull()
+    expect(filterTrigger("Filter by capability")).toBeNull()
+    expect(filterTrigger("Filter by release date")).toBeNull()
+    // The ones that read only the catalog stay.
+    expect(filterTrigger("Filter by provider")).not.toBeNull()
+    expect(filterTrigger("Filter by pricing")).not.toBeNull()
+
+    const urls = fetchMock.mock.calls.map(([input]) => String(input))
+    expect(urls.some((url) => url.includes("/v1/settings"))).toBe(false)
+    expect(urls.some((url) => url.includes("/v1/models/discoverable"))).toBe(
+      false,
+    )
+    expect(urls.some((url) => url.includes("/v1/models/metadata"))).toBe(false)
   })
 })

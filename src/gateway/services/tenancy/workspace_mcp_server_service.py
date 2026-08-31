@@ -22,10 +22,12 @@ standalone deployment is not a hosted multi-tenant one:
 
 - Authorization is this repository's own workspace check
   (`services.tenancy.authorization`), so a workspace owner/admin qualifies and
-  not only an organization owner/admin. The platform's stricter *shape* is
-  kept: every operation including the list read is management-gated, because
-  these rows decide which external endpoints the gateway connects to and
-  authenticates against on the workspace's behalf.
+  not only an organization owner/admin. Every *write* is management-gated,
+  because these rows decide which external endpoints the gateway connects to
+  and authenticates against on the workspace's behalf. The list read is not
+  (otari-ai#1942): those endpoints act on every request a member sends through
+  the workspace, so seeing them is a member's to do, and a reader who cannot
+  manage the workspace gets any credential in the URL masked.
 - URL safety is one check in this layer rather than the platform's split
   between a synchronous ingress validator and a service-layer SSRF pass. This
   repository's `validate_mcp_url` is a single async function that already does
@@ -65,7 +67,7 @@ from gateway.services.tenancy.errors import (
     WorkspaceMcpServerUnsafeUrlError,
 )
 from gateway.services.tenancy.organization_service import OrganizationService
-from gateway.services.url_safety import UnsafeURLError, validate_mcp_url
+from gateway.services.url_safety import UnsafeURLError, redact_url_secrets, validate_mcp_url
 
 # What a workspace may configure. A resolved request opens a session to every
 # server it names, so this bounds the fan-out one workspace can ask a gateway
@@ -180,12 +182,22 @@ class WorkspaceMcpServerPublic(BaseModel):
     updated_at: str
 
     @classmethod
-    def from_model(cls, server: WorkspaceMcpServer) -> WorkspaceMcpServerPublic:
+    def from_model(cls, server: WorkspaceMcpServer, *, redact_url: bool = False) -> WorkspaceMcpServerPublic:
+        """Shape one row, optionally masking any credential embedded in its URL.
+
+        ``redact_url`` is what keeps the member read from being a wider
+        disclosure than the management read it was split from: the token column
+        was never returned either way, but nothing rejects a URL that carries a
+        credential in its userinfo (``https://user:secret@host``) or a query
+        parameter, so a caller who may read the row without managing it gets
+        those components masked. A manager sees the URL as stored, because the
+        edit form restates it and would otherwise save the mask back.
+        """
         return cls(
             id=server.id,
             workspace_id=server.workspace_id,
             name=server.name,
-            url=server.url,
+            url=redact_url_secrets(server.url) if redact_url else server.url,
             purpose_hint=server.purpose_hint,
             allowed_tools=server.allowed_tools,
             enabled=server.enabled,
@@ -288,7 +300,7 @@ async def resolve_workspace_mcp_servers(
 
 
 class WorkspaceMcpServerService:
-    """CRUD for a workspace's MCP servers. Every operation is management-gated."""
+    """CRUD for a workspace's MCP servers. Writes are management-gated; the list is not."""
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -297,12 +309,13 @@ class WorkspaceMcpServerService:
     async def _require_management(self, user: User, workspace_id: uuid.UUID) -> uuid.UUID:
         """Resolve the workspace and confirm the caller may manage it.
 
-        Reads are gated too, unlike the workspace surfaces beside this one
-        (`workspace_budget_default_service` opens its list to any member).
-        These rows name the external endpoints this gateway will connect to,
-        and which of them carry a credential, which is the platform's own
-        reason for admin-gating its reads; the URL of a workspace's internal
-        tool server is not something every member needs.
+        Writes only. The list used to sit behind this gate too, on the argument
+        that a server's URL is not something every member needs; the roles
+        matrix settled it the other way (otari-ai#1942): a member may *view*
+        what shapes their own requests, and these servers already act on every
+        request the member sends through the workspace. Tokens were never
+        exposed either way (`WorkspaceMcpServerPublic` carries `has_token`
+        alone), so the read gate is member visibility, in `list_servers`.
         """
         workspace = await authorization.resolve_visible_workspace(
             self.db, user=user, workspace_id=workspace_id, organizations=self.organizations
@@ -326,8 +339,22 @@ class WorkspaceMcpServerService:
         skip: int = 0,
         limit: int = 100,
     ) -> WorkspaceMcpServersPublic:
-        """List a page of the workspace's servers, plus the total."""
-        await self._require_management(user, workspace_id)
+        """List a page of the workspace's servers, plus the total.
+
+        Reachable by any member who can see the workspace, like the workspace
+        surfaces beside it (`workspace_budget_default_service` is the pattern);
+        see `_require_management` for why the gate here is visibility alone.
+        The rows never carry a token either way, and a caller who may read the
+        workspace without managing it also gets any credential embedded in the
+        URL itself masked (see `WorkspaceMcpServerPublic.from_model`).
+        """
+        workspace = await authorization.resolve_visible_workspace(
+            self.db, user=user, workspace_id=workspace_id, organizations=self.organizations
+        )
+        workspace_id = workspace.id
+        manages = await authorization.has_workspace_management_access(
+            self.db, user=user, workspace=workspace, organizations=self.organizations
+        )
         limit = min(limit, _MAX_LIST_LIMIT)
 
         count = (
@@ -351,7 +378,7 @@ class WorkspaceMcpServerService:
             .all()
         )
         return WorkspaceMcpServersPublic(
-            data=[WorkspaceMcpServerPublic.from_model(server) for server in servers],
+            data=[WorkspaceMcpServerPublic.from_model(server, redact_url=not manages) for server in servers],
             count=count,
         )
 

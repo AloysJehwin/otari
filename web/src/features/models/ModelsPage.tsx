@@ -17,11 +17,13 @@ import {
   type ManualRates,
   SetPriceDialog,
 } from "@/features/models/SetPriceDialog"
+import { isDeploymentOperator } from "@/features/organization/roles"
 import {
   useDeletePricing,
   useDiscoverableModels,
   useModelMetadata,
   useModels,
+  useOrganizationContext,
   usePricing,
   useSetPricing,
   useSettings,
@@ -549,11 +551,19 @@ function InfoTooltip({
 // The default-pricing explanation, surfaced from the pricing column headers
 // instead of a persistent banner. Tone shifts to a warning when metering is off.
 function PricingInfo() {
-  const settings = useSettings()
-  if (!settings.data) {
+  // Self-gated rather than threaded through ModelTable's props: the read is
+  // deployment-operator-only, and the tooltip explains a policy only an
+  // operator can change, so for anyone else the header simply has no note.
+  const organization = useOrganizationContext()
+  const isOperator = isDeploymentOperator(organization.data)
+  const settings = useSettings(isOperator)
+  // Read through `isOperator` for the reason `ModelsPage` does: a disabled
+  // query still serves whatever its key already holds in the cache.
+  const data = isOperator ? settings.data : undefined
+  if (!data) {
     return null
   }
-  if (settings.data.default_pricing) {
+  if (data.default_pricing) {
     return (
       <InfoTooltip label="How unpriced models are metered" tone="info">
         Default pricing is on: models without a configured price are metered
@@ -565,7 +575,7 @@ function PricingInfo() {
   return (
     <InfoTooltip label="How unpriced models are metered" tone="warning">
       Default pricing is off: only models with a configured price are metered.
-      {settings.data.require_pricing
+      {data.require_pricing
         ? " Requests for any other model are rejected (HTTP 402) because require_pricing is on."
         : " Other models are served without cost tracking."}
     </InfoTooltip>
@@ -601,7 +611,15 @@ function PanelSection({
 
 // Price editor inside the detail panel: the selected model's rate, plus
 // set/edit/clear. Reset per model via a `key` on the element that mounts it.
-function PanelPriceEditor({ row }: { row: ModelRow }) {
+// `readOnly` keeps the rates and drops the write affordances, for a caller who
+// may not price anything.
+function PanelPriceEditor({
+  row,
+  readOnly = false,
+}: {
+  row: ModelRow
+  readOnly?: boolean
+}) {
   const setPricing = useSetPricing()
   const deletePricing = useDeletePricing()
   const [editing, setEditing] = useState(false)
@@ -769,32 +787,34 @@ function PanelPriceEditor({ row }: { row: ModelRow }) {
             : "—"
         }
       />
-      <div className="flex items-center gap-2 pt-1">
-        <Button size="sm" variant="outline" onPress={startEdit}>
-          {row.source === "configured" ? "Edit price" : "Set price"}
-        </Button>
-        {row.source === "configured" ? (
-          <>
-            <ConfirmButton
-              confirmLabel="Reset"
-              isPending={deletePricing.isPending}
-              onConfirm={() => deletePricing.mutate(row.key)}
-            >
-              Reset
-            </ConfirmButton>
-            <InfoTooltip label="What reset does">
-              Removes the custom price. The model reverts to the default rate
-              (genai-prices) when default pricing is on, otherwise it is metered
-              at no cost.
-            </InfoTooltip>
-          </>
-        ) : null}
-        {deletePricing.error ? (
-          <span className="text-xs text-danger">
-            {errorMessage(deletePricing.error)}
-          </span>
-        ) : null}
-      </div>
+      {readOnly ? null : (
+        <div className="flex items-center gap-2 pt-1">
+          <Button size="sm" variant="outline" onPress={startEdit}>
+            {row.source === "configured" ? "Edit price" : "Set price"}
+          </Button>
+          {row.source === "configured" ? (
+            <>
+              <ConfirmButton
+                confirmLabel="Reset"
+                isPending={deletePricing.isPending}
+                onConfirm={() => deletePricing.mutate(row.key)}
+              >
+                Reset
+              </ConfirmButton>
+              <InfoTooltip label="What reset does">
+                Removes the custom price. The model reverts to the default rate
+                (genai-prices) when default pricing is on, otherwise it is
+                metered at no cost.
+              </InfoTooltip>
+            </>
+          ) : null}
+          {deletePricing.error ? (
+            <span className="text-xs text-danger">
+              {errorMessage(deletePricing.error)}
+            </span>
+          ) : null}
+        </div>
+      )}
     </div>
   )
 }
@@ -805,11 +825,18 @@ function ModelDetailPanel({
   row,
   metadata,
   metadataAvailable,
+  canEditPricing,
+  discoveryKnown,
   onClose,
 }: {
   row: ModelRow
   metadata: ModelMetadata | undefined
   metadataAvailable: boolean
+  canEditPricing: boolean
+  // False when `/v1/models/discoverable` was never read, which is the
+  // non-operator case: `isDiscovered` is then absent rather than negative, so
+  // the row says nothing about discovery instead of claiming it failed.
+  discoveryKnown: boolean
   onClose: () => void
 }) {
   const inputModalities = metadata?.input_modalities ?? []
@@ -858,11 +885,15 @@ function ModelDetailPanel({
         <PanelSection title="Pricing">
           <div className="flex items-center gap-2">
             <SourceChip source={row.source} />
-            {row.isDiscovered ? null : (
+            {row.isDiscovered || !discoveryKnown ? null : (
               <span className="text-xs text-muted">not discovered</span>
             )}
           </div>
-          <PanelPriceEditor key={row.key} row={row} />
+          <PanelPriceEditor
+            key={row.key}
+            row={row}
+            readOnly={!canEditPricing}
+          />
         </PanelSection>
 
         <PanelSection title="Specs">
@@ -926,7 +957,12 @@ function ModelDetailPanel({
             <span className="text-sm text-muted">
               {metadataAvailable
                 ? "None reported."
-                : "Extended metadata unavailable (models.dev disabled or unreachable)."}
+                : canEditPricing
+                  ? "Extended metadata unavailable (models.dev disabled or unreachable)."
+                  : // The metadata read is operator-only and was never asked, so
+                    // saying models.dev failed would be reporting an outage that
+                    // did not happen.
+                    "Extended metadata is available to deployment operators."}
             </span>
           )}
         </PanelSection>
@@ -1146,21 +1182,28 @@ function PriceCell({
   rowKey: string
   primaryLabel: string
   secondaryLabel: string
-  onEdit: () => void
+  // Absent for a caller who may not write pricing: the number renders as text
+  // rather than as a control that could only earn a 403.
+  onEdit?: () => void
 }) {
-  const number = (value: number | null, label: string) => (
-    <button
-      type="button"
-      aria-label={`Edit ${label} price for ${rowKey}`}
-      className="tabular-nums hover:text-link hover:underline"
-      onClick={(event) => {
-        event.stopPropagation()
-        onEdit()
-      }}
-    >
-      {value == null ? "—" : formatCost(value)}
-    </button>
-  )
+  const number = (value: number | null, label: string) =>
+    onEdit === undefined ? (
+      <span className="tabular-nums">
+        {value == null ? "—" : formatCost(value)}
+      </span>
+    ) : (
+      <button
+        type="button"
+        aria-label={`Edit ${label} price for ${rowKey}`}
+        className="tabular-nums hover:text-link hover:underline"
+        onClick={(event) => {
+          event.stopPropagation()
+          onEdit()
+        }}
+      >
+        {value == null ? "—" : formatCost(value)}
+      </button>
+    )
   return (
     <span className="inline-flex items-center justify-end gap-1">
       {number(primary, primaryLabel)}
@@ -1177,7 +1220,8 @@ function CachingCell({
 }: {
   rates: EffectiveRates
   rowKey: string
-  onEdit: () => void
+  // Absent for a caller who may not write pricing; see PriceCell.
+  onEdit?: () => void
 }) {
   const entries = [
     rates.cacheReadPrice == null
@@ -1190,6 +1234,14 @@ function CachingCell({
       ? null
       : `1h ${formatCost(rates.cacheWrite1hPrice)}`,
   ].filter((entry): entry is string => entry !== null)
+  const label = entries.length > 0 ? entries.join(" · ") : "Input-rate fallback"
+  if (onEdit === undefined) {
+    return (
+      <span className="inline-block max-w-44 text-right text-xs leading-5 text-muted">
+        {label}
+      </span>
+    )
+  }
   return (
     <button
       type="button"
@@ -1200,7 +1252,7 @@ function CachingCell({
         onEdit()
       }}
     >
-      {entries.length > 0 ? entries.join(" · ") : "Input-rate fallback"}
+      {label}
     </button>
   )
 }
@@ -1210,7 +1262,8 @@ function PricingPolicyCell({
   onEdit,
 }: {
   row: ModelRow
-  onEdit: () => void
+  // Absent for a caller who may not write pricing; see PriceCell.
+  onEdit?: () => void
 }) {
   const thresholds = [...row.pricingTiers]
     .sort((a, b) => a.min_input_tokens - b.min_input_tokens)
@@ -1219,6 +1272,13 @@ function PricingPolicyCell({
     thresholds.length === 0
       ? "Base only"
       : `${thresholds.length} tier${thresholds.length === 1 ? "" : "s"} · ≥ ${thresholds.join(", ")}`
+  if (onEdit === undefined) {
+    return (
+      <span className="inline-block max-w-40 text-right text-xs leading-5 text-muted">
+        {label}
+      </span>
+    )
+  }
   return (
     <button
       type="button"
@@ -1254,7 +1314,9 @@ function ModelTable({
   onSortChange: (descriptor: SortDescriptor) => void
   selectedKey: string | null
   onSelect: (key: string) => void
-  onEditPricing: (key: string) => void
+  // Absent for a caller who may not write pricing: the price cells render as
+  // text and row selection (which exists only to feed bulk pricing) is off.
+  onEditPricing?: (key: string) => void
   comparisonContextTokens: number | null
   selectedKeys: Selection
   onSelectionChange: (keys: Selection) => void
@@ -1315,7 +1377,7 @@ function ModelTable({
               rowKey={row.key}
               primaryLabel="input"
               secondaryLabel="output"
-              onEdit={() => onEditPricing(row.key)}
+              onEdit={onEditPricing && (() => onEditPricing(row.key))}
             />
           )
         },
@@ -1331,7 +1393,7 @@ function ModelTable({
           <CachingCell
             rates={effectiveRatesAtContext(row, comparisonContextTokens)}
             rowKey={row.key}
-            onEdit={() => onEditPricing(row.key)}
+            onEdit={onEditPricing && (() => onEditPricing(row.key))}
           />
         ),
       },
@@ -1346,7 +1408,10 @@ function ModelTable({
         header: "Pricing policy",
         align: "end",
         cell: (row) => (
-          <PricingPolicyCell row={row} onEdit={() => onEditPricing(row.key)} />
+          <PricingPolicyCell
+            row={row}
+            onEdit={onEditPricing && (() => onEditPricing(row.key))}
+          />
         ),
       },
     ]
@@ -1366,7 +1431,7 @@ function ModelTable({
       getRowKey={getModelRowKey}
       isLoading={isLoading}
       emptyContent={empty}
-      selectionMode="multiple"
+      selectionMode={onEditPricing ? "multiple" : "none"}
       selectedKeys={selectedKeys}
       onSelectionChange={onSelectionChange}
       sortDescriptor={sortDescriptor}
@@ -1444,11 +1509,25 @@ function DiscoveredErrors({
 }
 
 export function ModelsPage() {
+  // The catalog and the price list serve any signed-in session; discovery,
+  // metadata and settings are deployment-operator-only, so they are withheld
+  // from anyone else rather than fired into a 403 banner (otari-ai#1942). For
+  // a non-operator the page is the read-only catalog view.
+  const organization = useOrganizationContext()
+  const isOperator = isDeploymentOperator(organization.data)
   const models = useModels()
   const pricing = usePricing()
-  const discoverable = useDiscoverableModels()
-  const metadata = useModelMetadata()
-  const settings = useSettings()
+  const discoverable = useDiscoverableModels(isOperator)
+  const metadata = useModelMetadata(isOperator)
+  const settings = useSettings(isOperator)
+  // Read through `isOperator` rather than relied on to be undefined because
+  // the hooks above are disabled: a disabled query still hands back whatever
+  // sits in the cache under its key, so a caller demoted mid-session would
+  // keep seeing what they fetched as an operator. The gate belongs where the
+  // data is rendered, not only where it is fetched.
+  const discoverableData = isOperator ? discoverable.data : undefined
+  const metadataData = isOperator ? metadata.data : undefined
+  const settingsData = isOperator ? settings.data : undefined
 
   const setPricing = useSetPricing()
   const [search, setSearch] = useState("")
@@ -1489,17 +1568,17 @@ export function ModelsPage() {
   const [releaseFilter, setReleaseFilter] = useState("all")
   const [comparisonContext, setComparisonContext] = useState("")
 
-  const metadataByKey = metadata.data?.models ?? {}
-  const metadataAvailable = metadata.data?.available ?? false
+  const metadataByKey = metadataData?.models ?? {}
+  const metadataAvailable = metadataData?.available ?? false
 
   const discoverableKeys = useMemo(
     () =>
       new Set(
-        (discoverable.data?.providers ?? []).flatMap((provider) =>
+        (discoverableData?.providers ?? []).flatMap((provider) =>
           provider.models.map((model) => model.key),
         ),
       ),
-    [discoverable.data],
+    [discoverableData],
   )
 
   const changeSearch = (value: string) => {
@@ -1630,8 +1709,8 @@ export function ModelsPage() {
     // answer: while settings are still loading the flag is undefined, and "not priced"
     // is the one of the two labels that would be asserting something.
     const unpricedSource: PriceSource =
-      settings.data?.default_pricing === false ? "none" : "unknown"
-    for (const provider of discoverable.data?.providers ?? []) {
+      settingsData?.default_pricing === false ? "none" : "unknown"
+    for (const provider of discoverableData?.providers ?? []) {
       for (const model of provider.models) {
         if (seen.has(model.key)) {
           continue
@@ -1655,9 +1734,9 @@ export function ModelsPage() {
       }
     }
     return out
-  }, [rows, discoverable.data, metadataByKey, settings.data?.default_pricing])
+  }, [rows, discoverableData, metadataByKey, settingsData?.default_pricing])
 
-  const discoveredErrors = (discoverable.data?.providers ?? []).filter(
+  const discoveredErrors = (discoverableData?.providers ?? []).filter(
     (provider) => !provider.ok,
   )
 
@@ -1934,21 +2013,25 @@ export function ModelsPage() {
       <span>
         {hasActiveFilters
           ? "No models match your filters."
-          : "No models yet. Add a provider on the Providers page."}
+          : isOperator
+            ? "No models yet. Add a provider on the Providers page."
+            : "No models yet. A deployment operator adds providers."}
       </span>
       <span className="text-xs text-muted">
         A provider that serves no model listing still answers requests, so a
         model you can call may not be listed here.
       </span>
-      <Button
-        size="sm"
-        variant="outline"
-        onPress={() => setCustomPriceKey(searchedSelector ?? "")}
-      >
-        {searchedSelector
-          ? `Price ${searchedSelector}`
-          : "Price a model by hand"}
-      </Button>
+      {isOperator ? (
+        <Button
+          size="sm"
+          variant="outline"
+          onPress={() => setCustomPriceKey(searchedSelector ?? "")}
+        >
+          {searchedSelector
+            ? `Price ${searchedSelector}`
+            : "Price a model by hand"}
+        </Button>
+      ) : null}
     </div>
   )
 
@@ -1963,7 +2046,11 @@ export function ModelsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Models"
-        description="Every model your providers can serve. Set a price on any model so budgets and usage tracking work."
+        description={
+          isOperator
+            ? "Every model your providers can serve. Set a price on any model so budgets and usage tracking work."
+            : "Every model this gateway can serve, with the rates your usage is metered at. Providers and pricing are managed by a deployment operator."
+        }
       />
 
       <ErrorBanner
@@ -2002,28 +2089,38 @@ export function ModelsPage() {
                 { value: "unpriced", label: "Unpriced" },
               ]}
             />
-            <FilterSelect
-              ariaLabel="Filter by source"
-              value={sourceFilter}
-              onChange={changeFilter(setSourceFilter)}
-              options={[
-                { value: "all", label: "Any source" },
-                { value: "discovered", label: "Discovered" },
-                { value: "custom", label: "Custom (not discovered)" },
-              ]}
-            />
-            <FilterSelect
-              ariaLabel="Filter by capability"
-              value={capabilityFilter}
-              onChange={changeFilter(setCapabilityFilter)}
-              options={[
-                { value: "all", label: "Any capability" },
-                ...MODEL_FILTER_CAPABILITIES.map((entry) => ({
-                  value: entry.value,
-                  label: entry.label,
-                })),
-              ]}
-            />
+            {/* Source, capability and release date all read a
+                deployment-operator-only endpoint (`/v1/models/discoverable`
+                for the first, `/v1/models/metadata` for the other two). For a
+                caller those reads were withheld from, every value but "all"
+                would empty the table, so the control is absent rather than
+                offered as one that can only fail. */}
+            {isOperator ? (
+              <FilterSelect
+                ariaLabel="Filter by source"
+                value={sourceFilter}
+                onChange={changeFilter(setSourceFilter)}
+                options={[
+                  { value: "all", label: "Any source" },
+                  { value: "discovered", label: "Discovered" },
+                  { value: "custom", label: "Custom (not discovered)" },
+                ]}
+              />
+            ) : null}
+            {isOperator ? (
+              <FilterSelect
+                ariaLabel="Filter by capability"
+                value={capabilityFilter}
+                onChange={changeFilter(setCapabilityFilter)}
+                options={[
+                  { value: "all", label: "Any capability" },
+                  ...MODEL_FILTER_CAPABILITIES.map((entry) => ({
+                    value: entry.value,
+                    label: entry.label,
+                  })),
+                ]}
+              />
+            ) : null}
             <FilterSelect
               ariaLabel="Minimum context window"
               value={minContext}
@@ -2042,12 +2139,14 @@ export function ModelsPage() {
               onChange={setComparisonContext}
               options={PRICE_COMPARISON_OPTIONS}
             />
-            <FilterSelect
-              ariaLabel="Filter by release date"
-              value={releaseFilter}
-              onChange={changeFilter(setReleaseFilter)}
-              options={RELEASE_OPTIONS}
-            />
+            {isOperator ? (
+              <FilterSelect
+                ariaLabel="Filter by release date"
+                value={releaseFilter}
+                onChange={changeFilter(setReleaseFilter)}
+                options={RELEASE_OPTIONS}
+              />
+            ) : null}
           </div>
 
           <DiscoveredErrors
@@ -2082,7 +2181,7 @@ export function ModelsPage() {
             onSortChange={onSortChange}
             selectedKey={selectedKey}
             onSelect={setSelectedKey}
-            onEditPricing={onEditPricing}
+            onEditPricing={isOperator ? onEditPricing : undefined}
             comparisonContextTokens={comparisonContextTokens}
             selectedKeys={selection.selectedKeys}
             onSelectionChange={selection.onSelectionChange}
@@ -2131,6 +2230,8 @@ export function ModelsPage() {
               row={selectedRow}
               metadata={metadataByKey[selectedRow.key]}
               metadataAvailable={metadataAvailable}
+              canEditPricing={isOperator}
+              discoveryKnown={isOperator}
               onClose={() => setSelectedKey(null)}
             />
           </aside>

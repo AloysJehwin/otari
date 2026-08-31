@@ -33,10 +33,57 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlsplit, urlunsplit
 
 from gateway.core.config import parse_bool_env
 from gateway.core.env import otari_env
+
+
+def redact_url_secrets(value: str) -> str:
+    """Mask credentials in a URL while keeping its shape recognizable.
+
+    A ``user:pass@`` password is masked while the username stays visible. A
+    single-component userinfo (``token@host``) is masked whole, since a lone
+    userinfo component is more likely a bearer token than a benign username and
+    the two cannot be told apart. Every query-parameter *value* is masked too
+    (a denylist of "credential-looking" keys cannot be complete, and a viewer
+    cannot know which value is a secret), while the keys stay visible so the
+    reader can still see what is set. Scheme, host, and path are preserved.
+
+    Lives here rather than beside the settings route that first needed it
+    because the checks in this module are the other half of the same concern,
+    and a service may not import the API layer: the workspace MCP list redacts
+    a stored endpoint for a caller who may read it but not manage it.
+    """
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return value
+
+    netloc = parts.netloc
+    if parts.username is not None or parts.password is not None:
+        # Everything after the last "@" is host[:port], taken as written rather
+        # than rebuilt from `hostname` and `port`. Deliberately not
+        # `SplitResult.port`, which parses lazily and raises ValueError on a
+        # malformed port ("host:bad"): nothing rejects such a URL on the way in
+        # (`validate_mcp_url` reads `hostname` and never the port), so rebuilding
+        # would turn a redaction into a 500 on the read. Taking the text also
+        # keeps an IPv6 literal's brackets without a special case.
+        host_and_port = parts.netloc.rpartition("@")[2]
+        if parts.password is not None:
+            netloc = f"{parts.username or ''}:***@{host_and_port}"
+        else:
+            netloc = f"***@{host_and_port}"
+
+    query = parts.query
+    if query:
+        pairs = parse_qsl(query, keep_blank_values=True)
+        # quote_via with '*' left safe keeps the mask readable ('***', not '%2A%2A%2A').
+        query = urlencode([(key, "***") for key, _ in pairs], quote_via=quote, safe="*")
+
+    if netloc == parts.netloc and query == parts.query:
+        return value
+    return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
 
 
 class UnsafeURLError(ValueError):
