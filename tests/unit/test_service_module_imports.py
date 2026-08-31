@@ -38,6 +38,18 @@ _MODULES = [
     # here for the same reason as the two above them.
     "gateway.services.tenancy.workspace_budget_default_service",
     "gateway.services.tenancy.authorization",
+    # organization_budget_service reaches organization_service and the entity
+    # models but deliberately not `scoped_budget_service`, which would close the
+    # cycle described in its own module docstring: that module reaches
+    # `workspace_scope` -> `tenancy.provisioning_service` -> `tenancy/__init__`.
+    # It spells the five scope names out instead, and
+    # `test_organization_budget_scopes.py` pins those against `ScopeType`.
+    "gateway.services.tenancy.organization_budget_service",
+    # budget_retiming is the leaf both budget surfaces share. It must stay
+    # importable on its own: the tenant-scoped service cannot reach
+    # `scoped_budget_service`, so if this module ever grew an import back into
+    # the tenancy package the shared rule would have to be duplicated again.
+    "gateway.services.budget_retiming",
     # workspace_mcp_server_service reaches authorization and organization_service
     # the same way, and is additionally imported from the request pipeline, which
     # is a second entry point into the graph.

@@ -74,10 +74,23 @@ class WorkspaceMemberBudgetPolicyCreate(BaseModel):
         max_length=255,
         description="The budget this workspace hands to every member",
     )
+    # Absent means every provider; a present value must name a real instance.
+    # Constrained rather than only length-checked because this template is
+    # materialized verbatim into a ceiling per member, and a ceiling whose
+    # `provider_key_id` is a blank string binds to nothing: resolution matches
+    # `provider_key_id == provider_instance OR IS NULL` and blank is neither, so
+    # every member would get a cap that is stored, listed, and never enforced.
+    # Reachable by an organization or workspace owner/admin, not only an operator,
+    # which is why it is refused here rather than left to the dashboard.
     provider_key_id: str | None = Field(
         default=None,
+        min_length=1,
         max_length=255,
-        description="Narrow the default to one provider instance; null applies to every provider",
+        pattern=r"^\S+$",
+        description=(
+            "Narrow the default to one provider instance; omit or null to apply to every provider. "
+            "Must name a real instance: a blank value would materialize ceilings that never bind"
+        ),
     )
 
 
@@ -337,10 +350,25 @@ class WorkspaceBudgetDefaultService:
             raise WorkspaceBudgetDefaultBudgetNotFoundError(default.budget_id)
         return budget
 
-    async def _require_budget(self, budget_id: str) -> Budget:
-        """The budget a caller named, refused as 404 when it does not exist."""
+    async def _require_budget(self, budget_id: str, *, organization_id: uuid.UUID) -> Budget:
+        """The budget a caller named, refused as 404 when it is not theirs to name.
+
+        ``organization_id`` is the workspace's, and a budget carrying a different
+        one is refused as though it did not exist. Before ``b7e1c4a9d2f5`` there
+        was nothing to check: every budget was the deployment's, defined by an
+        operator, and any of them was as valid a template as any other. Now that
+        an admin can define one (otari-ai#1943), an unchecked id here would let
+        one organization's admin hand their workspace another organization's
+        budget, and then move what that other tenant is capped at by editing it.
+
+        A budget with **no** organization stays nameable: those are the
+        deployment's own, including the ones an operator defined and the ones the
+        otari-ai cutover minted, and a workspace default has always been able to
+        name one. Narrowing that too would break every existing default on
+        upgrade.
+        """
         budget = await self.db.get(Budget, budget_id)
-        if budget is None:
+        if budget is None or (budget.organization_id is not None and budget.organization_id != organization_id):
             raise WorkspaceBudgetDefaultBudgetNotFoundError(budget_id)
         return budget
 
@@ -456,7 +484,7 @@ class WorkspaceBudgetDefaultService:
 
         # Before the lock's write, so an unknown budget is a 404 rather than a
         # foreign-key violation reported as "this default already exists".
-        budget = await self._require_budget(request.budget_id)
+        budget = await self._require_budget(request.budget_id, organization_id=workspace.organization_id)
         default = WorkspaceBudgetDefault(
             workspace_id=workspace.id,
             budget_id=budget.budget_id,
@@ -506,7 +534,7 @@ class WorkspaceBudgetDefaultService:
         )
         default = await self._get_or_404(workspace, default_id)
 
-        budget = await self._require_budget(request.budget_id)
+        budget = await self._require_budget(request.budget_id, organization_id=workspace.organization_id)
         default.budget_id = budget.budget_id
 
         await self.db.commit()
