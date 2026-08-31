@@ -12,8 +12,9 @@ import {
   FiShield,
 } from "react-icons/fi"
 
-import type { DeploymentBootstrap } from "@/client"
+import type { OrganizationContext } from "@/client"
 import { useAuth } from "@/features/auth/AuthContext"
+import { useOrganizationContext } from "@/shared/api/hooks"
 import { EntitlementGate } from "@/shared/components/EntitlementGate"
 import { useDeployment } from "@/shared/hooks/useDeployment"
 import {
@@ -69,18 +70,73 @@ const MENU_ROW_DISABLED = "cursor-not-allowed text-muted opacity-60"
 const MENU_ICON_CLASS = `${NAV_ICON_CLASS} text-muted`
 const MENU_DIVIDER = "h-px shrink-0 bg-border"
 
-// Whose session this is, as the trigger at the foot of the rail names it. A
-// standalone gateway issues one, for the operator identity it provisioned
-// itself, and no management route reports the caller's own name or address, so
-// this is the most it can honestly say.
-function sessionIdentity(sessionType: DeploymentBootstrap["session_type"]): {
+// Whose session this is, as the trigger at the foot of the rail names it: the
+// person, not their standing. It used to name a standing, because nothing
+// authenticated reported the caller's own identity and the bootstrap's
+// `session_type` was the only thing to hand; keyed on that, the trigger read
+// "Operator" for every signed-in caller, which is a role rather than a name and
+// on a hosted deployment was not even true of the person reading it (#832).
+// `OrganizationMembershipContextPublic.caller` is the identity itself, on the
+// read `AppShellChrome` already makes, so naming the person costs no request.
+//
+// A standalone operator still reads "Operator", now because that *is* their
+// name: first boot provisions the identity with it (`OPERATOR_FULL_NAME`), and
+// the roster shows the same word in the same place.
+//
+// Three answers, each for a real identity this deployment can hold. A member
+// added to the roster by address has no name until they claim it, so the
+// address stands in and is a better answer than a role. An identity with
+// neither, and a context that has not landed or could not be read, get
+// "Signed in": naming nobody is the honest answer, and it is what the trigger
+// showed before the first paint anyway.
+function sessionIdentity(caller: OrganizationContext["caller"]): {
   name: string
   initials: string
 } {
-  if (sessionType === "local_operator") {
-    return { name: "Operator", initials: "OP" }
+  const named = caller?.full_name?.trim()
+  if (named) {
+    return { name: named, initials: initialsFor(named) }
+  }
+  const addressed = caller?.email?.trim()
+  if (addressed) {
+    // An address has no words to take initials from, so its local part stands
+    // in, and that part is split on its own punctuation as well: an address
+    // spells a name with dots where a name uses spaces, so `ada.lovelace@…`
+    // initials as AL. A name is split on spaces alone, because the same
+    // punctuation means something else in one: `Ada Lovelace-Byron` is two
+    // names, and splitting the hyphen would initial her as AB.
+    return {
+      name: addressed,
+      initials: initialsFor(localPart(addressed), true),
+    }
   }
   return { name: "Signed in", initials: "··" }
+}
+
+/** The part of an address that names a person, which is the part before the host. */
+function localPart(email: string): string {
+  return email.split("@")[0] ?? email
+}
+
+// Two letters, taken the way an avatar takes them: the first letter of the
+// first and last word, and the first two letters of a source that is one word.
+//
+// Counted in characters rather than in the code units `[0]` and `slice` count,
+// because a name outside the basic plane (an extension-B CJK character, an
+// emoji) is two units per character: indexing one takes half a surrogate pair
+// and the avatar draws the replacement mark instead of the letter.
+function initialsFor(source: string, splitPunctuation = false): string {
+  const words = source
+    .split(splitPunctuation ? /[\s._-]+/ : /\s+/)
+    .filter(Boolean)
+  if (words.length === 0) {
+    return "··"
+  }
+  const first = Array.from(words[0])
+  const last = Array.from(words[words.length - 1])
+  const letters =
+    words.length > 1 ? `${first[0]}${last[0]}` : first.slice(0, 2).join("")
+  return letters.toUpperCase()
 }
 
 function MenuItem({
@@ -229,9 +285,10 @@ function AppearanceControl() {
 
 export function AccountMenu({ collapsed }: { collapsed: boolean }) {
   const { logout } = useAuth()
-  const { session_type, management_url, docs_url } = useDeployment()
+  const { management_url, docs_url } = useDeployment()
+  const organization = useOrganizationContext()
   const [open, setOpen] = useState(false)
-  const identity = sessionIdentity(session_type)
+  const identity = sessionIdentity(organization.data?.caller)
 
   return (
     <Popover isOpen={open} onOpenChange={setOpen}>
@@ -241,7 +298,13 @@ export function AccountMenu({ collapsed }: { collapsed: boolean }) {
           otherwise leaves this a pill in the corner. */}
       <Button
         variant="ghost"
-        aria-label="Account"
+        // The identity this control exists to draw, folded into the name: a
+        // static `aria-label` wins over the children, so a screen reader
+        // otherwise hears "Account" and never who is signed in. On the
+        // collapsed rail the name is not rendered at all, so this is the only
+        // place it could reach anybody there. `AppearanceControl` folds its own
+        // visible state in for the same reason.
+        aria-label={`Account: ${identity.name}`}
         className={`${navRowClass({ collapsed })} w-auto! justify-start`}
       >
         <span className="flex h-[1.625rem] w-[1.625rem] shrink-0 items-center justify-center rounded-full border border-border bg-surface-alt text-chrome-initials font-semibold text-muted">
