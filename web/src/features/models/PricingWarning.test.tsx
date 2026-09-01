@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { ReactElement } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import type { GatewaySettings } from "@/client"
+import type { GatewaySettings, OrganizationContext } from "@/client"
 import { PricingWarning } from "@/features/models/PricingWarning"
 import { organizationContext } from "@/tests/fixtures"
 import { withRouter } from "@/tests/router"
@@ -26,7 +26,14 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
-function mockSettings(settings: GatewaySettings, rejectedInLastHour = 0) {
+// A context the caller has, or the status the read failed with.
+type ContextResult = OrganizationContext | { failsWith: number }
+
+function mockSettings(
+  settings: GatewaySettings,
+  rejectedInLastHour = 0,
+  context: ContextResult = organizationContext(),
+) {
   let current = { ...settings }
   return vi
     .spyOn(globalThis, "fetch")
@@ -37,7 +44,9 @@ function mockSettings(settings: GatewaySettings, rejectedInLastHour = 0) {
       // routes or the organization-scoped ones (otari#837). Answered first, and
       // on an exact match, so it cannot shadow /v1/organizations/me/usage.
       if (url.endsWith("/v1/organizations/me")) {
-        return jsonResponse(organizationContext())
+        return "failsWith" in context
+          ? jsonResponse({ detail: "Not found" }, context.failsWith)
+          : jsonResponse(context)
       }
       const method = (init?.method ?? "GET").toUpperCase()
       if (url.includes("/v1/settings")) {
@@ -62,13 +71,25 @@ function countWindows(fetchMock: FetchMock): string[] {
     .map((u) => String(new URLSearchParams(u.split("?")[1]).get("start_date")))
 }
 
-function renderPage(ui: ReactElement) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
+function renderPage(
+  ui: ReactElement,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
+  render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>, {
+    wrapper: withRouter(),
   })
-  return render(
-    <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
-    { wrapper: withRouter() },
+  return client
+}
+
+// Resolves once the organization context has landed in the cache, which is when
+// the operator gate has an answer. `fetch` having been called only says the
+// request started, so an absence asserted on that alone would also hold while
+// the gate was still undecided.
+async function settleContext(client: QueryClient) {
+  await waitFor(() =>
+    expect(client.getQueryState(["organizations", "context"])?.status).not.toBe(
+      "pending",
+    ),
   )
 }
 
@@ -215,6 +236,71 @@ describe("PricingWarning", () => {
     expect(
       fetchMock.mock.calls.some(([u]) => String(u).includes("/v1/usage/count")),
     ).toBe(false)
+  })
+
+  it("asks nothing of the operator-only settings route for a tenant", async () => {
+    // The alarm and the button that clears it are both deployment-operator-only,
+    // so a caller who does not operate the deployment must not fire the read
+    // that feeds a banner they could never be shown (#834).
+    const fetchMock = mockSettings(
+      { ...BASE, require_pricing: true, default_pricing: false },
+      12,
+      organizationContext({ deployment_operator: false }),
+    )
+    const client = renderPage(<PricingWarning />)
+
+    await settleContext(client)
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).includes("/v1/settings")),
+    ).toBe(false)
+    expect(screen.queryByText(/Requests are rejected/)).not.toBeInTheDocument()
+  })
+
+  it("keeps cached settings out of the banner once the caller is not an operator", async () => {
+    // A disabled query still serves whatever sits under its key, so a caller
+    // demoted mid-session would otherwise keep the banner, and a button that
+    // PATCHes a route now refusing them.
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryData(["settings"], {
+      ...BASE,
+      require_pricing: true,
+      default_pricing: false,
+    } satisfies GatewaySettings)
+    mockSettings(
+      { ...BASE, require_pricing: true, default_pricing: false },
+      12,
+      organizationContext({ deployment_operator: false }),
+    )
+    renderPage(<PricingWarning />, client)
+
+    await settleContext(client)
+    expect(screen.queryByText(/Requests are rejected/)).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Enable default pricing" }),
+    ).not.toBeInTheDocument()
+  })
+
+  it("still alarms an operator whose organization context fails to load", async () => {
+    // `/v1/settings` refuses with a 403, not a 404, so a failed read of the
+    // signal fails open the way an `operatorOnly: "refused"` rail row does
+    // (`nav/types.ts`). The banner is the only thing reporting that the gateway
+    // is dropping traffic, so withholding it on an unrelated failure strands the
+    // one person who can act.
+    mockSettings(
+      { ...BASE, require_pricing: true, default_pricing: false },
+      12,
+      {
+        failsWith: 404,
+      },
+    )
+    renderPage(<PricingWarning />)
+
+    expect(await screen.findByText(/Requests are rejected/)).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Enable default pricing" }),
+    ).toBeInTheDocument()
   })
 
   it("can be dismissed", async () => {

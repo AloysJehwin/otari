@@ -2,8 +2,10 @@ import { Button } from "@heroui/react"
 import { Link } from "@tanstack/react-router"
 import { useState } from "react"
 
+import { isDeploymentOperator } from "@/features/organization/roles"
 import {
   useFailureCount,
+  useOrganizationContext,
   useSettings,
   useUpdateSettings,
 } from "@/shared/api/hooks"
@@ -22,11 +24,32 @@ import { HOUR_S } from "@/shared/helpers/timeRange"
 // now) rather than a static config note, and links into the activity log filtered
 // to those failures.
 export function PricingWarning() {
-  const settings = useSettings()
+  // Both the read behind the alarm and the button that clears it are
+  // deployment-operator-only (`require_deployment_operator` on `/v1/settings`),
+  // so the audience is stated here rather than left to be inferred from a
+  // refused query: without it every tenant page load fired a `GET /v1/settings`
+  // that 403s to feed a banner that could never render for them (#834). Off the
+  // organization context, which the shell reads anyway, for the reason
+  // `useProviderKeyEncryption` does: a second request to ask the same question
+  // is the cost this removes.
+  const organization = useOrganizationContext()
+  // Fails open on a failed context read, which is what the rail does with the
+  // same class of gate: `/v1/settings` is `require_deployment_operator`, so it
+  // refuses with a 403 rather than a 404, and `nav/types.ts` settles what that
+  // means with no answer. Here it costs more than a hidden row, because the
+  // banner is the only thing reporting that traffic is being dropped right now.
+  // The ordinary tenant path, a resolved context saying no, still asks nothing.
+  const isOperator =
+    isDeploymentOperator(organization.data) || organization.isError
+  const settings = useSettings(isOperator)
   const updateSettings = useUpdateSettings()
   const [dismissed, setDismissed] = useState(false)
 
+  // Read through `isOperator` for the reason `ModelsPage` does: a disabled query
+  // still hands back whatever sits under its key, so a caller demoted mid-session
+  // would keep the banner and a button that PATCHes a route now refusing them.
   const needsPricing =
+    isOperator &&
     settings.data?.require_pricing === true &&
     settings.data.default_pricing === false
   const showing = needsPricing && !dismissed
