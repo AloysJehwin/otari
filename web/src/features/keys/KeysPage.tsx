@@ -184,7 +184,7 @@ function RevealSecretModal({
                 be retrieved later. If you lose it, use Regenerate to issue a
                 new secret.
               </InfoBanner>
-              <p className="text-xs text-muted">
+              <p className="text-caption">
                 Model access: {accessLabel(result.allowed_models).text}.
               </p>
               <CopyField
@@ -198,7 +198,7 @@ function RevealSecretModal({
                   {snippets === undefined ? (
                     <MissingGatewayAddressNotice />
                   ) : (
-                    <p className="text-xs text-muted">
+                    <p className="text-caption">
                       Replace <code>{SNIPPET_MODEL_PLACEHOLDER}</code> with a
                       model from the Models page.
                     </p>
@@ -293,7 +293,7 @@ function OwnerAccessNote({ userId, users }: { userId: string; users: User[] }) {
   const id = userId.trim()
   if (id === "") {
     return (
-      <p className="text-xs text-muted">
+      <p className="text-caption">
         Choose an owner above to see the models this key can inherit.
       </p>
     )
@@ -301,7 +301,7 @@ function OwnerAccessNote({ userId, users }: { userId: string; users: User[] }) {
   const owner = users.find((u) => u.user_id === id)
   if (!owner) {
     return (
-      <p className="text-xs text-muted">
+      <p className="text-caption">
         New user <code>{id}</code> starts unrestricted, so this key may allow
         any model.
       </p>
@@ -313,7 +313,7 @@ function OwnerAccessNote({ userId, users }: { userId: string; users: User[] }) {
       ? owner.allowed_models.join(", ")
       : null
   return (
-    <p className="text-xs text-muted">
+    <p className="text-caption">
       Owner <code>{id}</code> allows{" "}
       <span className="font-medium text-foreground">{text.toLowerCase()}</span>
       {entries ? (
@@ -345,7 +345,7 @@ function BudgetExemptToggle({
       <Checkbox isSelected={checked} onChange={onChange}>
         <span className="font-medium text-foreground">Exempt from budget</span>
       </Checkbox>
-      <p className="text-xs text-muted">
+      <p className="text-caption">
         Requests on this key are logged with their cost but never counted toward
         the owner&apos;s budget or spend, and never blocked by it.
       </p>
@@ -369,7 +369,7 @@ function UserMismatchPicker({
       {/* The label carries markup (`user` as code), which FilterSelect's own
           `label` cannot, so it stays here with `htmlFor` on the trigger and
           `ariaLabel` naming the control for assistive tech. */}
-      <label htmlFor={selectId} className="text-sm font-medium text-foreground">
+      <label htmlFor={selectId} className="text-body">
         Mismatched <code>user</code> field
       </label>
       <FilterSelect
@@ -385,7 +385,7 @@ function UserMismatchPicker({
           { value: "accept", label: "Always accept" },
         ]}
       />
-      <span className="text-xs text-muted">
+      <span className="text-caption">
         What happens when a request on this key names a different{" "}
         <code>user</code> than its owner. Accept it for clients that send
         telemetry there rather than an identity, such as Claude Code. Spend
@@ -514,7 +514,7 @@ function CreateKeyForm({
             memberLabels={memberLabels}
           />
         ) : (
-          <p className="text-xs text-muted">
+          <p className="text-caption">
             This key is yours: requests on it are billed to you and count
             against your budget.
           </p>
@@ -882,16 +882,15 @@ export function KeysPage() {
                   : undefined
                 if (member) {
                   return (
-                    <span
-                      className="text-sm text-foreground"
-                      title={k.user_id ?? ""}
-                    >
+                    <span className="text-body" title={k.user_id ?? ""}>
                       {member}
                     </span>
                   )
                 }
                 return (
-                  <code className="text-xs text-muted">{k.user_id ?? "—"}</code>
+                  <code className="font-mono text-caption">
+                    {k.user_id ?? "—"}
+                  </code>
                 )
               },
             } satisfies DataTableColumn<ApiKey>,
@@ -901,7 +900,7 @@ export function KeysPage() {
         id: "key",
         header: "Key",
         cell: (k) => (
-          <code className="text-xs text-muted">
+          <code className="font-mono text-caption">
             {k.key_prefix ? `${k.key_prefix}…` : "—"}
           </code>
         ),

@@ -50,11 +50,9 @@ function RateField({
       isRequired={isRequired}
       className="flex flex-col gap-1"
     >
-      <Label className="text-sm font-medium text-foreground">{label}</Label>
+      <Label className="text-body">{label}</Label>
       <Input inputMode="decimal" placeholder="0.00" />
-      {description ? (
-        <span className="text-xs text-muted">{description}</span>
-      ) : null}
+      {description ? <span className="text-caption">{description}</span> : null}
     </TextField>
   )
 }
@@ -213,13 +211,11 @@ export function PricingOverrideDialog({
                 <ErrorBanner error={error} />
                 {editing ? (
                   <div className="flex flex-col gap-1">
-                    <span className="text-sm font-medium text-foreground">
-                      Model
-                    </span>
-                    <code className="text-xs text-muted">
+                    <span className="text-body">Model</span>
+                    <code className="font-mono text-caption">
                       {editing.model_key}
                     </code>
-                    <span className="text-xs text-muted">
+                    <span className="text-caption">
                       A model cannot be changed here. Delete this override and
                       add one for the other model.
                     </span>
@@ -274,11 +270,9 @@ export function PricingOverrideDialog({
                     isRequired={editing !== undefined}
                     className="flex flex-col gap-1"
                   >
-                    <Label className="text-sm font-medium text-foreground">
-                      Applies from
-                    </Label>
+                    <Label className="text-body">Applies from</Label>
                     <Input type="datetime-local" />
-                    <span className="text-xs text-muted">
+                    <span className="text-caption">
                       {editing
                         ? "Required when editing: a replacement states the whole period."
                         : "Blank starts it now."}
@@ -289,11 +283,9 @@ export function PricingOverrideDialog({
                     onChange={setTo}
                     className="flex flex-col gap-1"
                   >
-                    <Label className="text-sm font-medium text-foreground">
-                      Applies until
-                    </Label>
+                    <Label className="text-body">Applies until</Label>
                     <Input type="datetime-local" />
-                    <span className="text-xs text-muted">
+                    <span className="text-caption">
                       Blank leaves it open ended. The end is exclusive, so the
                       next period may start at the same moment.
                     </span>

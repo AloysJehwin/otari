@@ -43,14 +43,14 @@ function PasswordField({
       isRequired
       className="flex max-w-md flex-col gap-1"
     >
-      <Label className="text-sm font-medium text-foreground">{label}</Label>
+      <Label className="text-body">{label}</Label>
       <Input autoComplete={autoComplete} />
       {description ? (
         // HeroUI's Description renders through the TextField's "description"
         // slot, so it reaches the input as aria-describedby; a raw span does
         // not, and a policy the field states only to sighted users is a policy
         // half the people typing into it cannot read.
-        <Description className="text-xs text-muted">{description}</Description>
+        <Description className="text-caption">{description}</Description>
       ) : null}
     </TextField>
   )
@@ -225,9 +225,7 @@ export function PasswordCard() {
                 isRequired
                 className="flex max-w-md flex-col gap-1"
               >
-                <Label className="text-sm font-medium text-foreground">
-                  Email
-                </Label>
+                <Label className="text-body">Email</Label>
                 {/* autoComplete="username" and not "email": this is the handle
                     the sign-in form will ask for, so a password manager should
                     file it against the credential it is being set beside. */}
@@ -236,7 +234,7 @@ export function PasswordCard() {
                     explanation above it before the operator has asked to
                     type. */}
                 <Input placeholder="you@example.com" autoComplete="username" />
-                <Description className="text-xs text-muted">
+                <Description className="text-caption">
                   Changing this address later is not supported yet, so pick the
                   one you will keep.
                 </Description>

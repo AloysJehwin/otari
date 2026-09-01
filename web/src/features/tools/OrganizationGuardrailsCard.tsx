@@ -108,7 +108,7 @@ function WorkspaceScope({
             </Checkbox>
           ))}
           {workspaces.length === 0 ? (
-            <span className="text-xs text-muted">
+            <span className="text-caption">
               No workspaces to choose from yet.
             </span>
           ) : null}
@@ -212,9 +212,7 @@ function GuardrailRow({
   return (
     <div className="flex flex-col gap-2 py-4">
       <div className="flex flex-wrap items-center gap-2">
-        <code className="text-sm font-medium text-foreground">
-          {guardrail.profile}
-        </code>
+        <code className="font-mono text-body">{guardrail.profile}</code>
         <Badge tone="muted">{scopeLabel(guardrail, workspaces)}</Badge>
         {guardrail.url ? <Badge tone="muted">own endpoint</Badge> : null}
         {guardrail.has_credential ? (
@@ -359,9 +357,7 @@ function AddGuardrailForm({
 
   return (
     <div className="flex flex-col gap-2 py-4">
-      <span className="text-sm font-medium text-foreground">
-        Mandate a guardrail
-      </span>
+      <span className="text-body">Mandate a guardrail</span>
       <div className="flex flex-wrap items-end gap-2">
         <input
           type="text"
@@ -425,7 +421,7 @@ function AddGuardrailForm({
           {create.isPending ? "Adding…" : "Add"}
         </Button>
       </div>
-      <span className="text-xs text-muted">
+      <span className="text-caption">
         The profile has to exist on the guardrails service. A caller can tighten
         a mandated guardrail but never weaken it. A credential needs an https
         endpoint of its own, since the URL above may be a plain-http sidecar,

@@ -114,14 +114,14 @@ export function AcceptInvitationPage() {
             <>
               {/* No article before the role: two of the three ("a owner", "a
                   admin") read wrong, and the roles are the server's words. */}
-              <p className="text-center text-sm text-foreground">
+              <p className="text-center text-body">
                 You're now a member of{" "}
                 <strong>{accept.data.organization_name}</strong>, with the{" "}
                 <strong>{accept.data.role}</strong> role.
               </p>
               {isAuthenticated ? (
                 <>
-                  <p className="text-center text-xs text-muted">
+                  <p className="text-center text-caption">
                     You're already signed in, so there is nothing left to set
                     up.
                   </p>
@@ -144,7 +144,7 @@ export function AcceptInvitationPage() {
                 </>
               ) : offersClaim ? (
                 <>
-                  <p className="text-center text-xs text-muted">
+                  <p className="text-center text-caption">
                     Next, set your password to sign in.
                   </p>
                   <Button
@@ -168,7 +168,7 @@ export function AcceptInvitationPage() {
                       no endpoint for that. `PUT /v1/auth/password` only ever
                       acts on the caller's own identity, so that advice named
                       something nobody on this deployment can do. */}
-                  <p className="text-center text-xs text-muted">
+                  <p className="text-center text-caption">
                     {offersProviderSignIn
                       ? "Setting a password works by emailing you a link, and this deployment sends no mail. Sign in with one of the providers on the sign-in screen instead."
                       : "Setting a password works by emailing you a link, and this deployment sends no mail. An operator can turn that on by configuring outgoing mail and a public base URL for this gateway."}
@@ -194,7 +194,7 @@ export function AcceptInvitationPage() {
             </>
           ) : preview.data ? (
             <>
-              <p className="text-center text-sm text-foreground">
+              <p className="text-center text-body">
                 <strong>{preview.data.organization_name}</strong> has invited{" "}
                 <strong>{preview.data.email}</strong> to join with the{" "}
                 <strong>{preview.data.role}</strong> role.

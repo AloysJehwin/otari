@@ -38,7 +38,7 @@ export function AuthEmailField({
       isReadOnly={isReadOnly}
       className="flex flex-col gap-1"
     >
-      <Label className="text-sm font-medium text-foreground">{label}</Label>
+      <Label className="text-body">{label}</Label>
       {/* autoComplete="username" and not "email": this is the handle the
           sign-in form asks for, so a password manager should file it against
           the credential it is being set beside. */}
@@ -61,7 +61,7 @@ export function AuthEmailField({
       {description ? (
         // HeroUI's Description reaches the input as aria-describedby through
         // the TextField's "description" slot, which a raw span does not.
-        <Description className="text-xs text-muted">{description}</Description>
+        <Description className="text-caption">{description}</Description>
       ) : null}
     </TextField>
   )
@@ -88,10 +88,10 @@ export function AuthPasswordField({
       isRequired
       className="flex flex-col gap-1"
     >
-      <Label className="text-sm font-medium text-foreground">{label}</Label>
+      <Label className="text-body">{label}</Label>
       <Input autoComplete={autoComplete} />
       {description ? (
-        <Description className="text-xs text-muted">{description}</Description>
+        <Description className="text-caption">{description}</Description>
       ) : null}
     </TextField>
   )
@@ -116,10 +116,10 @@ export function AuthTextField({
       onChange={onChange}
       className="flex flex-col gap-1"
     >
-      <Label className="text-sm font-medium text-foreground">{label}</Label>
+      <Label className="text-body">{label}</Label>
       <Input autoComplete={autoComplete} />
       {description ? (
-        <Description className="text-xs text-muted">{description}</Description>
+        <Description className="text-caption">{description}</Description>
       ) : null}
     </TextField>
   )

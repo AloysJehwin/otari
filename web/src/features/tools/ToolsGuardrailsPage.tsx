@@ -160,11 +160,11 @@ function FieldLabel({
 }) {
   return (
     <div className="min-w-0 sm:col-start-1">
-      <code className="text-sm font-medium text-foreground">{field.key}</code>
+      <code className="font-mono text-body">{field.key}</code>
       {field.description ? (
         <p className="mt-1 text-sm text-muted">{field.description}</p>
       ) : null}
-      {help ? <p className="mt-1 text-xs text-muted">{help}</p> : null}
+      {help ? <p className="mt-1 text-caption">{help}</p> : null}
     </div>
   )
 }
@@ -425,10 +425,8 @@ function ToolPriceRow({
   return (
     <div className={ROW_CLASS}>
       <div className="flex flex-col gap-0.5">
-        <span className="text-sm font-medium text-foreground">
-          Price per call
-        </span>
-        <span className="text-xs text-muted">
+        <span className="text-body">Price per call</span>
+        <span className="text-caption">
           {configured === null ? (
             <>
               Not priced. Calls are recorded but billed nothing, and with{" "}
@@ -445,7 +443,7 @@ function ToolPriceRow({
         </span>
       </div>
       <div className="flex items-center gap-1.5 sm:col-start-2 sm:justify-self-end">
-        <span className="text-xs text-muted">USD</span>
+        <span className="text-caption">USD</span>
         <input
           type="number"
           min="0"
@@ -537,7 +535,7 @@ function HowToCallCard({ tool }: { tool: ManagedTool }) {
   return (
     <div className="flex flex-col gap-3 py-4">
       <div className="flex flex-wrap items-center gap-2">
-        <code className="text-sm font-medium text-foreground">{tool.id}</code>
+        <code className="font-mono text-body">{tool.id}</code>
         {tool.available ? null : (
           <span className="rounded-full border border-warning bg-warning-subtle px-2 py-0.5 text-xs font-medium text-warning">
             No backend configured

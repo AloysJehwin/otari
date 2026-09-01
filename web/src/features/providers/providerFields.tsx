@@ -75,9 +75,7 @@ export function ClientArgsField({
       isInvalid={error !== null}
       className="flex max-w-md flex-col gap-1"
     >
-      <Label className="text-sm font-medium text-foreground">
-        Client options (JSON)
-      </Label>
+      <Label className="text-body">Client options (JSON)</Label>
       <TextArea
         rows={3}
         placeholder={'{"timeout": 1800}'}
@@ -85,7 +83,7 @@ export function ClientArgsField({
         className="font-mono text-xs"
       />
       <Description
-        className={error ? "text-xs text-danger" : "text-xs text-muted"}
+        className={error ? "text-caption text-danger" : "text-caption"}
       >
         {error ??
           // Unlike the API key, these are stored and returned unencrypted, so say
@@ -174,7 +172,7 @@ export function ProviderComboBox({
       }}
       className="flex max-w-md flex-col gap-1"
     >
-      <Label className="text-sm font-medium text-foreground">{label}</Label>
+      <Label className="text-body">{label}</Label>
       <ComboBox.InputGroup>
         {/* Not a credential field: keep browser password managers from offering to fill it.
             Select the text on focus so typing replaces the current selection instead of
@@ -197,9 +195,7 @@ export function ProviderComboBox({
           )}
         </ListBox>
       </ComboBox.Popover>
-      {description ? (
-        <span className="text-xs text-muted">{description}</span>
-      ) : null}
+      {description ? <span className="text-caption">{description}</span> : null}
     </ComboBox.Root>
   )
 }

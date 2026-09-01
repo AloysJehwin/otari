@@ -93,12 +93,10 @@ export function SpendCeilingsCard({
       isRowHeader: true,
       cell: (row) => (
         <div className="flex flex-col gap-0.5">
-          <span className="text-sm text-foreground">
+          <span className="text-body">
             {scopeLabel(row, { organizationName, workspaces: workspaceRows })}
           </span>
-          {row.name ? (
-            <span className="text-xs text-muted">{row.name}</span>
-          ) : null}
+          {row.name ? <span className="text-caption">{row.name}</span> : null}
         </div>
       ),
     },
@@ -138,7 +136,7 @@ export function SpendCeilingsCard({
         <div className="flex flex-col gap-0.5">
           <span>{periodLabel(row)}</span>
           {row.period_end ? (
-            <span className="text-xs text-muted">
+            <span className="text-caption">
               Next on {formatDate(row.period_end)}
             </span>
           ) : null}

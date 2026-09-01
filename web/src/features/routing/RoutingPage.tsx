@@ -304,8 +304,8 @@ function ScopePicker({
       onClick={() => onChange(value ? "" : null)}
       className={
         scoped === value
-          ? "rounded-md bg-surface px-3 py-1.5 text-sm font-medium text-foreground shadow-sm"
-          : "rounded-md px-3 py-1.5 text-sm text-muted hover:text-foreground"
+          ? "rounded-md bg-surface px-3 py-1.5 text-body shadow-sm"
+          : "rounded-md px-3 py-1.5 text-body text-muted hover:text-foreground"
       }
     >
       {label}
@@ -315,8 +315,8 @@ function ScopePicker({
   return (
     <div className="flex flex-col gap-3">
       <div>
-        <span className="text-sm font-medium text-foreground">Applies to</span>
-        <p className="text-xs text-muted">
+        <span className="text-body">Applies to</span>
+        <p className="text-caption">
           A global policy resolves for every caller. A user-scoped one resolves
           only for that user, and takes precedence over a global policy of the
           same name.
@@ -363,7 +363,7 @@ function ModeToggle({
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-sm font-medium text-foreground">{label}</span>
+      <span className="text-body">{label}</span>
       <div className="flex w-fit items-center gap-1 rounded-lg bg-surface-alt p-1">
         {MODE_VALUES.map((mode) => (
           <button
@@ -373,17 +373,15 @@ function ModeToggle({
             onClick={() => onChange(mode)}
             className={
               value === mode
-                ? "rounded-md bg-surface px-3 py-1 text-sm font-medium text-foreground shadow-sm"
-                : "rounded-md px-3 py-1 text-sm text-muted hover:text-foreground"
+                ? "rounded-md bg-surface px-3 py-1 text-body shadow-sm"
+                : "rounded-md px-3 py-1 text-body text-muted hover:text-foreground"
             }
           >
             {mode}
           </button>
         ))}
       </div>
-      {hint === undefined ? null : (
-        <span className="text-xs text-muted">{hint}</span>
-      )}
+      {hint === undefined ? null : <span className="text-caption">{hint}</span>}
     </div>
   )
 }
@@ -644,11 +642,9 @@ function PolicyForm({
           <div className="grid gap-4 sm:grid-cols-2">
             {editingAlias ? (
               <div className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-foreground">
-                  Alias name
-                </span>
+                <span className="text-body">Alias name</span>
                 <code className="text-sm text-muted">{previousName}</code>
-                <span className="text-xs text-muted">
+                <span className="text-caption">
                   An alias name is its key and cannot be changed here. Delete
                   and recreate to change it.
                 </span>
@@ -685,10 +681,8 @@ function PolicyForm({
             )}
             {routed ? (
               <div className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-foreground">
-                  Serves
-                </span>
-                <span className="text-sm text-foreground">
+                <span className="text-body">Serves</span>
+                <span className="text-body">
                   {effectiveTarget.trim() === "" ? (
                     <span className="text-muted">
                       whichever model you mark below
@@ -697,7 +691,7 @@ function PolicyForm({
                     <code>{effectiveTarget}</code>
                   )}
                 </span>
-                <span className="text-xs text-muted">
+                <span className="text-caption">
                   {weighted
                     ? "The split picks per request, so this policy has no single target. The model marked below is what serves a caller who opts out."
                     : "A router picks per request, so this policy has no single target. The model marked below is what serves when the router does not choose."}
@@ -715,7 +709,7 @@ function PolicyForm({
           </div>
 
           {editing ? (
-            <p className="text-xs text-muted">
+            <p className="text-caption">
               Who this applies to is the other half of the key. It cannot be
               changed here: delete and recreate to move it between scopes.
             </p>
@@ -727,10 +721,10 @@ function PolicyForm({
           {conditions.length > 0 ? (
             <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
               <div>
-                <span className="text-sm font-medium text-foreground">
+                <span className="text-body">
                   Instead, when the budget fills up
                 </span>
-                <p className="text-xs text-muted">
+                <p className="text-caption">
                   Checked before the model above. A threshold must be under 100:
                   the budget gate refuses a request before selection once the
                   cap is reached, so a rule at 100 could never fire.
@@ -791,12 +785,12 @@ function PolicyForm({
           {candidates.length > 0 ? (
             <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
               <div>
-                <span className="text-sm font-medium text-foreground">
+                <span className="text-body">
                   {weighted
                     ? "Split traffic between"
                     : "The router chooses between"}
                 </span>
-                <p className="text-xs text-muted">
+                <p className="text-caption">
                   {weighted
                     ? "Each request goes to one of these, drawn in proportion to its share. Shares are relative, so 70 and 30 mean the same as 7 and 3. No pricing needed."
                     : "For each request, the cheapest of these that past scoring says is good enough. Every model here needs pricing, because the router weighs quality against cost."}
@@ -869,7 +863,7 @@ function PolicyForm({
                   </Button>
                 </div>
               ))}
-              <p className="text-xs text-muted">
+              <p className="text-caption">
                 {weighted ? (
                   <>
                     The marked model serves a caller who sends{" "}
@@ -933,7 +927,7 @@ function PolicyForm({
                   + Another model
                 </button>
                 {atCandidateCap ? (
-                  <span className="text-xs text-muted">
+                  <span className="text-caption">
                     A policy dispatches at most {MAX_CANDIDATES} models,
                     counting the fallback chain. Remove a fallback to add
                     another.
@@ -947,10 +941,8 @@ function PolicyForm({
           {chain.length > 0 ? (
             <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
               <div>
-                <span className="text-sm font-medium text-foreground">
-                  If that fails, try
-                </span>
-                <p className="text-xs text-muted">
+                <span className="text-body">If that fails, try</span>
+                <p className="text-caption">
                   Tried in order after a retryable failure. Not tried once
                   tokens have started streaming, or after a 400/401/403, which
                   every provider would reject the same way.
@@ -994,7 +986,7 @@ function PolicyForm({
                   + Another fallback
                 </button>
                 {atCandidateCap ? (
-                  <span className="text-xs text-muted">
+                  <span className="text-caption">
                     A policy dispatches at most {MAX_CANDIDATES} models in
                     total.
                   </span>
@@ -1007,10 +999,8 @@ function PolicyForm({
           {guardrails.length > 0 ? (
             <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
               <div>
-                <span className="text-sm font-medium text-foreground">
-                  Always check
-                </span>
-                <p className="text-xs text-muted">
+                <span className="text-body">Always check</span>
+                <p className="text-caption">
                   Runs on every request through this policy. Callers can add
                   their own guardrails but cannot weaken these.
                 </p>
@@ -1175,10 +1165,7 @@ function PolicyForm({
                   + Add guardrails
                 </button>
                 {guardrails_.configured ? null : (
-                  <span
-                    id="guardrails-unavailable"
-                    className="text-xs text-muted"
-                  >
+                  <span id="guardrails-unavailable" className="text-caption">
                     No guardrails service is configured, so there would be
                     nothing to call.{" "}
                     <Link to="/tools" className="text-accent hover:underline">
@@ -1202,11 +1189,11 @@ function PolicyForm({
             <Button variant="ghost" onPress={onClose}>
               Cancel
             </Button>
-            <span className="text-xs text-muted">
+            <span className="text-caption">
               In effect for new requests within 30s.
             </span>
             {routed && !weighted ? (
-              <span className="text-xs text-muted">
+              <span className="text-caption">
                 A new router serves the model above until it has scored
                 examples. Recording them is an API job for now (
                 <code>POST /v1/routing/preferences/rank</code>); open{" "}
@@ -1214,7 +1201,7 @@ function PolicyForm({
               </span>
             ) : null}
             {weighted ? (
-              <span className="text-xs text-muted">
+              <span className="text-caption">
                 Each request is drawn independently, so the shares hold over
                 traffic rather than over any ten requests, and they behave the
                 same behind any number of replicas.
@@ -1339,9 +1326,7 @@ export function RoutingPage() {
         header: "Serves",
         cell: (policy) => (
           <div className="flex items-center gap-2">
-            <span className="text-sm text-foreground">
-              {servesSummary(policy)}
-            </span>
+            <span className="text-body">{servesSummary(policy)}</span>
             {candidatesOf(policy.spec).length > 0 ? (
               <Chip size="sm" color="accent">
                 {routerLabelOf(policy.spec)}
@@ -1362,7 +1347,7 @@ export function RoutingPage() {
           if (guardrails.length === 0)
             return <span className="text-muted">–</span>
           return (
-            <span className="text-sm text-foreground">
+            <span className="text-body">
               {guardrails
                 .map((guardrail) => `${guardrail.profile} (${guardrail.mode})`)
                 .join(", ")}
@@ -1433,7 +1418,7 @@ export function RoutingPage() {
         return policy.source === "config" ? (
           <div className="flex items-center justify-end gap-2">
             {readiness}
-            <span className="text-xs text-muted">set in config.yml</span>
+            <span className="text-caption">set in config.yml</span>
           </div>
         ) : (
           <div className="flex items-center justify-end gap-2">
@@ -1454,7 +1439,7 @@ export function RoutingPage() {
                 Edit
               </Button>
             ) : (
-              <span className="text-xs text-muted">
+              <span className="text-caption">
                 Uses options this form cannot show yet. Edit it through the API
                 so nothing is lost.
               </span>

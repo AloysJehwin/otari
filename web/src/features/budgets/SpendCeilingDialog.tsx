@@ -152,16 +152,14 @@ export function SpendCeilingDialog({
                 <ErrorBanner error={error} />
                 {editing ? (
                   <div className="flex flex-col gap-1">
-                    <span className="text-sm font-medium text-foreground">
-                      Capping
-                    </span>
+                    <span className="text-body">Capping</span>
                     <span className="text-sm text-muted">
                       {scopeLabel(editing, { organizationName, workspaces })}
                       {editing.provider_key_id
                         ? `, on ${editing.provider_key_id}`
                         : ", on every provider"}
                     </span>
-                    <span className="text-xs text-muted">
+                    <span className="text-caption">
                       What a ceiling caps cannot be changed. Delete it and add
                       one for the other identity.
                     </span>

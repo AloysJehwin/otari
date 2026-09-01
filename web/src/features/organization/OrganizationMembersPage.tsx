@@ -231,10 +231,8 @@ function AddMemberForm({ onClose }: { onClose: () => void }) {
         </div>
         {workspaces.data && workspaces.data.length > 0 ? (
           <fieldset className="flex flex-col gap-2">
-            <legend className="text-sm font-medium text-foreground">
-              Workspaces (optional)
-            </legend>
-            <span className="text-xs text-muted">
+            <legend className="text-body">Workspaces (optional)</legend>
+            <span className="text-caption">
               Joined as a member of each, in the same request, so someone never
               exists without the access they were added for. Workspace roles are
               changed afterwards on the Workspaces page.
@@ -393,10 +391,8 @@ function InviteMemberForm({ onClose }: { onClose: () => void }) {
         </div>
         {workspaces.data && workspaces.data.length > 0 ? (
           <fieldset className="flex flex-col gap-2">
-            <legend className="text-sm font-medium text-foreground">
-              Workspaces (optional)
-            </legend>
-            <span className="text-xs text-muted">
+            <legend className="text-body">Workspaces (optional)</legend>
+            <span className="text-caption">
               Granted once the invitation is accepted, not before.
             </span>
             {workspaces.data.map((workspace) => (
@@ -651,20 +647,18 @@ function MemberEditor({
             }}
           />
         ) : (
-          <span className="text-xs text-muted">
+          <span className="text-caption">
             No spend row yet, so there is no model access to set. One is minted
             when a key is issued to this member.
           </span>
         )}
 
         <div className="flex flex-col gap-2">
-          <span className="text-sm font-medium text-foreground">
-            Workspace access
-          </span>
+          <span className="text-body">Workspace access</span>
           <div className="max-w-3xl overflow-x-auto">
             <table className="w-full min-w-lg text-sm">
               <thead>
-                <tr className="text-left text-xs text-muted">
+                <tr className="text-left text-caption">
                   <th scope="col" className="py-1 font-medium">
                     Workspace
                   </th>
@@ -727,7 +721,7 @@ function MemberEditor({
             </table>
           </div>
           {operates ? (
-            <span className="max-w-2xl text-xs text-muted">
+            <span className="max-w-2xl text-caption">
               Each workspace holds its own allowance, so someone in two
               workspaces has two. The amount and the reset period belong to the
               budget, so editing one moves everyone held to it; pick a different
@@ -850,11 +844,9 @@ export function OrganizationMembersPage() {
         isRowHeader: true,
         cell: (member) => (
           <div className="flex flex-col gap-0.5">
-            <span className="text-sm text-foreground">
-              {memberLabel(member)}
-            </span>
+            <span className="text-body">{memberLabel(member)}</span>
             {member.email && member.full_name ? (
-              <span className="text-xs text-muted">{member.email}</span>
+              <span className="text-caption">{member.email}</span>
             ) : null}
           </div>
         ),
@@ -933,17 +925,17 @@ export function OrganizationMembersPage() {
             ? userByAttribution.get(member.attribution_user_id)
             : undefined
           if (!spendRow) {
-            return <span className="text-xs text-muted">&mdash;</span>
+            return <span className="text-caption">&mdash;</span>
           }
           const { text, tone } = accessLabel(spendRow.allowed_models)
           return (
             <span
               className={
                 tone === "danger"
-                  ? "text-xs text-danger"
+                  ? "text-caption text-danger"
                   : tone === "muted"
-                    ? "text-xs text-muted"
-                    : "text-xs text-foreground"
+                    ? "text-caption"
+                    : "text-caption text-foreground"
               }
             >
               {text}
@@ -962,7 +954,7 @@ export function OrganizationMembersPage() {
             ? (placementsByUser.get(member.user_id) ?? [])
             : []
           if (placements.length === 0) {
-            return <span className="text-xs text-muted">None</span>
+            return <span className="text-caption">None</span>
           }
           return (
             <div className="flex flex-wrap gap-1">
@@ -987,15 +979,13 @@ export function OrganizationMembersPage() {
             ? userByAttribution.get(member.attribution_user_id)
             : undefined
           if (!spendRow) {
-            return <span className="text-xs text-muted">&mdash;</span>
+            return <span className="text-caption">&mdash;</span>
           }
           return (
             <div className="flex flex-col items-end gap-0.5">
-              <span className="text-sm text-foreground">
-                {usd.format(spendRow.spend)}
-              </span>
+              <span className="text-body">{usd.format(spendRow.spend)}</span>
               {spendRow.reserved > 0 ? (
-                <span className="text-xs text-muted">
+                <span className="text-caption">
                   {usd.format(spendRow.reserved)} in flight
                 </span>
               ) : null}

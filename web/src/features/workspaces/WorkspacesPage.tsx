@@ -125,16 +125,14 @@ function NarrowedDefaults({
 
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-sm font-medium text-foreground">
-        Per-provider defaults
-      </span>
+      <span className="text-body">Per-provider defaults</span>
       <ErrorBanner
         error={
           createDefault.error ?? updateDefault.error ?? deleteDefault.error
         }
       />
       {narrowed.length === 0 ? (
-        <span className="text-xs text-muted">
+        <span className="text-caption">
           None. The budget above applies on every provider.
         </span>
       ) : (
@@ -569,7 +567,7 @@ function EditWorkspaceForm({
               value={selectedBudget}
               onChange={setBudgetId}
             />
-            <span className="max-w-md text-xs text-muted">
+            <span className="max-w-md text-caption">
               Every member of this workspace is held to this budget, each with
               their own allowance. Changing it applies to members who join
               afterwards; members already here keep the budget they were given,
@@ -682,13 +680,9 @@ export function WorkspacesPage() {
         isRowHeader: true,
         cell: (workspace) => (
           <div className="flex flex-col gap-0.5">
-            <span className="text-sm font-medium text-foreground">
-              {workspace.name}
-            </span>
+            <span className="text-body">{workspace.name}</span>
             {workspace.description ? (
-              <span className="text-xs text-muted">
-                {workspace.description}
-              </span>
+              <span className="text-caption">{workspace.description}</span>
             ) : null}
           </div>
         ),
@@ -708,7 +702,7 @@ export function WorkspacesPage() {
           return name ? (
             <Chip size="sm">{name}</Chip>
           ) : (
-            <span className="text-xs text-muted">None</span>
+            <span className="text-caption">None</span>
           )
         },
       },

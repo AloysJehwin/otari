@@ -88,7 +88,7 @@ function StoredToolRow({
   return (
     <div className="flex flex-col gap-2 py-4">
       <div className="flex flex-wrap items-center gap-2">
-        <code className="text-sm font-medium text-foreground">{tool.name}</code>
+        <code className="font-mono text-body">{tool.name}</code>
         <Badge tone="muted">{tool.provider}</Badge>
         {tool.last4 ? (
           <Badge tone="muted">{`key ····${tool.last4}`}</Badge>
@@ -154,14 +154,14 @@ function StoredToolRow({
 function ConfigToolRow({ tool }: { tool: ConfigSearchTool }) {
   return (
     <div className="flex flex-wrap items-center gap-2 py-4">
-      <code className="text-sm font-medium text-foreground">{tool.name}</code>
+      <code className="font-mono text-body">{tool.name}</code>
       <Badge tone="muted">{tool.provider}</Badge>
       <Badge tone="muted">Config file</Badge>
       {tool.has_api_key ? <Badge tone="muted">key set</Badge> : null}
       {tool.shadowed ? (
         <Badge tone="warn">Overridden by the stored tool of this name</Badge>
       ) : null}
-      <span className="text-xs text-muted">
+      <span className="text-caption">
         {tool.api_base ?? "no api_base declared"} · editable only where the
         config file is defined
       </span>
@@ -220,9 +220,7 @@ function AddToolForm({
 
   return (
     <div className="flex flex-col gap-2 py-4">
-      <span className="text-sm font-medium text-foreground">
-        Add a search tool
-      </span>
+      <span className="text-body">Add a search tool</span>
       <div className="flex flex-wrap items-end gap-2">
         <input
           type="text"
@@ -280,7 +278,7 @@ function AddToolForm({
           {create.isPending ? "Adding…" : "Add"}
         </Button>
       </div>
-      <span className="text-xs text-muted">
+      <span className="text-caption">
         Callers name the tool in{" "}
         <code className="font-mono">search_tool_name</code>, or in the{" "}
         <code className="font-mono">POST /v1/search/{"{tool}"}</code> path.

@@ -39,12 +39,12 @@ export function Field({
     >
       {/* No manual "*": HeroUI marks a required field's label through CSS
           ([data-required=true] > .label::after), so adding one renders two. */}
-      <Label className="text-sm font-medium text-foreground">{label}</Label>
+      <Label className="text-body">{label}</Label>
       <Input type={type} placeholder={placeholder} autoFocus={autoFocus} />
       {description ? (
         // HeroUI's Description renders through the TextField's "description" slot,
         // so it is wired to the input via aria-describedby (a raw span is not).
-        <Description className="text-xs text-muted">{description}</Description>
+        <Description className="text-caption">{description}</Description>
       ) : null}
       {/* Same reasoning one step further: `FieldError` renders through the
           field's error slot, so the message is announced *on* the input rather
