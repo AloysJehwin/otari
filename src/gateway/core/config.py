@@ -33,6 +33,9 @@ PROVIDER_TYPE_ALIASES = {
     "anthropic_compatible": "anthropic",
 }
 X_API_KEY_HEADER = "x-api-key"  # Anthropic-native clients send credentials here (no Bearer prefix).
+# How a deployment's own data-plane gateway identifies itself to the search
+# backend it calls. Not an API key: no key or dashboard session opens that route.
+GATEWAY_TOKEN_HEADER = "X-Gateway-Token"
 
 # The OAuth providers a deployment may configure dashboard sign-in with, in the
 # spelling that appears in a config key (``oauth_google_client_id``), on the
@@ -117,6 +120,12 @@ MAIL_TRANSPORT_SETTINGS = ("auto", "smtp", "console", "none")
 # reject an unknown ``search_tools.<name>.provider`` without the config layer
 # importing the service layer.
 SEARCH_PROVIDERS = ("exa", "searxng")
+# Licensed search APIs the in-loop ``otari_web_search`` backend can call
+# directly, as an alternative to pointing ``web_search_url`` at a SearXNG-shaped
+# service. Declared here for the same reason as SEARCH_PROVIDERS above: startup
+# validation rejects an unknown ``web_search_provider`` without the config layer
+# importing `gateway.services.web_search_providers`, which imports this name.
+WEB_SEARCH_PROVIDERS = ("tavily", "brave")
 # Providers that authenticate with an API key, so a tool declaring one of them
 # without a key is a misconfiguration. A SearXNG-shaped backend is normally
 # keyless (the bundled container, a self-hosted adapter), which is why the key
@@ -1037,6 +1046,31 @@ class GatewayConfig(BaseSettings):
             "docker-compose sets this to the bundled SearXNG container."
         ),
     )
+    web_search_provider: str | None = Field(
+        default=None,
+        description=(
+            "Licensed search API the web-search backend calls directly ('tavily' or 'brave'), "
+            "instead of the SearXNG-shaped service web_search_url names. Requires "
+            "web_search_provider_api_key. When both are set, web_search_url is not needed."
+        ),
+    )
+    web_search_provider_api_key: str | None = Field(
+        default=None,
+        description=(
+            "Credential for web_search_provider. Held by whichever process runs the search: on a "
+            "hosted deployment that is the control plane, never the data plane."
+        ),
+    )
+    web_search_backend_token: str | None = Field(
+        default=None,
+        description=(
+            "Shared secret GET /v1/web-search/search requires as X-Gateway-Token. Set on a hosted "
+            "control plane so its data-plane gateway can search through it; without it the route "
+            "is not served, because it spends the deployment's own search quota. The gateway "
+            "presents its platform token (OTARI_AI_TOKEN) and nothing else, so this must be that "
+            "token, and rotating it stops web search for that data plane until both are updated."
+        ),
+    )
     web_search_purpose_hint: str | None = Field(
         default=None,
         description=(
@@ -1676,6 +1710,31 @@ class GatewayConfig(BaseSettings):
             return providers
         return {instance: ({} if entry is None else entry) for instance, entry in providers.items()}
 
+    def web_search_provider_configured(self) -> bool:
+        """Whether a licensed search API is configured for the in-loop tool.
+
+        Both halves, because either alone runs no search: a provider with no key
+        cannot authenticate, and a key with no provider names nothing to send it
+        to. When this is true the deployment can search without
+        ``web_search_url``, which is what lets it drop the adapter container that
+        used to sit between the two.
+        """
+        return bool(self.web_search_provider) and bool(self.web_search_provider_api_key)
+
+    def web_search_configured(self) -> bool:
+        """Whether this deployment can run ``otari_web_search`` at all.
+
+        The one question the request path, the per-workspace page and the tool
+        catalog all ask, so they cannot disagree about whether a workspace's
+        stored configuration governs anything.
+
+        ``web_search_url`` is read through ``otari_env`` as well as off the
+        field, matching every call site this replaces: the field is env-bridged,
+        so the two agree, and dropping the read here would quietly narrow what
+        counts as configured.
+        """
+        return bool(self.web_search_url or otari_env("WEB_SEARCH_URL")) or self.web_search_provider_configured()
+
     def search_tool_providers(self) -> set[str]:
         """The distinct providers backing the configured search tools.
 
@@ -1739,6 +1798,46 @@ class GatewayConfig(BaseSettings):
                 images.append(image)
         return tuple(images)
 
+    def warn_about_half_configured_web_search(self) -> None:
+        """Say so when a search provider was named but cannot be used.
+
+        Also when ``web_search_backend_token`` was set without one: the token
+        exists to gate the backend route, and that route is not mounted without
+        a provider to serve it, so the setting silently does nothing.
+
+        A warning rather than a refusal, for the reason
+        :meth:`warn_about_half_configured_oauth` gives: web search is one
+        optional tool, and refusing to boot would take a gateway offline over
+        it. A deployment naming a provider it has no key for is also the
+        ordinary state of one that has not filled the key in yet, and a compose
+        file can default the name without being able to default the secret.
+
+        But the failure is otherwise completely silent. Neither half is read
+        without the other, so ``web_search_configured`` falls through to
+        ``web_search_url``, and a deployment that named a provider precisely so
+        it would need no URL answers every ``otari_web_search`` request with the
+        not-configured 400 and says nowhere why.
+        """
+        if self.web_search_backend_token and not self.web_search_provider_configured():
+            logger.warning(
+                "web_search_backend_token is set but no web-search provider is configured, so "
+                "GET /v1/web-search/search is not served. Set web_search_provider and "
+                "web_search_provider_api_key on the process that holds the search key."
+            )
+        if bool(self.web_search_provider) == bool(self.web_search_provider_api_key):
+            return
+        missing, present = (
+            ("web_search_provider_api_key", f"web_search_provider is {self.web_search_provider!r}")
+            if self.web_search_provider
+            else ("web_search_provider", "web_search_provider_api_key is set")
+        )
+        logger.warning(
+            "Web search through a licensed provider is configured but will not run: %s, and %s is not set. "
+            "Set both, or neither and point web_search_url at a SearXNG-shaped backend instead.",
+            present,
+            missing,
+        )
+
     def validate_search_tools(self) -> None:
         """Validate the ``search_tools`` map at startup so misconfig fails fast.
 
@@ -1752,6 +1851,19 @@ class GatewayConfig(BaseSettings):
             provider = str(entry.get("provider") or name)
             if provider in SEARCH_PROVIDERS_REQUIRING_API_BASE and not entry.get("api_base"):
                 validate_search_tool_transport(name, self.web_search_url, entry.get("api_key"))
+
+    @field_validator("web_search_provider")
+    @classmethod
+    def _validate_web_search_provider(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if not normalized:
+            return None
+        if normalized not in WEB_SEARCH_PROVIDERS:
+            msg = f"web_search_provider must be one of {sorted(WEB_SEARCH_PROVIDERS)}, got '{value}'"
+            raise ValueError(msg)
+        return normalized
 
     @field_validator("stream_missing_usage_policy")
     @classmethod
@@ -2203,6 +2315,7 @@ def load_config(config_path: str | None = None) -> GatewayConfig:
     config.validate_mail_transport()
     config.validate_webauthn_relying_party()
     config.warn_about_half_configured_oauth()
+    config.warn_about_half_configured_web_search()
     _bridge_yaml_fields_to_env(config, yaml_bridged_fields)
     return config
 

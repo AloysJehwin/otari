@@ -107,7 +107,11 @@ defaults apply. In hybrid mode, the control plane resolves the policy instead.
 
 ## Web search
 
-Start the bundled SearXNG backend:
+Otari reaches a licensed search API directly. Set `web_search_provider` to
+`tavily` or `brave` and `web_search_provider_api_key` to that provider's key;
+the key stays in the gateway process and never reaches a caller.
+
+For evaluation, the bundled SearXNG backend needs no key:
 
 ```bash
 docker compose --profile web-search up
@@ -123,9 +127,38 @@ Request it with:
 }
 ```
 
-The bundled service is useful for evaluation, but public SearXNG engines may
-rate-limit automated traffic. The repository includes Brave and Tavily adapters
-under `scripts/`, or `web_search_url` can point at another compatible backend.
+Public SearXNG engines may rate-limit automated traffic, so prefer a licensed
+provider for production. `web_search_url` points at any other backend exposing
+a SearXNG-compatible `/search?format=json` endpoint, and a configured provider
+wins over it.
+
+Where the search key must not sit on the machine serving traffic, a deployment
+can also serve the search itself at `GET /v1/web-search/search`. This is the
+hosted shape: the control plane holds the key and runs the query, and its
+**hybrid** data plane calls it by setting `web_search_url` to
+`{control-plane}/v1/web-search`. That address has to be under the gateway's
+`PLATFORM_BASE_URL`, because a gateway forwards its platform token only to its
+own control plane, and that token is what the route recognizes.
+
+Set `web_search_backend_token` on the serving process to the token its own
+gateway presents, which is that gateway's `OTARI_AI_TOKEN`. The two are one
+secret, so rotating the platform token stops web search for that data plane
+until both sides are updated. Without it the route is not mounted at all, since
+it spends the deployment's search quota and a control plane is reachable from
+the internet. A gateway someone else self-hosts presents a credential of its own and
+is refused, deliberately: that is the same boundary that keeps a deployment's
+provider keys off a foreign process. Such a gateway configures its own
+`web_search_provider` or `web_search_url` instead, and the per-workspace policy
+below still governs it.
+
+Migrating from the Brave or Tavily adapter container: on the process that holds
+the key, set `web_search_provider` and `web_search_provider_api_key` and unset
+`web_search_url`. A hybrid data plane holds no key, so it keeps a
+`web_search_url` and points it at its control plane's `/v1/web-search` instead.
+The adapters, and the `web-search-brave` and `web-search-tavily` compose
+profiles that ran them, were removed. A `web_search_url` still pointing at one
+keeps the deployment looking configured while every search fails, so change both
+together.
 
 A runnable example lives under `demo/web-search/`.
 
