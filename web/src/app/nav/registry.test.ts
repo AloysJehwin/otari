@@ -1,6 +1,7 @@
 import { FiBox } from "react-icons/fi"
 import { describe, expect, it } from "vitest"
 import { BASE_CAPABILITIES } from "@/shared/hooks/useEntitlements"
+import { HOSTED_SURFACES } from "@/tests/fixtures"
 import { OVERLAY_NAV_LABEL_OVERRIDES } from "./overlayLabelOverrides"
 import { OVERLAY_NAV_ITEMS } from "./overlayNavItems"
 import {
@@ -42,6 +43,7 @@ describe("nav registry", () => {
     // The second rail, reached from the sidebar footer. Its own registry, so
     // its order is asserted separately from the workspace one's.
     expect(ORG_NAV_SECTIONS.map((section) => section.id)).toEqual([
+      "org-observe",
       "org-people",
       "org-money",
       "org-gateway",
@@ -65,6 +67,7 @@ describe("nav registry", () => {
       "API keys",
       "Providers",
       "Members",
+      "Usage",
       "Workspaces",
       "Members & roles",
       "Providers",
@@ -240,16 +243,26 @@ describe("nav registry", () => {
   })
 
   it("gates every declared-but-unserved destination on a surface", () => {
-    // The design's organization rail draws two rows this gateway has no endpoint
-    // for and still declares. Each is declared so the rail matches on a
-    // deployment that does serve them, and gated on a surface
-    // `STANDALONE_SURFACES` does not report so the row is absent here. Pinned as
-    // the whole set, because the failure mode is silent in both directions: a
-    // missing gate ships a link to a page that cannot work, and a gate on a
-    // surface the bootstrap *does* report hides a page that can.
+    // The organization rail draws three rows this gateway does not offer and
+    // still declares. Each is declared so the rail matches on a deployment that
+    // does serve them, and gated on a surface `STANDALONE_SURFACES` does not
+    // report so the row is absent here. Pinned as the whole set, because the
+    // failure mode is silent in both directions: a missing gate ships a link to
+    // a page that cannot work, and a gate on a surface the bootstrap *does*
+    // report hides a page that can. A typo in a surface name is silent the same
+    // way, since `NavItemBase.surface` is a bare string.
+    //
+    // Only the guardrail ceiling is an actual absence: no edition here serves
+    // that API. The other two are editorial, with the API mounted either way,
+    // and they differ in what the choice is about. Provider keys is about which
+    // credential table the deployment should be showing at all. Usage is about
+    // a question that only exists once tenants do (otari-ai#1963): standalone's
+    // organization is the deployment, so `/usage` already answers it whole.
+    // One mechanism, three reasons, so the set is worth reading as a list.
     const unserved = new Map([
       ["/organization/provider-keys", "organization_providers"],
       ["/organization/guardrails", "organization_guardrails"],
+      ["/organization/usage", "organization_usage"],
     ])
     for (const [to, surface] of unserved) {
       expect(navItemForPath(to)?.surface).toBe(surface)
@@ -274,6 +287,20 @@ describe("nav registry", () => {
     for (const surface of unserved.values()) {
       expect(standalone).not.toContain(surface)
     }
+    // The three are not one category past that point, so the other direction is
+    // asserted per row. Two are served by a hosted deployment and withheld from
+    // standalone, which is what makes their rows appear there; the guardrail
+    // ceiling has no endpoint on *either* edition and is declared for a
+    // deployment that does serve it, so it is absent from both lists.
+    //
+    // Read from the fixture the hosted-shell tests render with, which is what
+    // keeps that fixture honest: a surface added to the backend's
+    // HOSTED_SURFACES and not to the fixture leaves those tests quietly
+    // rendering a rail the product does not have, and fails here instead.
+    for (const surface of ["organization_providers", "organization_usage"]) {
+      expect(HOSTED_SURFACES).toContain(surface)
+    }
+    expect(HOSTED_SURFACES).not.toContain("organization_guardrails")
   })
 
   it("declares no destination an overlay owns", () => {
