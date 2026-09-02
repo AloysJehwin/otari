@@ -94,6 +94,24 @@ explicitly priced models. For a backend with no listing API, use the instance's
 Hosted mode keeps `GET /v1/models` for control-plane discovery. Hybrid mode
 does not serve the local catalog.
 
+### Who is shown which models
+
+An API key is shown the models its allow-list permits, so the catalog never
+advertises a model that would be refused at inference. A dashboard session is
+answered the same way, from its membership: a caller who operates the deployment
+sees the whole catalog, and anyone else sees every `providers:` instance, which
+is deployment-wide, plus the models their own organization's provider keys
+reach, narrowed by any workspace model restriction. A deployment whose providers
+all come from `config.yml` therefore shows every tenant the same catalog it
+always did.
+
+Aliases and stored routing policies are workspace-scoped rows, and the catalog
+reads them for a workspace rather than filtering them by target, so a name alone
+would cross a tenant boundary that the allow-list cannot see. A session is
+therefore shown that layer only where the workspace it comes from is one the
+caller may see, which on a single-tenant deployment is everyone in it. An API key
+is unaffected: it names its own workspace.
+
 ## Capabilities
 
 `model_capabilities` can correct image and PDF support when a compatible
