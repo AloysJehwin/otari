@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -22,6 +23,8 @@ SET_PRICE_PATH = "/v1/usage/set-price"
 COUNT_PATH = "/v1/usage/count"
 
 _TS = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+# "not given", so a caller can ask for a NULL ``source_event_id`` explicitly.
+_UNSET = object()
 
 
 def _ensure_user(db: Session, user_id: str) -> None:
@@ -51,6 +54,10 @@ def _make_log(
     cost: float | None = None,
     status: str = "success",
     timestamp: datetime = _TS,
+    # Both default to the shape the budget flag implies. A gateway row on an
+    # exclude_from_budget key is the one case where provenance disagrees with it.
+    endpoint: str | None = None,
+    source_event_id: str | None | Any = _UNSET,
 ) -> UsageLog:
     _ensure_user(db, user_id)
     log = UsageLog(
@@ -60,11 +67,13 @@ def _make_log(
         timestamp=timestamp,
         model=model,
         provider=provider,
-        endpoint="external" if not counts_toward_budget else "/v1/chat/completions",
+        endpoint=endpoint or ("external" if not counts_toward_budget else "/v1/chat/completions"),
         source=source,
         source_label=source_label,
         # Imported rows carry a unique source_event_id (idempotency); gateway rows leave it NULL.
-        source_event_id=log_id if not counts_toward_budget else None,
+        source_event_id=(log_id if not counts_toward_budget else None)
+        if source_event_id is _UNSET
+        else source_event_id,
         counts_toward_budget=counts_toward_budget,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
@@ -771,7 +780,16 @@ def test_count_and_delete_agree_on_budget_exempt_gateway_rows(
     or the dialog promises a row the delete then refuses to touch.
     """
     _make_log(db_session, log_id="imp-1", counts_toward_budget=False, source="claude_code")
-    _make_log(db_session, log_id="gw-exempt", counts_toward_budget=False, source=SERVED_HERE_SLUG)
+    # A request this gateway served on an exclude_from_budget key: gateway endpoint,
+    # no event id, and only the budget flag looking imported.
+    _make_log(
+        db_session,
+        log_id="gw-exempt",
+        counts_toward_budget=False,
+        source=SERVED_HERE_SLUG,
+        endpoint="/v1/chat/completions",
+        source_event_id=None,
+    )
     db_session.commit()
 
     counted = client.get(COUNT_PATH, params={"counts_toward_budget": "false"}, headers=master_key_header)
