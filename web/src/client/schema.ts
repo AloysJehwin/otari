@@ -14593,7 +14593,7 @@ export interface operations {
                 priced?: boolean | null;
                 /** @description Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically. */
                 tool?: ("any" | "web_search" | "code_execution") | null;
-                /** @description Filter by budget participation: true = only enforced gateway rows, false = only imported rows that never touch a budget */
+                /** @description Filter by budget participation, which is not the same question as provenance: true = only enforced gateway rows, false = every row that never touches a budget, meaning imported usage and also gateway traffic on a budget-exempt key */
                 counts_toward_budget?: boolean | null;
                 /** @description Filter to the rows of one or more request groups; repeatable (request_group_id=a&request_group_id=b). A routed request writes one row per attempt, all sharing a request_group_id, so this returns a request's whole plan: its absorbed attempts and the attempt that served it. Ignore ordering by timestamp and read attempt_position to reconstruct the plan. At most 1000 ids per call. */
                 request_group_id?: string[] | null;
@@ -14657,7 +14657,7 @@ export interface operations {
                 priced?: boolean | null;
                 /** @description Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically. */
                 tool?: ("any" | "web_search" | "code_execution") | null;
-                /** @description Filter by budget participation: true = only enforced gateway rows, false = only imported rows that never touch a budget */
+                /** @description Filter by budget participation, which is not the same question as provenance: true = only enforced gateway rows, false = every row that never touches a budget, meaning imported usage and also gateway traffic on a budget-exempt key */
                 counts_toward_budget?: boolean | null;
                 /** @description Filter to the rows of one or more request groups; repeatable (request_group_id=a&request_group_id=b). A routed request writes one row per attempt, all sharing a request_group_id, so this returns a request's whole plan: its absorbed attempts and the attempt that served it. Ignore ordering by timestamp and read attempt_position to reconstruct the plan. At most 1000 ids per call. */
                 request_group_id?: string[] | null;
@@ -14721,7 +14721,7 @@ export interface operations {
                 priced?: boolean | null;
                 /** @description Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically. */
                 tool?: ("any" | "web_search" | "code_execution") | null;
-                /** @description Filter by budget participation: true = only enforced gateway rows, false = only imported rows that never touch a budget */
+                /** @description Filter by budget participation, which is not the same question as provenance: true = only enforced gateway rows, false = every row that never touches a budget, meaning imported usage and also gateway traffic on a budget-exempt key */
                 counts_toward_budget?: boolean | null;
                 /** @description Only usage recorded in this workspace. */
                 workspace_id?: string | null;
@@ -14783,7 +14783,7 @@ export interface operations {
                 priced?: boolean | null;
                 /** @description Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically. */
                 tool?: ("any" | "web_search" | "code_execution") | null;
-                /** @description Filter by budget participation: true = only enforced gateway rows, false = only imported rows that never touch a budget */
+                /** @description Filter by budget participation, which is not the same question as provenance: true = only enforced gateway rows, false = every row that never touches a budget, meaning imported usage and also gateway traffic on a budget-exempt key */
                 counts_toward_budget?: boolean | null;
                 /** @description Only usage recorded in this workspace. */
                 workspace_id?: string | null;
@@ -16330,7 +16330,7 @@ export interface operations {
                 priced?: boolean | null;
                 /** @description Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically. */
                 tool?: ("any" | "web_search" | "code_execution") | null;
-                /** @description Filter by budget participation: true = only enforced gateway rows, false = only imported rows that never touch a budget */
+                /** @description Filter by budget participation, which is not the same question as provenance: true = only enforced gateway rows, false = every row that never touches a budget, meaning imported usage and also gateway traffic on a budget-exempt key */
                 counts_toward_budget?: boolean | null;
                 /** @description Filter to the rows of one or more request groups; repeatable (request_group_id=a&request_group_id=b). A routed request writes one row per attempt, all sharing a request_group_id, so this returns a request's whole plan: its absorbed attempts and the attempt that served it. Ignore ordering by timestamp and read attempt_position to reconstruct the plan. At most 1000 ids per call. */
                 request_group_id?: string[] | null;
@@ -16427,7 +16427,7 @@ export interface operations {
                 priced?: boolean | null;
                 /** @description Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically. */
                 tool?: ("any" | "web_search" | "code_execution") | null;
-                /** @description Filter by budget participation: true = only enforced gateway rows, false = only imported rows that never touch a budget */
+                /** @description Filter by budget participation, which is not the same question as provenance: true = only enforced gateway rows, false = every row that never touches a budget, meaning imported usage and also gateway traffic on a budget-exempt key */
                 counts_toward_budget?: boolean | null;
                 /** @description Filter to the rows of one or more request groups; repeatable (request_group_id=a&request_group_id=b). A routed request writes one row per attempt, all sharing a request_group_id, so this returns a request's whole plan: its absorbed attempts and the attempt that served it. Ignore ordering by timestamp and read attempt_position to reconstruct the plan. At most 1000 ids per call. */
                 request_group_id?: string[] | null;
@@ -16544,7 +16544,7 @@ export interface operations {
                 priced?: boolean | null;
                 /** @description Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically. */
                 tool?: ("any" | "web_search" | "code_execution") | null;
-                /** @description Filter by budget participation: true = only enforced gateway rows, false = only imported rows that never touch a budget */
+                /** @description Filter by budget participation, which is not the same question as provenance: true = only enforced gateway rows, false = every row that never touches a budget, meaning imported usage and also gateway traffic on a budget-exempt key */
                 counts_toward_budget?: boolean | null;
                 /** @description Only usage recorded in this workspace. */
                 workspace_id?: string | null;
@@ -16639,7 +16639,7 @@ export interface operations {
                 priced?: boolean | null;
                 /** @description Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically. */
                 tool?: ("any" | "web_search" | "code_execution") | null;
-                /** @description Filter by budget participation: true = only enforced gateway rows, false = only imported rows that never touch a budget */
+                /** @description Filter by budget participation, which is not the same question as provenance: true = only enforced gateway rows, false = every row that never touches a budget, meaning imported usage and also gateway traffic on a budget-exempt key */
                 counts_toward_budget?: boolean | null;
                 /** @description Only usage recorded in this workspace. */
                 workspace_id?: string | null;

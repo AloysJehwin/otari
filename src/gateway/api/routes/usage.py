@@ -330,8 +330,9 @@ _TOOL_DESC = (
     f"name ({', '.join(GATEWAY_TOOL_NAMES)}) matches that tool specifically."
 )
 _COUNTS_DESC = (
-    "Filter by budget participation: true = only enforced gateway rows, "
-    "false = only imported rows that never touch a budget"
+    "Filter by budget participation, which is not the same question as provenance: "
+    "true = only enforced gateway rows, false = every row that never touches a budget, "
+    "meaning imported usage and also gateway traffic on a budget-exempt key"
 )
 _WORKSPACE_DESC = "Only usage recorded in this workspace."
 # The three entity filters are repeatable on every usage endpoint, so a chart or a
