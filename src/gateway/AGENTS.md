@@ -220,6 +220,12 @@ Bulk mutation re-derives rows from the submitted filters. It never trusts a
 count calculated earlier by the dashboard. Imported-only guards do not replace
 tenant or filter predicates.
 
+One exception to the shared semantics: `GET /v1/usage/count` narrows
+`counts_toward_budget=false` to imported rows, because it sizes a mutation
+rather than a page. A count that sizes a mutation applies the mutation's fixed
+scope and not only its filter set. Nothing else narrows it, and
+`UsageEntry.bulk_editable` is how a client learns which rows that scope admits.
+
 ## Logging
 
 Use `gateway.log_config` with lazy `%s` formatting. Log opaque IDs, model,
