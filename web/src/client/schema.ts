@@ -5652,7 +5652,7 @@ export interface components {
             name?: string | null;
             /**
              * Provider Key Id
-             * @description Narrow the cap to one provider instance; null caps spend across every provider
+             * @description Narrow the cap to one provider instance; omit or null to cap spend across every provider. A blank value would store a ceiling that never binds, so it is refused; this does not check that the value names a configured provider instance
              */
             provider_key_id?: string | null;
             /**
