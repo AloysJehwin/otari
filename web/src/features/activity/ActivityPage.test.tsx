@@ -11,7 +11,7 @@ import { withRouter } from "@/tests/router"
 import { pickOption, selectTrigger } from "@/tests/select"
 
 function entry(overrides: Partial<UsageEntry> = {}): UsageEntry {
-  return {
+  const row = {
     id: "req-1",
     user_id: "alice",
     api_key_id: "key-1",
@@ -36,6 +36,16 @@ function entry(overrides: Partial<UsageEntry> = {}): UsageEntry {
     source_label: null,
     counts_toward_budget: true,
     ...overrides,
+  }
+  return {
+    ...row,
+    // The server derives this (see `UsageEntry.bulk_editable`); mirrored here so a
+    // fixture cannot claim a shape the API would never send, which is what let these
+    // tests treat a budget-exempt gateway row as selectable. Override it explicitly
+    // to exercise a row whose provenance and budget flag disagree.
+    bulk_editable:
+      overrides.bulk_editable ??
+      (!row.counts_toward_budget && row.source !== "gateway"),
   }
 }
 
@@ -987,6 +997,13 @@ describe("ActivityPage", () => {
         entry({
           id: "imp",
           model: "imported-model",
+          source: "claude_code",
+          counts_toward_budget: false,
+        }),
+        entry({
+          id: "gw-exempt",
+          model: "exempt-model",
+          source: "gateway",
           counts_toward_budget: false,
         }),
       ],
@@ -995,8 +1012,13 @@ describe("ActivityPage", () => {
 
     const gatewayRow = (await screen.findByText("gateway-model")).closest("tr")!
     const importedRow = screen.getByText("imported-model").closest("tr")!
+    const exemptRow = screen.getByText("exempt-model").closest("tr")!
     expect(within(gatewayRow).getByRole("checkbox")).toBeDisabled()
     expect(within(importedRow).getByRole("checkbox")).toBeEnabled()
+    // Traffic this gateway served on an exclude_from_budget key. Budget-exempt like
+    // an import, so selecting on `counts_toward_budget` alone offered it, and the
+    // delete then refused it and reported a smaller number than the dialog promised.
+    expect(within(exemptRow).getByRole("checkbox")).toBeDisabled()
   })
 
   it("deletes the selected imported rows by id", async () => {
@@ -1006,6 +1028,7 @@ describe("ActivityPage", () => {
         entry({
           id: "imp-1",
           model: "imported-model",
+          source: "claude_code",
           counts_toward_budget: false,
         }),
       ],
@@ -1044,6 +1067,7 @@ describe("ActivityPage", () => {
         entry({
           id: "imp-1",
           model: "imported-model",
+          source: "claude_code",
           counts_toward_budget: false,
         }),
       ],
@@ -1091,6 +1115,7 @@ describe("ActivityPage", () => {
         entry({
           id: "imp-1",
           model: "imported-model",
+          source: "claude_code",
           counts_toward_budget: false,
         }),
       ],
@@ -1138,6 +1163,7 @@ describe("ActivityPage", () => {
         entry({
           id: "imp-1",
           model: "imported-model",
+          source: "claude_code",
           counts_toward_budget: false,
         }),
       ],
@@ -1183,6 +1209,7 @@ describe("ActivityPage", () => {
         entry({
           id: "imp-1",
           model: "imported-model",
+          source: "claude_code",
           counts_toward_budget: false,
         }),
       ],
