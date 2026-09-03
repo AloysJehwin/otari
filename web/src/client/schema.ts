@@ -2498,6 +2498,10 @@ export interface paths {
          *
          *     Serves the paginator's "N of M" beside the list above, and is scoped the
          *     same way, so the total can never describe more rows than the list will show.
+         *
+         *     Unlike the deployment-wide ``GET /v1/usage/count``, ``counts_toward_budget=false``
+         *     is not narrowed to imported rows here: that narrowing sizes the bulk mutations, and
+         *     this surface has none. So this total keeps matching the list beside it.
          */
         get: operations["count_organization_usage_v1_organizations_me_usage_count_get"];
         put?: never;
@@ -9570,6 +9574,8 @@ export interface components {
             billing_meters: components["schemas"]["BillingMeters"] | {
                 [key: string]: unknown;
             } | null;
+            /** Bulk Editable */
+            bulk_editable: boolean;
             /** Cache Read Tokens */
             cache_read_tokens: number | null;
             /** Cache Write 1H Tokens */
@@ -16427,7 +16433,7 @@ export interface operations {
                 priced?: boolean | null;
                 /** @description Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically. */
                 tool?: ("any" | "web_search" | "code_execution") | null;
-                /** @description Filter by budget participation, which is not the same question as provenance: true = only enforced gateway rows, false = every row that never touches a budget, meaning imported usage and also gateway traffic on a budget-exempt key */
+                /** @description Filter by budget participation: true = only enforced gateway rows, false = only imported rows, narrowed past the filter of the same name on GET /v1/usage so the total matches what bulk delete and set-price can reach */
                 counts_toward_budget?: boolean | null;
                 /** @description Filter to the rows of one or more request groups; repeatable (request_group_id=a&request_group_id=b). A routed request writes one row per attempt, all sharing a request_group_id, so this returns a request's whole plan: its absorbed attempts and the attempt that served it. Ignore ordering by timestamp and read attempt_position to reconstruct the plan. At most 1000 ids per call. */
                 request_group_id?: string[] | null;
