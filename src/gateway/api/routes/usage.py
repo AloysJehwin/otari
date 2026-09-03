@@ -383,8 +383,10 @@ def _usage_filters(
 ) -> list[ColumnElement[bool]]:
     """Build the shared WHERE conditions for the list and count endpoints.
 
-    Keeping this in one place guarantees the paginator's total (``/count``)
-    always matches the rows ``list_usage`` returns for the same filters.
+    Keeping this in one place is what makes the paginator's total (``/count``)
+    match the rows ``list_usage`` returns. One condition sits outside it:
+    ``count_usage`` also narrows ``counts_toward_budget=false`` to imported rows,
+    because that call sizes a mutation rather than a page (see its docstring).
 
     ``scope`` is the one condition that is not a filter. The deployment-wide
     routes here pass ``None`` and read every row; the organization-scoped routes
@@ -592,6 +594,11 @@ async def count_usage(
     separate request), so the ``COUNT(*)`` is not paid on every page load. With
     ``counts_toward_budget=false`` it also backs the "select all N matching this
     filter" affordance for bulk delete / set-price, which touch imported rows only.
+
+    That value is the one place this count is narrower than ``GET /v1/usage``: it
+    also excludes rows this deployment served itself, so the number an operator
+    confirms is the number the mutation can reach. The list still pages the
+    budget-exempt gateway rows it omits.
     """
     conditions = _usage_filters(
         start_date=start_date,
@@ -613,11 +620,9 @@ async def count_usage(
         scope=None,
     )
     if counts_toward_budget is False:
-        # This is the "select all N matching" affordance, and the delete / set-price it
-        # feeds scope to imported rows via _selection_conditions. counts_toward_budget
-        # alone does not say "imported": gateway traffic on an exclude_from_budget key
-        # is also False. Without the same provenance guard the count promises rows the
-        # mutation then refuses to touch.
+        # counts_toward_budget alone does not say "imported": gateway traffic on an
+        # exclude_from_budget key is also False, so without this the count would
+        # promise rows _selection_conditions then refuses to touch.
         conditions.append(not_served_here(UsageLog.source))
     stmt: Any = select(func.count()).select_from(UsageLog).where(*conditions)
     total = (await db.execute(stmt)).scalar_one()

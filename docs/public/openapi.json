@@ -25601,7 +25601,7 @@
     },
     "/v1/usage/count": {
       "get": {
-        "description": "Total number of usage logs matching the given filters.\n\nServes the dashboard paginator's \"N of M\" total without changing the bare\narray contract of ``GET /v1/usage``. Runs only when the client asks (a\nseparate request), so the ``COUNT(*)`` is not paid on every page load. With\n``counts_toward_budget=false`` it also backs the \"select all N matching this\nfilter\" affordance for bulk delete / set-price, which touch imported rows only.",
+        "description": "Total number of usage logs matching the given filters.\n\nServes the dashboard paginator's \"N of M\" total without changing the bare\narray contract of ``GET /v1/usage``. Runs only when the client asks (a\nseparate request), so the ``COUNT(*)`` is not paid on every page load. With\n``counts_toward_budget=false`` it also backs the \"select all N matching this\nfilter\" affordance for bulk delete / set-price, which touch imported rows only.\n\nThat value is the one place this count is narrower than ``GET /v1/usage``: it\nalso excludes rows this deployment served itself, so the number an operator\nconfirms is the number the mutation can reach. The list still pages the\nbudget-exempt gateway rows it omits.",
         "operationId": "count_usage_v1_usage_count_get",
         "parameters": [
           {
