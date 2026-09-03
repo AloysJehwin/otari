@@ -8,14 +8,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Final
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from conftest import seed_workspace_id
 from gateway.core.sql import MAX_FILTER_VALUES
-from gateway.core.usage_source import SERVED_HERE_SLUG
+from gateway.core.usage_source import SERVED_HERE_SLUG, SERVED_HERE_SOURCES
 from gateway.models.entities import UsageLog, User
 
 DELETE_PATH = "/v1/usage"
@@ -23,16 +22,6 @@ SET_PRICE_PATH = "/v1/usage/set-price"
 COUNT_PATH = "/v1/usage/count"
 
 _TS = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
-
-
-class _Unset:
-    """Sentinel type: "this field was not provided", distinct from an explicit None."""
-
-
-# A field left at _UNSET takes the shape the row's budget flag implies; passing a value
-# (None included) overrides it. Typed rather than ``object()`` so the parameters it
-# defaults stay checked; see ``services/provider_store_service.UNSET``.
-_UNSET: Final = _Unset()
 
 
 def _ensure_user(db: Session, user_id: str) -> None:
@@ -62,12 +51,9 @@ def _make_log(
     cost: float | None = None,
     status: str = "success",
     timestamp: datetime = _TS,
-    # Both default to the shape the budget flag implies. A gateway row on an
-    # exclude_from_budget key is the one case where provenance disagrees with it.
-    endpoint: str | _Unset = _UNSET,
-    source_event_id: str | None | _Unset = _UNSET,
 ) -> UsageLog:
     _ensure_user(db, user_id)
+    served_here = source in SERVED_HERE_SOURCES
     log = UsageLog(
         id=log_id,
         workspace_id=seed_workspace_id(db),
@@ -75,15 +61,14 @@ def _make_log(
         timestamp=timestamp,
         model=model,
         provider=provider,
-        endpoint=("external" if not counts_toward_budget else "/v1/chat/completions")
-        if isinstance(endpoint, _Unset)
-        else endpoint,
+        # Both derive from provenance, not from the budget flag: a gateway row on an
+        # exclude_from_budget key is budget-exempt and still served here, and deriving
+        # from the flag gave it an importer's endpoint and event id.
+        endpoint="/v1/chat/completions" if served_here else "external",
         source=source,
         source_label=source_label,
         # Imported rows carry a unique source_event_id (idempotency); gateway rows leave it NULL.
-        source_event_id=(log_id if not counts_toward_budget else None)
-        if isinstance(source_event_id, _Unset)
-        else source_event_id,
+        source_event_id=None if served_here else log_id,
         counts_toward_budget=counts_toward_budget,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
@@ -111,7 +96,7 @@ def test_delete_by_ids_removes_only_imported(
 ) -> None:
     _make_log(db_session, log_id="imp-1", counts_toward_budget=False)
     _make_log(db_session, log_id="imp-2", counts_toward_budget=False)
-    _make_log(db_session, log_id="gw-1", counts_toward_budget=True)
+    _make_log(db_session, log_id="gw-1", counts_toward_budget=True, source=SERVED_HERE_SLUG)
     db_session.commit()
 
     # The request names an imported row *and* an enforced gateway row; only the
@@ -214,7 +199,7 @@ def test_delete_by_filter_never_touches_gateway_rows(
     # An unfiltered by_filter delete targets every imported row, but must still
     # leave enforced gateway rows in place.
     _make_log(db_session, log_id="imp-1", counts_toward_budget=False)
-    _make_log(db_session, log_id="gw-1", counts_toward_budget=True)
+    _make_log(db_session, log_id="gw-1", counts_toward_budget=True, source=SERVED_HERE_SLUG)
     db_session.commit()
 
     resp = client.request("DELETE", DELETE_PATH, json={"by_filter": True}, headers=master_key_header)
@@ -682,7 +667,7 @@ def test_set_price_reads_the_recorded_convention_when_there_are_no_meters(
 def test_set_price_only_touches_imported(
     client: TestClient, master_key_header: dict[str, str], db_session: Session
 ) -> None:
-    _make_log(db_session, log_id="gw-1", counts_toward_budget=True, cost=0.99)
+    _make_log(db_session, log_id="gw-1", counts_toward_budget=True, source=SERVED_HERE_SLUG, cost=0.99)
     db_session.commit()
 
     resp = client.post(
@@ -772,7 +757,7 @@ def test_count_scopes_to_imported_rows(
 ) -> None:
     _make_log(db_session, log_id="imp-1", counts_toward_budget=False)
     _make_log(db_session, log_id="imp-2", counts_toward_budget=False)
-    _make_log(db_session, log_id="gw-1", counts_toward_budget=True)
+    _make_log(db_session, log_id="gw-1", counts_toward_budget=True, source=SERVED_HERE_SLUG)
     db_session.commit()
 
     resp = client.get(COUNT_PATH, params={"counts_toward_budget": "false"}, headers=master_key_header)
@@ -790,16 +775,9 @@ def test_count_and_delete_agree_on_budget_exempt_gateway_rows(
     or the dialog promises a row the delete then refuses to touch.
     """
     _make_log(db_session, log_id="imp-1", counts_toward_budget=False, source="claude_code")
-    # A request this gateway served on an exclude_from_budget key: gateway endpoint,
-    # no event id, and only the budget flag looking imported.
-    _make_log(
-        db_session,
-        log_id="gw-exempt",
-        counts_toward_budget=False,
-        source=SERVED_HERE_SLUG,
-        endpoint="/v1/chat/completions",
-        source_event_id=None,
-    )
+    # A request this gateway served on an exclude_from_budget key: budget-exempt, and
+    # served here, so only its budget flag looks imported.
+    _make_log(db_session, log_id="gw-exempt", counts_toward_budget=False, source=SERVED_HERE_SLUG)
     db_session.commit()
 
     counted = client.get(COUNT_PATH, params={"counts_toward_budget": "false"}, headers=master_key_header)
@@ -814,7 +792,12 @@ def test_count_and_delete_agree_on_budget_exempt_gateway_rows(
         DELETE_PATH, params={"counts_toward_budget": "false", "limit": 100}, headers=master_key_header
     )
     assert listed.status_code == 200
-    assert sorted(row["id"] for row in listed.json()) == ["gw-exempt", "imp-1"]
+    rows = {row["id"]: row for row in listed.json()}
+    assert sorted(rows) == ["gw-exempt", "imp-1"]
+    # And each row says which side of the guard it is on, so the dashboard's checkbox
+    # reads the server's answer instead of recomputing it from counts_toward_budget.
+    assert rows["imp-1"]["bulk_editable"] is True
+    assert rows["gw-exempt"]["bulk_editable"] is False
 
     deleted = client.request("DELETE", DELETE_PATH, json={"by_filter": True}, headers=master_key_header)
     assert deleted.status_code == 200

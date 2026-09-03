@@ -49,3 +49,8 @@ def served_here(column: Any) -> ColumnElement[bool]:
 def not_served_here(column: Any) -> ColumnElement[bool]:
     """Match rows this deployment did not serve: imported usage, live or migrated."""
     return cast("ColumnElement[bool]", column.not_in(SERVED_HERE_SOURCES))
+
+
+def is_served_here(source: str) -> bool:
+    """The same question about a row already in memory, for a response field."""
+    return source in SERVED_HERE_SOURCES
