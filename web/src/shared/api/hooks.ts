@@ -1901,9 +1901,10 @@ export function useRequestGroups(groupIds: readonly string[]) {
   })
 }
 
-// Delete imported usage rows by selection (ids or by_filter). Only rows the
-// server treats as imported (counts_toward_budget = false) are removed; every
-// usage view is invalidated so the list, count, and analytics refresh.
+// Delete imported usage rows by selection (ids or by_filter). Only rows the server
+// treats as imported are removed, which is provenance as well as budget participation
+// (see `UsageEntry.bulk_editable`); every usage view is invalidated so the list, count,
+// and analytics refresh.
 //
 // Given the long deadline, not apiFetch's default: a by_filter delete is one
 // unbounded DELETE server-side, so its duration tracks the number of matched

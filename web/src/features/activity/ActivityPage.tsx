@@ -1678,14 +1678,17 @@ export function ActivityPage() {
       : []),
   ]
 
-  // Selection targets imported rows only; enforced gateway rows are disabled so
-  // bulk delete / set-price can never reach them.
+  // Selection targets imported rows only. `bulk_editable` is the server's own answer
+  // to "can a bulk delete or set-price reach this row", so the checkbox and the
+  // mutation's WHERE clause cannot disagree; deriving it here from
+  // `counts_toward_budget` alone offered a checkbox for budget-exempt gateway traffic
+  // that the delete then silently skipped (#781).
   const selectableKeys = useMemo(
-    () => rows.filter((r) => !r.counts_toward_budget).map((r) => r.id),
+    () => rows.filter((r) => r.bulk_editable).map((r) => r.id),
     [rows],
   )
   const disabledKeys = useMemo(
-    () => rows.filter((r) => r.counts_toward_budget).map((r) => r.id),
+    () => rows.filter((r) => !r.bulk_editable).map((r) => r.id),
     [rows],
   )
   const selectedIds = resolveSelectedIds(selection.selectedKeys, selectableKeys)
