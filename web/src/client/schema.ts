@@ -3644,6 +3644,11 @@ export interface paths {
          *     separate request), so the ``COUNT(*)`` is not paid on every page load. With
          *     ``counts_toward_budget=false`` it also backs the "select all N matching this
          *     filter" affordance for bulk delete / set-price, which touch imported rows only.
+         *
+         *     That value is the one place this count is narrower than ``GET /v1/usage``: it
+         *     also excludes rows this deployment served itself, so the number an operator
+         *     confirms is the number the mutation can reach. The list still pages the
+         *     budget-exempt gateway rows it omits.
          */
         get: operations["count_usage_v1_usage_count_get"];
         put?: never;
