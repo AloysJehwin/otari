@@ -30,10 +30,12 @@ from gateway.api.routes._pipeline import (
     DB_UNAVAILABLE_DETAIL,
     NO_RESOLVABLE_PROVIDER_DETAIL,
     ErrorKind,
+    RequestContext,
     classify_provider_error,
     default_attempt_kwargs,
     prepare_gateway_tools,
     raise_all_streaming_attempts_failed,
+    release_reservation,
     resolve_dispatch_provider,
     resolve_request_context,
     run_platform_non_stream,
@@ -74,7 +76,9 @@ class MessagesRequest(derive_request_base(MessagesParams)):  # type: ignore[misc
 
     The wire fields are derived from any-llm's ``MessagesParams`` (see
     ``_schema_derive``) so the schema cannot silently drop a param any-llm
-    forwards. Gateway-internal fields (``mcp_servers``, ``mcp_server_ids``,
+    forwards. ``container`` is an Anthropic wire param ``MessagesParams`` does
+    not model, declared here and forwarded as an any-llm ``**kwargs`` param.
+    Gateway-internal fields (``mcp_servers``, ``mcp_server_ids``,
     ``guardrails``, ``tools_header``, ``max_tool_iterations``) opt the request
     into gateway-managed MCP / sandbox / web_search / guardrails without
     changing the upstream wire shape. They're stripped before the request is
@@ -82,6 +86,17 @@ class MessagesRequest(derive_request_base(MessagesParams)):  # type: ignore[misc
     """
 
     messages: list[dict[str, Any]] = Field(min_length=1)
+    # Anthropic's top-level container id, for continuing a code-execution
+    # container across turns. ``MessagesParams`` does not model it, so the
+    # derived base would drop a caller's value before the provider call. It
+    # rides any-llm's ``**kwargs``, which is why it is also registered in
+    # ``_pipeline._FORWARDED_PARAMS``: without that, a bridged (non-Anthropic)
+    # provider's rejection reads as an upstream outage instead of a 400.
+    #
+    # Stopgap: remove this declaration once the SDK pin carries the param
+    # (mozilla-ai/any-llm#1329, merged after 1.26.0; tracked in #924). Until
+    # then it also shadows whatever annotation any-llm picks for it.
+    container: str | None = None
     # any-llm types ``stream`` as ``bool | None``; keep the Anthropic wire
     # contract (a non-nullable boolean defaulting to false) for stable SDK
     # generation.
@@ -480,6 +495,46 @@ class _MessagesAdapter:
         return kwargs
 
 
+CONTAINER_ON_MANAGED_CREDENTIAL_DETAIL = (
+    "container cannot be used on this route: it resolves to a provider account this gateway "
+    "manages on behalf of many workspaces, and a container id addresses state on that account "
+    "rather than on your workspace. Use a model served by your own provider key."
+)
+
+
+def _reject_container_on_managed_credential(ctx: RequestContext) -> None:
+    """Refuse a caller-chosen container id when the upstream account is not the caller's.
+
+    A container id names an execution environment and the files uploaded into it,
+    scoped to the *provider account* that minted it, not to an otari tenant. A
+    managed attempt runs on a credential the platform owns and many workspaces
+    share, so forwarding an id the caller picked would let anyone holding one
+    resume another tenant's container and read its workspace.
+
+    This is the container-shaped case of what :func:`scope_prompt_cache_key`
+    solves two calls later by namespacing the key. A container id is minted by
+    the provider and carries the caller's claim on it, so it cannot be
+    namespaced: forward or refuse are the only answers, and on a shared account
+    the answer is refuse.
+
+    Refused when *any* attempt on the route is managed, not only the first: which
+    attempt serves the request is decided during fallback, past this point. A
+    BYO-only route keeps the field, because there the account, and so the
+    container, is already the caller's own. Standalone never reaches this: its
+    credentials are the deployment operator's own, and the managed rung
+    (``_serve_from_hosted_credential``) answers ``None`` in every build that
+    mounts this route.
+    """
+    route = ctx.route
+    if route is None or not any(attempt.managed for attempt in route.attempts):
+        return
+    raise _anthropic_error(
+        _ERR_INVALID_REQUEST,
+        CONTAINER_ON_MANAGED_CREDENTIAL_DETAIL,
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
 _ADAPTER = _MessagesAdapter()
 
 
@@ -559,6 +614,16 @@ async def create_message(
         # them in the Anthropic envelope so /v1/messages errors stay structured.
         raise _ensure_anthropic_error(exc) from exc
 
+    if request.container is not None and ctx.hybrid_mode:
+        try:
+            _reject_container_on_managed_credential(ctx)
+        except HTTPException:
+            # A no-op in hybrid, the only mode that reaches this gate, since
+            # hybrid reserves nothing locally. Kept so this exit already settles
+            # if the gate ever covers a mode that does pre-debit the estimate.
+            await release_reservation(ctx)
+            raise
+
     tool_ctx = await prepare_gateway_tools(
         adapter=_ADAPTER,
         ctx=ctx,
@@ -585,6 +650,14 @@ async def create_message(
         request_fields["tools"] = openai_to_anthropic_tools(request_fields["tools"])
     if tool_ctx.intercepts_web_search and request_fields.get("messages"):
         request_fields["messages"] = _strip_gateway_minted_blocks(request_fields["messages"])
+    if tool_ctx.use_sandbox:
+        # ``container`` addresses Anthropic's own code-execution container, and
+        # the gateway sandbox owns execution for this request, so the provider
+        # would be asked to attach a container no tool call will reach.
+        # ``prepare_gateway_tools`` has already refused the one shape where a
+        # provider-native code-execution tool survives alongside the sandbox, so
+        # dropping it here cannot strand a container the provider would have used.
+        request_fields.pop("container", None)
 
     # ------------------------------------------------------------------
     # Streaming path
