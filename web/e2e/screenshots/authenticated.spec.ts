@@ -32,6 +32,17 @@ const WORKSPACE_ROUTES: ReadonlyArray<{
     name: "organization-members",
     heading: /members/i,
   },
+  // The other way somebody becomes a member. Its own entry rather than folded
+  // into the roster's: the claim table and the record-to-publish card are what
+  // this page is, and neither appears anywhere else. Captured here only, and not
+  // also by a test in the organization-rail block below: that block's tests do
+  // exactly what `open` does, so a second one would be a duplicate baseline to
+  // keep in step for no extra coverage.
+  {
+    route: "/organization/domains",
+    name: "organization-domains",
+    heading: /email domains/i,
+  },
   { route: "/usage", name: "usage", heading: /usage/i },
   { route: "/activity", name: "activity", heading: /activity/i },
   { route: "/tools", name: "tools", heading: /tools/i },
