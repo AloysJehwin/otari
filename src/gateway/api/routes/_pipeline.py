@@ -104,6 +104,7 @@ from gateway.api.routes._tools import (
     web_search_max_results_baseline,
 )
 from gateway.core.config import GatewayConfig
+from gateway.core.database import DATABASE_ERRORS, release_session
 from gateway.core.env import otari_env
 from gateway.core.metered_pricing import calculate_metered_cost
 from gateway.core.usage import (
@@ -2624,7 +2625,7 @@ async def prepare_gateway_tools(
     except HTTPException:
         await release_reservation(ctx)
         raise
-    except SQLAlchemyError:
+    except DATABASE_ERRORS:
         # Five reads in this block touch the database (the organization's
         # guardrails, the workspace MCP servers, the workspace code-execution
         # policy and the workspace web-search configuration above, and
@@ -2639,11 +2640,16 @@ async def prepare_gateway_tools(
         # still refusing work re-raises the original failure rather than a
         # confusing second one.
         if ctx.db is not None:
-            with contextlib.suppress(SQLAlchemyError):
+            with contextlib.suppress(*DATABASE_ERRORS):
                 await ctx.db.rollback()
-        with contextlib.suppress(SQLAlchemyError):
+        with contextlib.suppress(*DATABASE_ERRORS):
             await release_reservation(ctx)
         raise
+
+    # Last statement of the preamble: everything after this is the provider
+    # call. See :func:`gateway.core.database.release_session` for why the
+    # connection must not be held across it.
+    await release_session(ctx.db)
 
     return ToolContext(
         config=ctx.config,
