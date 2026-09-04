@@ -386,14 +386,6 @@ _FORWARDED_PARAMS: frozenset[str] = frozenset(
         set(CompletionParams.model_fields)
         | set(MessagesParams.model_fields)
         | set(ResponsesParams.model_fields)
-        # Declared on the chat request rather than derived, and forwarded through
-        # any-llm's ``**kwargs`` (see ``chat.ChatCompletionRequest.service_tier``).
-        | {"service_tier"}
-        # Same shape on the Messages request (see
-        # ``messages.MessagesRequest.container``). A provider that bridges
-        # Messages through Chat Completions has no parameter for it, so it
-        # arrives here as the unknown-keyword TypeError.
-        | {"container"}
     )
     - SENSITIVE_PARAM_FIELDS
 )
