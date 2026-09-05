@@ -193,7 +193,9 @@ function SettingControl({
     const display = formatValue(field)
     return (
       <div className="flex min-w-0 items-center gap-2">
-        <span className="min-w-0 break-all text-body tabular-nums" title={display}>{display}</span>
+        <span className="min-w-0 break-all text-body tabular-nums">
+          {display}
+        </span>
         <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-caption">
           startup-only
         </span>
@@ -256,14 +258,14 @@ function ConfigRow({
   disabled: boolean
 }) {
   return (
-    <div className="flex items-start justify-between gap-6 py-4">
+    <div className="flex flex-wrap items-start justify-between gap-6 py-4">
       <div className="min-w-0">
         <code className="font-mono text-body">{field.key}</code>
         {field.description ? (
           <p className="mt-1 text-sm text-muted">{field.description}</p>
         ) : null}
       </div>
-      <div className="shrink-0 pt-0.5">
+      <div className="min-w-0 pt-0.5">
         <SettingControl field={field} patch={patch} disabled={disabled} />
       </div>
     </div>
