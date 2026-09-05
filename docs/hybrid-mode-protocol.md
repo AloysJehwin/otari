@@ -415,7 +415,7 @@ receiver that does not price the two TTLs separately can ignore it.
 
 The key is present whenever `cache_write_tokens` is non-zero, and `0` there means
 every write used the five-minute TTL. It is omitted entirely when the report
-carries no cache writes, which is every OpenAI and Gemini report — hence its
+carries no cache writes, which is every OpenAI and Gemini report; hence its
 absence from the example above. Absent means zero, so a report from an older
 gateway prices exactly as before. A cache-writing report looks like:
 
