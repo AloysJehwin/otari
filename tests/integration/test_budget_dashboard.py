@@ -84,9 +84,7 @@ def test_budget_rollup_aggregates_assigned_users(
     assert row["total_reserved"] == 2.0
 
 
-def test_budget_rollup_excludes_deleted_users(
-    client: TestClient, master_key_header: dict[str, str]
-) -> None:
+def test_budget_rollup_excludes_deleted_users(client: TestClient, master_key_header: dict[str, str]) -> None:
     """A soft-deleted user drops out of the budget's rollup."""
     budget_id = _make_budget(client, master_key_header)
     client.post("/v1/users", json={"user_id": "gone", "budget_id": budget_id}, headers=master_key_header)
@@ -172,6 +170,71 @@ def test_deleting_a_budget_a_workspace_hands_out_is_refused_by_name(
     # Still there, and deletable once nothing hands it out.
     assert client.get(f"/v1/budgets/{budget_id}", headers=master_key_header).status_code == 200
     db_session.execute(delete(WorkspaceBudgetDefault).where(WorkspaceBudgetDefault.budget_id == budget_id))
+    db_session.commit()
+    assert client.delete(f"/v1/budgets/{budget_id}", headers=master_key_header).status_code == 204
+
+
+def test_deleting_a_budget_a_user_is_capped_at_is_refused_not_silently_uncapped(
+    client: TestClient,
+    master_key_header: dict[str, str],
+    db_session: Session,
+) -> None:
+    """A budget capping a user cannot be deleted out from under them (otari#902).
+
+    ``users.budget_id`` is a nullable column behind a plain relationship, so the
+    ORM would null it out on delete and the user would lose their cap with nobody
+    told. The route counts those rows and refuses instead of uncapping silently.
+    """
+    budget_id = _make_budget(client, master_key_header)
+    assert (
+        client.post(
+            "/v1/users", json={"user_id": "capped", "budget_id": budget_id}, headers=master_key_header
+        ).status_code
+        == 200
+    )
+
+    refused = client.delete(f"/v1/budgets/{budget_id}", headers=master_key_header)
+    assert refused.status_code == 409, refused.text
+
+    # Still there, and the user is still capped at it.
+    assert client.get(f"/v1/budgets/{budget_id}", headers=master_key_header).status_code == 200
+    assert client.get("/v1/users/capped", headers=master_key_header).json()["budget_id"] == budget_id
+
+    # Deletable once nothing is held at it.
+    assert client.delete("/v1/users/capped", headers=master_key_header).status_code == 204
+    db_session.execute(delete(User).where(User.budget_id == budget_id))
+    db_session.commit()
+    assert client.delete(f"/v1/budgets/{budget_id}", headers=master_key_header).status_code == 204
+
+
+def test_deleting_a_budget_with_reset_history_is_refused_not_500(
+    client: TestClient,
+    master_key_header: dict[str, str],
+    db_session: Session,
+) -> None:
+    """A budget that has ever reset cannot be deleted out from under its log (otari#902).
+
+    ``budget_reset_logs.budget_id`` is NOT NULL behind a plain relationship, so
+    the ORM's null-out fails at the commit as an opaque 500. The route counts
+    those rows and refuses with a 409 instead.
+    """
+    budget_id = _make_budget(client, master_key_header)
+    db_session.add(
+        BudgetResetLog(
+            user_id=None,
+            budget_id=budget_id,
+            previous_spend=Decimal("1.00"),
+            reset_at=datetime.now(UTC),
+        )
+    )
+    db_session.commit()
+
+    refused = client.delete(f"/v1/budgets/{budget_id}", headers=master_key_header)
+    assert refused.status_code == 409, refused.text
+
+    # Still there, and deletable once the log is gone.
+    assert client.get(f"/v1/budgets/{budget_id}", headers=master_key_header).status_code == 200
+    db_session.execute(delete(BudgetResetLog).where(BudgetResetLog.budget_id == budget_id))
     db_session.commit()
     assert client.delete(f"/v1/budgets/{budget_id}", headers=master_key_header).status_code == 204
 

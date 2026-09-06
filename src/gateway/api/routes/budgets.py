@@ -333,9 +333,7 @@ async def update_budget(
             if "budget_duration_sec" in request.model_fields_set
             else budget.budget_duration_sec
         )
-        alignment = (
-            request.reset_alignment if "reset_alignment" in request.model_fields_set else budget.reset_alignment
-        )
+        alignment = request.reset_alignment if "reset_alignment" in request.model_fields_set else budget.reset_alignment
         _require_single_period_source(duration, alignment)
         budget.budget_duration_sec = duration
         budget.reset_alignment = alignment
@@ -386,6 +384,15 @@ async def delete_budget(
     ``RESTRICT``, so the database would refuse either anyway, but as an
     ``IntegrityError`` reported as "Database error" with nothing naming what to
     go and change. Checked here so the refusal can say which, and where.
+
+    ``users.budget_id`` and ``budget_reset_logs.budget_id`` are the two holds the
+    RESTRICT keys above do not cover, and are refused here for the same reason the
+    organization-scoped delete refuses them (otari#875): ``Budget.users`` is a
+    plain relationship over a nullable column, so deleting the budget would null a
+    gateway user's cap out with nobody told, and a budget that has ever reset owns
+    ``budget_reset_logs`` rows on a NOT NULL column whose null-out fails at the
+    commit as an opaque 500 rather than a refusal. Both are counted first so the
+    answer does not depend on whether the engine is enforcing foreign keys.
     """
     result = await db.execute(select(Budget).where(Budget.budget_id == budget_id))
     budget = result.scalar_one_or_none()
@@ -435,6 +442,40 @@ async def delete_budget(
             ),
         )
 
+    # The two holds the RESTRICT keys above do not cover. ``users.budget_id`` is
+    # a nullable column behind a plain relationship, so deleting the budget would
+    # null out any gateway user's cap silently; counted, and named only as a
+    # number, since a bare user id says less than the count does. A row here is one
+    # assigned before otari#881 closed the assignment sites against a tenant's
+    # budget.
+    assigned = (
+        await db.execute(select(func.count()).select_from(User).where(User.budget_id == budget_id))
+    ).scalar_one()
+    if assigned:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This budget caps {assigned} {'user' if assigned == 1 else 'users'}. "
+                "Move or clear their budget (Users) before deleting it."
+            ),
+        )
+
+    # ``budget_reset_logs.budget_id`` is the same shape with a NOT NULL column, so
+    # its null-out fails at the commit as an opaque 500 rather than a refusal. A
+    # reset log only exists for a budget a user has held, so the refusal points at
+    # the same place.
+    reset_logs = (
+        await db.execute(select(func.count()).select_from(BudgetResetLog).where(BudgetResetLog.budget_id == budget_id))
+    ).scalar_one()
+    if reset_logs:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This budget has reset history and is still held by a user. "
+                "Move or clear their budget (Users) before deleting it."
+            ),
+        )
+
     await db.delete(budget)
     try:
         await db.commit()
@@ -454,9 +495,7 @@ async def list_budget_reset_logs(
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
 ) -> list[BudgetResetLogResponse]:
     """List per-user reset events for a budget, newest first."""
-    budget = (
-        await db.execute(select(Budget.budget_id).where(Budget.budget_id == budget_id))
-    ).scalar_one_or_none()
+    budget = (await db.execute(select(Budget.budget_id).where(Budget.budget_id == budget_id))).scalar_one_or_none()
     if not budget:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
