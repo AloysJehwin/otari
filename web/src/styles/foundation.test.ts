@@ -690,7 +690,12 @@ describe("no font size is written at a call site", () => {
       .filter((name) =>
         // `text-[` followed by a digit: an arbitrary size, as opposed to an
         // arbitrary color, which the token rules above already cover.
-        /text-\[\d/.test(readFileSync(join(SRC, name), "utf8").replace(/\/\*[\s\S]*?\*\//g, "")),
+        /text-\[\d/.test(
+          readFileSync(join(SRC, name), "utf8").replace(
+            /\/\*[\s\S]*?\*\//g,
+            "",
+          ),
+        ),
       )
 
     expect(
