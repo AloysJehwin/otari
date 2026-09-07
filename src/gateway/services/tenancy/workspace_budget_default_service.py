@@ -79,7 +79,7 @@ class WorkspaceMemberBudgetPolicyCreate(BaseModel):
     # ceiling per member, and a blank one would bind to nothing for every one of
     # them. Constraint and wording live on `ProviderNarrowing`; #918 notes a
     # present value naming no configured instance is still not checked here.
-    provider_key_id: ProviderNarrowing
+    provider_key_id: ProviderNarrowing = None
 
 
 class WorkspaceMemberBudgetPolicyUpdate(BaseModel):

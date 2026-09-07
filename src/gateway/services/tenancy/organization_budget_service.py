@@ -248,7 +248,7 @@ class OrganizationScopedBudgetCreate(BaseModel):
     # Absent means every provider; a blank value is refused rather than folded
     # into null. Constraint and wording live on `ProviderNarrowing`; #918 notes a
     # present value naming no configured instance is still not checked here.
-    provider_key_id: ProviderNarrowing
+    provider_key_id: ProviderNarrowing = None
     budget_id: str = Field(
         min_length=1,
         max_length=255,
