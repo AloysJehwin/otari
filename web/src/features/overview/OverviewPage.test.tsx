@@ -11,12 +11,14 @@ import {
   OverviewIndex,
   OverviewPage,
 } from "@/features/overview/OverviewPage"
+import { SelectedWorkspaceProvider } from "@/shared/hooks/SelectedWorkspace"
 import { DeploymentProvider } from "@/shared/hooks/useDeployment"
 import {
   bootstrap,
   HOSTED_SURFACES,
   organizationContext,
   usageTotals,
+  workspaceMember,
 } from "@/tests/fixtures"
 import { withRouter } from "@/tests/router"
 
@@ -67,6 +69,9 @@ interface Bodies {
   users?: unknown
   logs?: unknown
   providers?: unknown
+  /** One workspace's roster, keyed by workspace id. */
+  workspaceMembers?: Record<string, unknown[]>
+  context?: Parameters<typeof organizationContext>[0]
 }
 
 // Order matters: /v1/usage/summary is matched BEFORE the bare /v1/usage logs
@@ -81,7 +86,14 @@ function mockApi(b: Bodies) {
     // routes or the organization-scoped ones (otari#837). Answered first, and
     // on an exact match, so it cannot shadow /v1/organizations/me/usage.
     if (url.endsWith("/v1/organizations/me")) {
-      return jsonResponse(organizationContext())
+      return jsonResponse(organizationContext(b.context))
+    }
+    // The rail's roster is per workspace, so the id in the path picks the
+    // answer. A `Paged` envelope and not a bare array: this one goes through
+    // `fetchAllPaged`, which reads `body.data` and pages until a short one.
+    const roster = url.match(/\/v1\/workspaces\/([^/?]+)\/members/)
+    if (roster) {
+      return jsonResponse({ data: b.workspaceMembers?.[roster[1]] ?? [] })
     }
     if (url.includes("/v1/usage/summary")) {
       if (url.includes("bucket=hour"))
@@ -139,10 +151,115 @@ function renderPage(
   )
 }
 
+/**
+ * The same page with a workspace actually selected.
+ *
+ * `renderPage` deliberately mounts no switcher, so `useSelectedWorkspace`
+ * answers NO_WORKSPACE there and every scoped query is disabled. The rail's
+ * roster is one of those, so a test about it has to seat the provider, which
+ * seeds itself from `workspace_memberships` on the organization context.
+ */
+function renderPageInWorkspace(
+  ui: ReactElement,
+  selected: string,
+  deployment: DeploymentBootstrap = bootstrap(),
+) {
+  window.localStorage.setItem("otari.dashboard.selectedWorkspace", selected)
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return render(
+    <QueryClientProvider client={client}>
+      <DeploymentProvider value={deployment}>
+        <SelectedWorkspaceProvider>{ui}</SelectedWorkspaceProvider>
+      </DeploymentProvider>
+    </QueryClientProvider>,
+    {
+      wrapper: withRouter({
+        url: "/overview",
+        routes: [
+          { path: "/providers", element: <LocationProbe /> },
+          { path: "/organization/provider-keys", element: <LocationProbe /> },
+        ],
+      }),
+    },
+  )
+}
+
+const WORKSPACE_A = "44444444-4444-4444-4444-444444444444"
+const WORKSPACE_B = "55555555-5555-5555-5555-555555555555"
+
+const TWO_WORKSPACES = {
+  workspace_memberships: [
+    { workspace_id: WORKSPACE_A, name: "Default Workspace", role: "owner" },
+    { workspace_id: WORKSPACE_B, name: "Staging", role: "member" },
+  ],
+}
+
 describe("OverviewPage", () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.useRealTimers()
+    window.localStorage.clear()
+  })
+
+  // The rail is headed "This workspace", so its member count has to move with
+  // the switcher. It read the organization's roster before, which is a superset:
+  // an organization member need not be in the workspace, so the count both
+  // overcounted the rail and stayed put when the selection changed. Two
+  // workspaces with different rosters is the case that tells those apart, since
+  // one workspace alone cannot show a count failing to move.
+  it("counts the selected workspace's own active members in the rail", async () => {
+    mockApi({
+      context: TWO_WORKSPACES,
+      workspaceMembers: {
+        [WORKSPACE_A]: [
+          workspaceMember({ id: "a1" }),
+          workspaceMember({ id: "a2" }),
+          // Invited, not active: on the roster and not in the count.
+          workspaceMember({ id: "a3", status: "invited" }),
+        ],
+        [WORKSPACE_B]: [
+          workspaceMember({ id: "b1", workspace_id: WORKSPACE_B }),
+        ],
+      },
+    })
+
+    renderPageInWorkspace(<OverviewPage />, WORKSPACE_A)
+
+    const rail = (await screen.findByText("This workspace")).closest("section")
+    expect(rail).not.toBeNull()
+    await waitFor(() => {
+      expect(
+        within(rail as HTMLElement).getByText("Active members").parentElement,
+      ).toHaveTextContent("2")
+    })
+  })
+
+  it("moves that count when a different workspace is selected", async () => {
+    mockApi({
+      context: TWO_WORKSPACES,
+      workspaceMembers: {
+        [WORKSPACE_A]: [
+          workspaceMember({ id: "a1" }),
+          workspaceMember({ id: "a2" }),
+          workspaceMember({ id: "a3", status: "invited" }),
+        ],
+        [WORKSPACE_B]: [
+          workspaceMember({ id: "b1", workspace_id: WORKSPACE_B }),
+        ],
+      },
+    })
+
+    renderPageInWorkspace(<OverviewPage />, WORKSPACE_B)
+
+    const rail = (await screen.findByText("This workspace")).closest("section")
+    expect(rail).not.toBeNull()
+    await waitFor(() => {
+      expect(
+        within(rail as HTMLElement).getByText("Active members").parentElement,
+      ).toHaveTextContent("1")
+    })
   })
 
   it("uses a zero-padded, one-based local calendar date as its refresh key", () => {
@@ -164,7 +281,12 @@ describe("OverviewPage", () => {
     expect(await screen.findByText("$200.00")).toBeInTheDocument()
     expect(screen.getByText("2,000")).toBeInTheDocument()
     expect(screen.getByText("2.0%")).toBeInTheDocument()
-    expect(screen.getByText("Elevated")).toBeInTheDocument() // error-rate status word (non-hue)
+    // The status word, paired with a dot so severity never rides on hue alone.
+    // Uppercased in the mark, so the assertion is on the rendered casing.
+    expect(screen.getByText("ELEVATED")).toBeInTheDocument()
+    // And the rate's denominator, which is what the cell states instead of a
+    // sparkline it has no series for.
+    expect(screen.getByText("40 of 2,000 requests")).toBeInTheDocument()
   })
 
   it("renders period-over-period change as a trend chip, not a glyph", async () => {
@@ -351,7 +473,20 @@ describe("OverviewPage", () => {
     })
     renderPage(<OverviewPage />)
     expect(await screen.findByText("125.0%")).toBeInTheDocument() // 25 / (10*2)
-    expect(screen.getByText("Over budget")).toBeInTheDocument()
+    expect(screen.getByText("OVER BUDGET")).toBeInTheDocument()
+    // The meter names the budget it is reporting on, so the graphic is not a
+    // decoration a screen reader has to skip past. `progressbar` and not `img`:
+    // it is the same `SpendMeter` the Budgets table uses now, which reports a
+    // value rather than being a picture of one, and it also says in words how
+    // far past the limit this budget is.
+    const meter = screen.getByRole("progressbar", {
+      name: /Worst budget usage/,
+    })
+    expect(meter).toBeInTheDocument()
+    expect(meter).toHaveAttribute(
+      "aria-valuetext",
+      "125% of limit — over budget",
+    )
   })
 
   it("summarizes provider health and surfaces problems in the status strip", async () => {
