@@ -16,8 +16,10 @@ from __future__ import annotations
 
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
@@ -28,6 +30,49 @@ if TYPE_CHECKING:
     from mcp.types import Tool as MCPTool
 
     from gateway.models.mcp import McpServerConfig
+
+
+def _effective_port(url: httpx.URL) -> int | None:
+    if url.port is not None:
+        return url.port
+    return {"http": 80, "https": 443}.get(url.scheme)
+
+
+def _is_allowed_mcp_redirect(base: httpx.URL, target: httpx.URL) -> bool:
+    same_host = base.host == target.host
+    same_origin = (
+        same_host and base.scheme == target.scheme and _effective_port(base) == _effective_port(target)
+    )
+    https_upgrade = (
+        same_host
+        and base.scheme == "http"
+        and _effective_port(base) == 80
+        and target.scheme == "https"
+        and _effective_port(target) == 443
+    )
+    return same_origin or https_upgrade
+
+
+def _origin_bound_http_client(
+    base_url: str,
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
+    """Create an MCP HTTP client that refuses redirects outside the vetted origin."""
+    base = httpx.URL(base_url)
+
+    async def enforce_origin(request: httpx.Request) -> None:
+        if not _is_allowed_mcp_redirect(base, request.url):
+            raise httpx.RequestError("MCP redirect target is outside the validated origin", request=request)
+
+    return httpx.AsyncClient(
+        headers=headers,
+        timeout=timeout if timeout is not None else httpx.Timeout(30.0),
+        auth=auth,
+        follow_redirects=True,
+        event_hooks={"request": [enforce_origin]},
+    )
 
 
 def mcp_tool_to_openai(tool: MCPTool) -> dict[str, Any]:
@@ -91,7 +136,13 @@ class MCPClientPool:
         if cfg.authorization_token:
             headers = {"Authorization": f"Bearer {cfg.authorization_token}"}
 
-        transport = await self._stack.enter_async_context(streamablehttp_client(cfg.url, headers=headers))
+        transport = await self._stack.enter_async_context(
+            streamablehttp_client(
+                cfg.url,
+                headers=headers,
+                httpx_client_factory=partial(_origin_bound_http_client, cfg.url),
+            )
+        )
         read, write, _ = transport
         session = await self._stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
