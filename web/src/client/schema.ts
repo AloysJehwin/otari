@@ -973,6 +973,15 @@ export interface paths {
          *     ``RESTRICT``, so the database would refuse either anyway, but as an
          *     ``IntegrityError`` reported as "Database error" with nothing naming what to
          *     go and change. Checked here so the refusal can say which, and where.
+         *
+         *     ``users.budget_id`` and ``budget_reset_logs.budget_id`` are the two holds the
+         *     RESTRICT keys above do not cover, and are refused here for the same reason the
+         *     organization-scoped delete refuses them (otari#875): ``Budget.users`` is a
+         *     plain relationship over a nullable column, so deleting the budget would null a
+         *     gateway user's cap out with nobody told, and a budget that has ever reset owns
+         *     ``budget_reset_logs`` rows on a NOT NULL column whose null-out fails at the
+         *     commit as an opaque 500 rather than a refusal. Both are counted first so the
+         *     answer does not depend on whether the engine is enforcing foreign keys.
          */
         delete: operations["delete_budget_v1_budgets__budget_id__delete"];
         options?: never;
