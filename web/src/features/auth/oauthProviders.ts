@@ -55,7 +55,7 @@ export function isOAuthProvider(value: string): value is OAuthProvider {
 
 /** The providers from a bootstrap that this dashboard can render, in its order. */
 export function renderableOAuthProviders(
-  configured: readonly string[],
+  configured: readonly string[] = [],
 ): OAuthProvider[] {
   return configured.filter(isOAuthProvider)
 }
