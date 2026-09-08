@@ -325,7 +325,13 @@ function NavGroup({
       onExpandedChange={setOpen}
       className={clsx("flex flex-col", open && "gap-0.5")}
     >
-      <Disclosure.Heading>
+      {/* A plain wrapper rather than `Disclosure.Heading`: HeroUI renders that
+          as an <h3>, which put every group's label ("Routing", "Tools") into the
+          document outline of every page, so a screen-reader user navigating by
+          heading landed on nav chrome between a page's own sections. The toggle
+          is the `Disclosure.Trigger` button below, which carries its own
+          `aria-expanded` and needs no heading role to work. */}
+      <div>
         {/* `ancestor`, not `isActive`: the selected row is the child below,
               which is visible whenever this trigger is expanded. The collapsed
               rail's trigger a few lines up keeps the full selected marker,
@@ -340,7 +346,7 @@ function NavGroup({
             className={navIndicatorClass({ open })}
           />
         </Disclosure.Trigger>
-      </Disclosure.Heading>
+      </div>
       {/* The rows sit straight in the panel rather than in a `Disclosure.Body`,
           which wraps its children in a div carrying 0.5rem of padding that no
           className can reach: it would inset these rows from the lane their
