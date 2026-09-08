@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -377,22 +377,29 @@ async def delete_budget(
     budget_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
-    """Delete a budget.
+    """Delete a budget the deployment owns.
 
-    Refused with 409 while anything still names this budget: a workspace handing
-    it to its members, or a scoped ceiling enforcing it. Both foreign keys are
-    ``RESTRICT``, so the database would refuse either anyway, but as an
-    ``IntegrityError`` reported as "Database error" with nothing naming what to
-    go and change. Checked here so the refusal can say which, and where.
+    Refused with 409 when the budget is organization-owned. ``organization_id``
+    is ``None`` for the deployment's own budgets and a uuid for a tenant's, so a
+    non-null value is one the operator may edit but not delete: ``PATCH`` still
+    reaches its rows to retime their ceilings, but removing it would take a
+    budget the tenant defined out from under them with no record on their side.
+    The operator manages it through the organization instead (otari#898).
 
-    ``users.budget_id`` and ``budget_reset_logs.budget_id`` are the two holds the
-    RESTRICT keys above do not cover, and are refused here for the same reason the
-    organization-scoped delete refuses them (otari#875): ``Budget.users`` is a
-    plain relationship over a nullable column, so deleting the budget would null a
-    gateway user's cap out with nobody told, and a budget that has ever reset owns
-    ``budget_reset_logs`` rows on a NOT NULL column whose null-out fails at the
-    commit as an opaque 500 rather than a refusal. Both are counted first so the
-    answer does not depend on whether the engine is enforcing foreign keys.
+    Refused with 409, too, while anything still names the deployment's own
+    budget: a workspace handing it to its members, or a scoped ceiling enforcing
+    it. Both foreign keys are ``RESTRICT``, so the database would refuse either
+    anyway, but as an ``IntegrityError`` reported as "Database error" with
+    nothing naming what to go and change. Checked here so the refusal can say
+    which, and where.
+
+    ``users.budget_id`` is not guarded: assigning a user at creation is the path
+    that makes a deployment-own budget enforceable, so deleting one nulls those
+    caps by design (a deleted budget caps no one). ``budget_reset_logs.budget_id``
+    is NOT NULL behind a plain relationship, so a budget that has ever reset would
+    fail the null-out at the commit as an opaque 500; its rows are cleared in the
+    same transaction before the delete so an own budget that has reset can be
+    removed cleanly.
     """
     result = await db.execute(select(Budget).where(Budget.budget_id == budget_id))
     budget = result.scalar_one_or_none()
@@ -401,6 +408,16 @@ async def delete_budget(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Budget with id '{budget_id}' not found",
+        )
+
+    if budget.organization_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This budget is owned by an organization. The operator may edit it "
+                "(a PATCH retimes its ceilings) but not delete it; manage it through "
+                "the organization that owns it."
+            ),
         )
 
     holders = (
@@ -442,39 +459,12 @@ async def delete_budget(
             ),
         )
 
-    # The two holds the RESTRICT keys above do not cover. ``users.budget_id`` is
-    # a nullable column behind a plain relationship, so deleting the budget would
-    # null out any gateway user's cap silently; counted, and named only as a
-    # number, since a bare user id says less than the count does. A row here is one
-    # assigned before otari#881 closed the assignment sites against a tenant's
-    # budget.
-    assigned = (
-        await db.execute(select(func.count()).select_from(User).where(User.budget_id == budget_id))
-    ).scalar_one()
-    if assigned:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"This budget caps {assigned} {'user' if assigned == 1 else 'users'}. "
-                "Move or clear their budget (Users) before deleting it."
-            ),
-        )
-
-    # ``budget_reset_logs.budget_id`` is the same shape with a NOT NULL column, so
-    # its null-out fails at the commit as an opaque 500 rather than a refusal. A
-    # reset log only exists for a budget a user has held, so the refusal points at
-    # the same place.
-    reset_logs = (
-        await db.execute(select(func.count()).select_from(BudgetResetLog).where(BudgetResetLog.budget_id == budget_id))
-    ).scalar_one()
-    if reset_logs:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "This budget has reset history and is still held by a user. "
-                "Move or clear their budget (Users) before deleting it."
-            ),
-        )
+    # ``budget_reset_logs.budget_id`` is NOT NULL behind a plain relationship, so
+    # deleting a budget that has ever reset would fail the null-out at the commit
+    # as an opaque 500. Clear its rows in the same transaction first. ``users``
+    # is left to the ORM: nulling a deleted own budget's caps is the intended
+    # behavior, since a budget that no longer exists caps no one.
+    await db.execute(delete(BudgetResetLog).where(BudgetResetLog.budget_id == budget_id))
 
     await db.delete(budget)
     try:
