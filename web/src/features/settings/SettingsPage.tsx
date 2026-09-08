@@ -191,15 +191,20 @@ function SettingControl({
 }) {
   if (!field.settable) {
     return (
-      <div className="flex items-center gap-2">
-        <span className="text-sm tabular-nums text-foreground">
+      <div className="flex min-w-0 items-center gap-2">
+        {/* `break-all` because the values that reach this branch are paths and
+            URLs, which hold no space to wrap at: without it the string's
+            min-content width is its full length, which is what pushed the row
+            past the card and squeezed the description column to a word a line
+            (otari#809). */}
+        <span className="min-w-0 break-all text-sm tabular-nums text-foreground">
           {formatValue(field)}
         </span>
         {/* A label, not a chip. A bordered capsule next to a value, on a
             surface that has no boxes on it, puts the shape to work where the
             type should be. `text-overline` is exactly that role and already
             carries the size, weight, tracking, uppercase and muted color. */}
-        <span className="text-overline">startup-only</span>
+        <span className="shrink-0 text-overline">startup-only</span>
       </div>
     )
   }
@@ -259,7 +264,11 @@ function ConfigRow({
   disabled: boolean
 }) {
   return (
-    <div className="flex items-start justify-between gap-6 py-4">
+    // `flex-wrap` so the control drops to its own full-width line rather than
+    // squeezing the description when the two cannot share one: the row is
+    // full-bleed on the desk and 390px wide on a phone, and the second is where
+    // a `w-56` control and a sentence stopped fitting side by side.
+    <div className="flex flex-wrap items-start justify-between gap-6 py-4">
       <div className="min-w-0">
         <code className="font-mono text-body">{field.key}</code>
         {field.description ? (
@@ -271,7 +280,10 @@ function ConfigRow({
           <p className="mt-1 max-w-prose text-caption">{field.description}</p>
         ) : null}
       </div>
-      <div className="shrink-0 pt-0.5">
+      {/* `min-w-0`, not `shrink-0`: a column that refuses to shrink keeps its
+          flex base size, so a long unbreakable value here carried the row past
+          the card's right edge whatever the value's own span allowed. */}
+      <div className="min-w-0 pt-0.5">
         <SettingControl field={field} patch={patch} disabled={disabled} />
       </div>
     </div>
