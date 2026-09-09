@@ -17,6 +17,7 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from anthropic.types import CacheCreation
 from any_llm.types.messages import (
     MessageResponse,
     MessageUsage,
@@ -95,8 +96,6 @@ def _message_response(text: str = "hello") -> MessageResponse:
 
 def _message_response_with_1h_cache_write() -> MessageResponse:
     """A response whose cache creation splits across the 5m and 1h TTL buckets."""
-    from anthropic.types.cache_creation import CacheCreation
-
     return MessageResponse(
         id="msg_platform",
         type="message",
@@ -184,7 +183,9 @@ def test_hybrid_mode_sets_correlation_id_and_reports_usage(
         if url.endswith("/gateway/provider-keys/resolve"):
             return httpx.Response(
                 200,
-                json=_resolve_payload([_attempt(0, attempt_id, "claude-3-5-sonnet-20241022", "sk-platform-key")]),
+                json=_resolve_payload(
+                    [_attempt(0, attempt_id, "claude-3-5-sonnet-20241022", "sk-platform-key")]
+                ),
             )
         usage_reports.append(body)
         return httpx.Response(
@@ -282,8 +283,6 @@ def test_hybrid_mode_reports_one_hour_cache_write_subset(
     reported = usage_reports[0]["usage"]
     assert reported["cache_write_tokens"] == 30
     assert reported["cache_write_1h_tokens"] == 10
-    # The 1h bucket is a subset, never an addition, so the 5m portion is the remainder.
-    assert reported["cache_write_tokens"] - reported["cache_write_1h_tokens"] == 20
 
 
 def test_hybrid_mode_falls_through_on_first_attempt_failure(
@@ -825,7 +824,9 @@ def test_hybrid_mode_tool_loop_streaming_sets_correlation_id_and_reports_usage(
         if url.endswith("/gateway/provider-keys/resolve"):
             return httpx.Response(
                 200,
-                json=_resolve_payload([_attempt(0, attempt_id, "claude-3-5-sonnet-20241022", "sk-platform")]),
+                json=_resolve_payload(
+                    [_attempt(0, attempt_id, "claude-3-5-sonnet-20241022", "sk-platform")]
+                ),
             )
         usage_reports.append(body)
         return httpx.Response(
@@ -1141,7 +1142,6 @@ def test_hybrid_mode_preamble_rejection_uses_anthropic_envelope_and_keeps_retry_
     detail = response.json()["detail"]
     assert detail["type"] == "error"
     assert detail["error"]["type"] == "rate_limit_error"
-
 
 def test_hybrid_mode_tool_loop_streaming_falls_through_pre_lock_in(
     platform_client: TestClient,
