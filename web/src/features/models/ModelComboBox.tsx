@@ -1,7 +1,15 @@
-import { ComboBox, Input, Label, ListBox, ListBoxItem } from "@heroui/react"
+import {
+  ComboBox,
+  Description,
+  Input,
+  Label,
+  ListBox,
+  ListBoxItem,
+} from "@heroui/react"
 import { type ReactNode, useMemo } from "react"
 import type { DiscoverableModel } from "@/client"
 import { useDiscoverableModels } from "@/shared/api/models"
+import { FieldMessages } from "@/shared/components/forms/FieldMessages"
 
 // How many matches to render at once. A single provider can report a few hundred
 // models, and past this the popover is a wall of text nobody scrolls; typing one
@@ -126,7 +134,14 @@ export function ModelComboBox({
           )}
         </ListBox>
       </ComboBox.Popover>
-      {hint ? <span className="text-caption">{hint}</span> : null}
+      {/* Reserved even when silent, so this control matches a `Field` beside it
+          in a row. The hint goes through HeroUI's `Description`, which is what
+          wires it to the input via aria-describedby; a bare node here leaves
+          the combo box reporting `aria-describedby: null`. Same reasoning as
+          `Field`. */}
+      <FieldMessages>
+        {hint ? <Description>{hint}</Description> : null}
+      </FieldMessages>
     </ComboBox.Root>
   )
 }
