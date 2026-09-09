@@ -225,10 +225,12 @@ export function Login() {
     useDeployment()
   const usesPassword = sign_in_methods.includes("password")
   // An empty list is the gateway saying it cannot mint a session at all right
-  // now, which is what `/v1/bootstrap` answers when it cannot reach its
-  // database. Falling through to a credential form would offer the operator a
-  // box whose only possible outcome is a refusal, and on a claimed deployment
-  // it would be the *master-key* box, whose refusal reads as "wrong key".
+  // now. Two ways to get there: `/v1/bootstrap` answers [] when it cannot reach
+  // its database, and `normalizeBootstrap` fills the same [] in for a gateway
+  // too old to publish the field (otari#806). Falling through to a credential
+  // form would offer the operator a box whose only possible outcome is a
+  // refusal, and on a claimed deployment it would be the *master-key* box,
+  // whose refusal reads as "wrong key".
   const signInUnavailable = sign_in_methods.length === 0
   // Every flow below the form begins with an email, so none of them can work
   // on a gateway that cannot send one. The two recovery links need one thing
@@ -537,10 +539,18 @@ export function Login() {
       <AuthPageShell>
         <div className={CARD_FLAT}>
           <h1 className={HEADING}>Otari sign-in is unavailable</h1>
+          {/* Two causes, because reloading only answers one of them. An empty
+              `sign_in_methods` is what the gateway sends when it cannot reach
+              its database, and also what `normalizeBootstrap` fills in for a
+              gateway too old to publish the field at all (otari#806). Naming
+              only the first sends an operator to restart a database that was
+              never the problem. */}
           <p className="text-sm text-muted">
-            This gateway cannot start a session at the moment, which usually
-            means it cannot reach its database. It reports which credentials it
-            accepts once it recovers, so reload this page to try again.
+            This gateway published no sign-in method. That usually means it
+            cannot reach its database, and it says which credentials it accepts
+            once it recovers, so reloading is worth a try. It can also mean the
+            gateway is older than the dashboard it is serving, and reloading
+            will not settle that: the two have to be brought back into step.
           </p>
           <p className="text-sm text-muted">
             The management API is unaffected by this screen and still accepts
