@@ -20,7 +20,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict, cast, runtime_checkable
 
-from anthropic.types import ServerToolUseBlock, WebSearchResultBlock, WebSearchToolResultBlock
+from anthropic.types import ServerToolUseBlock, WebSearchResultBlock, WebSearchToolResultBlock, WebSearchToolResultError
 from anthropic.types.beta import BetaMCPToolResultBlock, BetaMCPToolUseBlock
 from any_llm import amessages
 from any_llm.types.messages import (
@@ -40,6 +40,7 @@ from gateway.services.mcp_loop import (
 from gateway.services.tool_format import openai_to_anthropic_tools
 from gateway.services.tool_usage import is_tool_error
 from gateway.services.web_search_backend import WEB_SEARCH_TOOL_NAME
+from gateway.services.web_search_budget import MAX_USES_EXCEEDED_ERROR, WebSearchBudget, is_capped_search
 
 if TYPE_CHECKING:
     from any_llm.types.messages import (
@@ -66,6 +67,7 @@ __all__ = [
     "MaxToolIterationsExceeded",
     "MCP_ACTIVITY_ID_PREFIX",
     "MCP_CLIENT_BETA",
+    "WEB_SEARCH_TOOL_USE_ID_PREFIX",
     "anthropic_tool_loop",
     "anthropic_tool_loop_stream",
 ]
@@ -82,6 +84,11 @@ _PAGE_AGE_MAX_CHARS = 128
 # route uses this prefix to remove only our synthetic pair while preserving
 # provider-native MCP blocks.
 MCP_ACTIVITY_ID_PREFIX = "otari_mcptoolu_"
+
+# The gateway's own ``server_tool_use`` ids for web search. Anthropic issues
+# ``srvtoolu_``-prefixed ids of its own, so a reserved prefix is what lets an echoed
+# transcript be told apart from one describing a search the provider really ran.
+WEB_SEARCH_TOOL_USE_ID_PREFIX = "otari_srvtoolu_"
 
 # Anthropic beta capability a caller must declare before the Messages stream
 # includes the beta-only MCP activity block vocabulary.
@@ -102,7 +109,7 @@ def _native_web_search_blocks(query: str, results: list[dict[str, Any]]) -> list
     to Anthropic instead would be rejected there, which is the same trade-off the
     Responses path already accepts for its minted ``web_search_call`` items.
     """
-    tool_use_id = f"srvtoolu_{uuid.uuid4().hex}"
+    tool_use_id = f"{WEB_SEARCH_TOOL_USE_ID_PREFIX}{uuid.uuid4().hex}"
     citations: list[WebSearchResultBlock] = []
     for result in results:
         url = str(result.get("url") or "").strip()
@@ -135,6 +142,38 @@ def _native_web_search_blocks(query: str, results: list[dict[str, Any]]) -> list
             content=citations,
         ),
     ]
+
+
+def _native_web_search_max_uses_error_blocks(query: str) -> list[Any]:
+    """Return native Anthropic blocks for a search rejected by ``max_uses``."""
+    tool_use_id = f"{WEB_SEARCH_TOOL_USE_ID_PREFIX}{uuid.uuid4().hex}"
+    return [
+        ServerToolUseBlock(
+            id=tool_use_id,
+            name=cast('Literal["web_search"]', WEB_SEARCH_TOOL_NAME),
+            input={"query": query},
+            type="server_tool_use",
+        ),
+        WebSearchToolResultBlock(
+            tool_use_id=tool_use_id,
+            type="web_search_tool_result",
+            content=WebSearchToolResultError(
+                type="web_search_tool_result_error",
+                error_code="max_uses_exceeded",
+            ),
+        ),
+    ]
+
+
+def _max_uses_exceeded_result(
+    tool_use_id: str,
+    query: str,
+    native_blocks: list[Any] | None,
+) -> dict[str, Any]:
+    """The tool_result for a search the cap refused, collecting its native pair."""
+    if native_blocks is not None:
+        native_blocks.extend(_native_web_search_max_uses_error_blocks(query))
+    return {"type": "tool_result", "tool_use_id": tool_use_id, "content": MAX_USES_EXCEEDED_ERROR}
 
 
 def _native_blocks_for_call(pool: ToolBackend, name: str, arguments: dict[str, Any]) -> list[Any]:
@@ -179,6 +218,7 @@ async def _execute_tool_uses(
     blocks: list[Any],
     *,
     native_blocks: list[Any] | None = None,
+    budget: WebSearchBudget | None = None,
 ) -> list[dict[str, Any]]:
     """Run each owned tool_use block and return the Anthropic tool_result blocks.
 
@@ -197,13 +237,19 @@ async def _execute_tool_uses(
     out: list[dict[str, Any]] = []
     for block in blocks:
         arguments = dict(block.input or {})
+        capped = is_capped_search(budget, pool, block.name)
+        if capped and budget is not None and budget.exhausted():
+            out.append(_max_uses_exceeded_result(block.id, str(arguments.get("query") or ""), native_blocks))
+            continue
         try:
             text = await pool.call_tool(block.name, arguments)
         except Exception as exc:  # noqa: BLE001 — see docstring
             logger.warning("MCP tool %s execution failed: %s", block.name, exc)
             text = f"[tool error] {exc}"
         else:
-            if native_blocks is not None:
+            if capped and budget is not None:
+                budget.record(text)
+            if native_blocks is not None and not is_tool_error(text):
                 native_blocks.extend(_native_blocks_for_call(pool, block.name, arguments))
         out.append({"type": "tool_result", "tool_use_id": block.id, "content": text})
     return out
@@ -402,11 +448,22 @@ async def _execute_stream_owned_events(
     *,
     emit_mcp_activity: bool,
     native_blocks: list[Any] | None = None,
+    budget: WebSearchBudget | None = None,
 ) -> AsyncGenerator[MessageStreamEvent, None]:
-    """Execute owned calls and optionally yield MCP activity representations."""
+    """Execute owned calls and optionally yield MCP activity representations.
+
+    A search past ``budget`` is refused before it reaches the backend, so it emits
+    no activity for work that never happened and spends nothing.
+    """
     for spec in state.owned_specs:
         name = str(spec["name"])
         parsed_input = _parsed_stream_input(state, spec)
+        capped = is_capped_search(budget, pool, name)
+        if capped and budget is not None and budget.exhausted():
+            results.append(
+                _max_uses_exceeded_result(spec["id"], str(parsed_input.get("query") or ""), native_blocks)
+            )
+            continue
         mcp_backend = _as_mcp_tool_backend(pool)
         server_name = _mcp_server_name(mcp_backend, name)
         activity_id: str | None = None
@@ -428,7 +485,9 @@ async def _execute_stream_owned_events(
             parsed_input,
             mcp_backend=mcp_backend if server_name is not None else None,
         )
-        if not transport_error and native_blocks is not None:
+        if capped and budget is not None:
+            budget.record(text)
+        if not is_error and native_blocks is not None:
             native_blocks.extend(_native_blocks_for_call(pool, name, parsed_input))
         results.append({"type": "tool_result", "tool_use_id": spec["id"], "content": text})
 
@@ -461,9 +520,13 @@ class _MessagesToolLoopStrategy:
         *,
         emit_native_web_search: bool = False,
         emit_native_mcp: bool = False,
+        budget: WebSearchBudget | None = None,
     ) -> None:
         self._emit_native_web_search = emit_native_web_search
         self._emit_native_mcp = emit_native_mcp
+        # Absent unless the caller capped the searches, so the shared instance in
+        # ``_strategy_for`` stays free of per-request state.
+        self._budget = budget
 
     def _native_sink(self, sink: list[Any]) -> list[Any] | None:
         """``sink`` when native emission is on, else ``None`` (collect nothing)."""
@@ -522,7 +585,12 @@ class _MessagesToolLoopStrategy:
         # effects. Collect its native blocks too: ``fold_usage`` runs on that path and
         # prepends them, so a native client still sees the search it paid for.
         native_sink = self._native_sink(acc["native_blocks"]) if acc is not None else None
-        return await _execute_tool_uses(pool, owned, native_blocks=native_sink)
+        return await _execute_tool_uses(
+            pool,
+            owned,
+            native_blocks=native_sink,
+            budget=self._budget,
+        )
 
     def filter_owned(self, result: MessageResponse, owned: list[Any], pool: ToolBackend) -> None:
         # Mixed batch: the owned subset was executed for its side effects;
@@ -556,7 +624,15 @@ class _MessagesToolLoopStrategy:
         transcript.append({"role": "assistant", "content": _content_to_dicts(content)})
         native_sink = self._native_sink(acc["native_blocks"]) if acc is not None else None
         transcript.append(
-            {"role": "user", "content": await _execute_tool_uses(pool, owned, native_blocks=native_sink)}
+            {
+                "role": "user",
+                "content": await _execute_tool_uses(
+                    pool,
+                    owned,
+                    native_blocks=native_sink,
+                    budget=self._budget,
+                ),
+            }
         )
 
     # ---- streaming hooks ----
@@ -711,6 +787,7 @@ class _MessagesToolLoopStrategy:
                 discarded,
                 emit_mcp_activity=self._emit_native_mcp,
                 native_blocks=self._native_sink(state.native_blocks),
+                budget=self._budget,
             ):
                 yield event
 
@@ -796,6 +873,7 @@ class _MessagesToolLoopStrategy:
             tool_results,
             emit_mcp_activity=self._emit_native_mcp,
             native_blocks=self._native_sink(state.native_blocks),
+            budget=self._budget,
         ):
             yield event
         transcript.append({"role": "user", "content": tool_results})
@@ -806,15 +884,22 @@ _MESSAGES_STRATEGY = _MessagesToolLoopStrategy()
 
 def _strategy_for(
     emit_native_web_search: bool,
+    budget: WebSearchBudget | None,
     *,
     emit_native_mcp: bool = False,
 ) -> _MessagesToolLoopStrategy:
-    """The shared strategy, or a per-request one when native emission is on."""
-    if not emit_native_web_search and not emit_native_mcp:
+    """The shared strategy, or a per-request one when any of the options is set.
+
+    A capped request carries a per-request search budget, so it never reuses the
+    module-level instance; a request wanting neither native emission nor a cap has
+    nothing per-request to hold and keeps reusing it.
+    """
+    if not emit_native_web_search and not emit_native_mcp and budget is None:
         return _MESSAGES_STRATEGY
     return _MessagesToolLoopStrategy(
         emit_native_web_search=emit_native_web_search,
         emit_native_mcp=emit_native_mcp,
+        budget=budget,
     )
 
 
@@ -825,6 +910,7 @@ async def anthropic_tool_loop(
     max_iterations: int,
     on_first_response: Callable[[], None] | None = None,
     emit_native_web_search: bool = False,
+    web_search_budget: WebSearchBudget | None = None,
 ) -> MessageResponse:
     """Non-streaming Anthropic Messages tool-use loop.
 
@@ -850,7 +936,7 @@ async def anthropic_tool_loop(
     ``server_tool_use`` / ``web_search_tool_result`` pair per gateway-run search.
     """
     return await run_tool_loop(
-        strategy=_strategy_for(emit_native_web_search),
+        strategy=_strategy_for(emit_native_web_search, web_search_budget),
         completion_kwargs=completion_kwargs,
         pool=pool,
         max_iterations=max_iterations,
@@ -865,6 +951,7 @@ async def anthropic_tool_loop_stream(
     max_iterations: int,
     emit_native_web_search: bool = False,
     emit_native_mcp: bool = False,
+    web_search_budget: WebSearchBudget | None = None,
 ) -> AsyncGenerator[MessageStreamEvent, None]:
     """Streaming Anthropic Messages tool-use loop.
 
@@ -899,6 +986,7 @@ async def anthropic_tool_loop_stream(
         run_tool_loop_stream(
             strategy=_strategy_for(
                 emit_native_web_search,
+                web_search_budget,
                 emit_native_mcp=emit_native_mcp,
             ),
             completion_kwargs=completion_kwargs,
