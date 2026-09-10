@@ -12,6 +12,22 @@ import type { SortDescriptor } from "react-aria-components"
 import { FiInfo } from "react-icons/fi"
 import type { DiscoverableProvider, ModelMetadata, PricingTier } from "@/client"
 import { isPricingTier } from "@/client"
+import { ConfirmButton } from "@/design-system/actions/ConfirmButton"
+import { CopyableValue } from "@/design-system/actions/CopyField"
+import { DataTable, type DataTableColumn } from "@/design-system/data/DataTable"
+import { TablePagination } from "@/design-system/data/TablePagination"
+import { ErrorBanner } from "@/design-system/feedback/ErrorBanner"
+import { errorMessage } from "@/design-system/feedback/errorMessage"
+import { INPUT_CLASS } from "@/design-system/forms/inputClass"
+import { Dot } from "@/design-system/indicators/Dot"
+import { PageIntro } from "@/design-system/layout/PageIntro"
+import { Section } from "@/design-system/layout/Section"
+import { TableScrollFrame } from "@/design-system/layout/TableScrollFrame"
+import {
+  type FilterChip,
+  FilterChips,
+} from "@/design-system/navigation/FilterChips"
+import { FilterSelect } from "@/design-system/navigation/FilterSelect"
 import { currentPricing, providerFromModelKey } from "@/features/models/pricing"
 import {
   isValidModelKey,
@@ -31,25 +47,6 @@ import {
   useSetPricing,
 } from "@/shared/api/pricing"
 import { useSettings } from "@/shared/api/settings"
-import { ConfirmButton } from "@/shared/components/actions/ConfirmButton"
-import { CopyableValue } from "@/shared/components/actions/CopyField"
-import {
-  DataTable,
-  type DataTableColumn,
-} from "@/shared/components/data/DataTable"
-import { TablePagination } from "@/shared/components/data/TablePagination"
-import { ErrorBanner } from "@/shared/components/feedback/ErrorBanner"
-import { errorMessage } from "@/shared/components/feedback/errorMessage"
-import { INPUT_CLASS } from "@/shared/components/forms/inputClass"
-import { Dot } from "@/shared/components/indicators/Dot"
-import { PageIntro } from "@/shared/components/layout/PageIntro"
-import { Section } from "@/shared/components/layout/Section"
-import { TableScrollFrame } from "@/shared/components/layout/TableScrollFrame"
-import {
-  type FilterChip,
-  FilterChips,
-} from "@/shared/components/navigation/FilterChips"
-import { FilterSelect } from "@/shared/components/navigation/FilterSelect"
 import {
   formatContext,
   formatCost,

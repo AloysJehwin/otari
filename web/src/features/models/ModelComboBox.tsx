@@ -8,8 +8,8 @@ import {
 } from "@heroui/react"
 import { type ReactNode, useMemo } from "react"
 import type { DiscoverableModel } from "@/client"
+import { FieldMessages } from "@/design-system/forms/FieldMessages"
 import { useDiscoverableModels } from "@/shared/api/models"
-import { FieldMessages } from "@/shared/components/forms/FieldMessages"
 
 // How many matches to render at once. A single provider can report a few hundred
 // models, and past this the popover is a wall of text nobody scrolls; typing one
