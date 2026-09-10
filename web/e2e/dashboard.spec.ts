@@ -56,8 +56,15 @@ test.describe("dashboard core flows", () => {
     await expect(guide).toBeVisible()
 
     await page.getByRole("button", { name: "Create a setup key" }).click()
-    // Shown once, in a labeled field an operator can select and copy.
-    await expect(page.getByLabel("API key")).toHaveValue(/^gw-/)
+    // Shown once, in a labeled field an operator can select and copy, and
+    // concealed there until they ask for it (otari-ai#2111).
+    // By role, not by label: `getByLabel` matches a substring, so it also
+    // picks up the field's own "Show API key" toggle.
+    const key = page.getByRole("textbox", { name: "API key" })
+    await expect(key).toBeVisible()
+    await expect(key).not.toHaveValue(/^gw-/)
+    await page.getByRole("button", { name: "Show API key" }).click()
+    await expect(key).toHaveValue(/^gw-/)
 
     await page.getByRole("button", { name: "Skip this guide" }).click()
     await expect(guide).toBeHidden()
