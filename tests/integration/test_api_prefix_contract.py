@@ -1,10 +1,12 @@
 """The published API lives under one prefix, and the security stamps say so.
 
-Two things ``make openapi-check`` cannot catch. First, that every path in the
+Three things ``make openapi-check`` cannot catch. First, that every path in the
 generated document sits under ``API_ROOT`` or ``OTLP_ROOT``. Second, that the
 allowlists in ``gateway.main`` name routes that exist: the generator reads
 those same lists, so the committed document and the generator agree even when
 both are stale. The routing table is the independent source of truth here.
+Third, that the operation ids hold in every mode, not only in the standalone
+mode the committed document is generated from.
 
 The stamp checks are weaker on purpose. ``custom_openapi`` reads the same
 lists, so a mounted path wrongly added to ``_UNAUTHENTICATED_PATHS`` stamps
@@ -17,12 +19,14 @@ On the worker's PostgreSQL like the rest of ``tests/integration``, because
 """
 
 import re
+from collections import Counter
 from typing import Any
 
 import pytest
 from fastapi import FastAPI
 
-from gateway.core.config import API_ROOT, OTLP_ROOT, GatewayConfig
+from gateway.api.routes import hosted_mode, hybrid_mode
+from gateway.core.config import API_ROOT, OTLP_ROOT, PLATFORM_TOKEN_ENV_VAR, GatewayConfig
 from gateway.main import (
     _COOKIE_AUTH_PREFIXES,
     _GATEWAY_TOKEN_PATHS,
@@ -82,6 +86,16 @@ def standalone(postgres_url: str) -> FastAPI:
 @pytest.fixture(scope="module")
 def hosted(postgres_url: str) -> FastAPI:
     return create_app(_config(postgres_url, "hosted"))
+
+
+@pytest.fixture(scope="module")
+def hybrid(postgres_url: str) -> FastAPI:
+    # The token is read once, while the config loads, so it need only be in
+    # the environment for the construction. Left set, it would make the next
+    # standalone app built in this process refuse to start.
+    with pytest.MonkeyPatch.context() as env:
+        env.setenv(PLATFORM_TOKEN_ENV_VAR, "test-platform-token")
+        return create_app(_config(postgres_url, "hybrid", platform={"base_url": "http://localhost:8100/api/v1"}))
 
 
 def _under(path: str, root: str) -> bool:
@@ -151,6 +165,62 @@ def test_generated_document_stamps_security_as_the_allowlists_say(standalone: Fa
                 assert operation.get("security") == [{"GatewayTokenAuth": []}], (
                     f"{method.upper()} {path} must be stamped GatewayTokenAuth only"
                 )
+
+
+def _operation_ids(app: FastAPI) -> Counter[str]:
+    ids = Counter(
+        operation["operationId"]
+        for path_item in app.openapi()["paths"].values()
+        for operation in path_item.values()
+        if isinstance(operation, dict)
+    )
+    assert ids, "the generated document has no operations"
+    return ids
+
+
+def test_no_operation_id_names_a_mount_root(standalone: FastAPI, hosted: FastAPI, hybrid: FastAPI) -> None:
+    """The id is the method name a generated SDK exposes, so it must outlive a path move.
+
+    FastAPI's default folds the whole path into the id, which is how every
+    operation was renamed when the root moved. The roots are looked for in the
+    form that default writes them, with every non-word character an underscore.
+    """
+    roots = tuple(re.sub(r"\W", "_", root) for root in (API_ROOT, OTLP_ROOT))
+    for mode, app in (("standalone", standalone), ("hosted", hosted), ("hybrid", hybrid)):
+        stray = sorted(op for op in _operation_ids(app) if any(root in op for root in roots))
+        assert not stray, f"{mode}: operation ids carry a mount root: {stray}"
+
+
+def test_operation_ids_are_tag_and_handler(standalone: FastAPI) -> None:
+    """One anchor, so a scheme change cannot pass as long as it avoids the root."""
+    assert "keys-create_key" in _operation_ids(standalone)
+
+
+def test_the_mode_stubs_are_not_published(hosted: FastAPI, hybrid: FastAPI) -> None:
+    """A refusal is a deployment posture, not an operation a client can call.
+
+    Pinned by name rather than left to the duplicate check, which the stubs
+    would also pass if they were split into one route per method.
+    """
+    hosted_prefixes = [f"{API_ROOT}{prefix}" for prefix, _ in hosted_mode.DATA_PLANE_PREFIXES]
+    hybrid_prefixes = [f"{API_ROOT}{route.path}" for route in hybrid_mode.router.routes if hasattr(route, "path")]
+    for mode, app, prefixes in (("hosted", hosted, hosted_prefixes), ("hybrid", hybrid, hybrid_prefixes)):
+        assert prefixes, f"{mode}: no stub prefixes to check"
+        published = {p for p in app.openapi()["paths"] if any(_under(p, prefix) for prefix in prefixes)}
+        assert not published, f"{mode}: refused paths reached the document: {sorted(published)}"
+
+
+def test_operation_ids_are_unique_in_every_mode(standalone: FastAPI, hosted: FastAPI, hybrid: FastAPI) -> None:
+    """A duplicate id makes the document invalid, and only one mode's document is committed.
+
+    The mode stubs answer seven methods at two paths from one handler, and an
+    id is derived once per route, so any stub that reaches the document
+    duplicates itself. Standalone mounts no stub, which is why the committed
+    document never showed it.
+    """
+    for mode, app in (("standalone", standalone), ("hosted", hosted), ("hybrid", hybrid)):
+        duplicated = sorted(op for op, count in _operation_ids(app).items() if count > 1)
+        assert not duplicated, f"{mode}: duplicate operation ids: {duplicated}"
 
 
 # Paths that may appear in published prose without being ours to move. The usage
