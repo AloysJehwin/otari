@@ -9,6 +9,7 @@ import {
   TextField,
 } from "@heroui/react"
 import { type ReactNode, useMemo, useState } from "react"
+import { ComboBoxEmpty } from "@/design-system/forms/ComboBoxEmpty"
 import { Field } from "@/design-system/forms/Field"
 import { FieldMessages } from "@/design-system/forms/FieldMessages"
 import { SecretField } from "@/design-system/forms/SecretField"
@@ -268,7 +269,28 @@ export function ProviderComboBox({
         <ComboBox.Trigger />
       </ComboBox.InputGroup>
       <ComboBox.Popover>
-        <ListBox items={visible} className="max-h-72 overflow-auto">
+        <ListBox
+          items={visible}
+          className="max-h-72 overflow-auto"
+          renderEmptyState={() => (
+            <ComboBoxEmpty
+              // A loading catalog counts as an empty source, so a query that
+              // matches none of `extra` says the catalog is still coming rather
+              // than that nothing matches. Both halves are gated on
+              // `includeCatalog`: a picker offering only the API dialects must
+              // not report a catalog it excludes.
+              isSourceEmpty={
+                options.length === 0 || (includeCatalog && catalog.isLoading)
+              }
+              emptyMessage={
+                includeCatalog && catalog.isLoading
+                  ? "Loading the provider catalog…"
+                  : "No provider to offer here."
+              }
+              noMatchesMessage="No provider matches what you typed."
+            />
+          )}
+        >
           {(option: { id: string; name: string }) => (
             <ListBoxItem id={option.id} textValue={option.name}>
               {option.name}
