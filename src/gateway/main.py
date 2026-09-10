@@ -15,7 +15,7 @@ from typing_extensions import override
 from gateway.api.deps import set_config
 from gateway.api.main import register_routers
 from gateway.container import build_container
-from gateway.core.config import API_KEY_HEADER, GATEWAY_TOKEN_HEADER, X_API_KEY_HEADER, GatewayConfig
+from gateway.core.config import API_KEY_HEADER, API_ROOT, GATEWAY_TOKEN_HEADER, X_API_KEY_HEADER, GatewayConfig
 from gateway.core.database import create_session, dispose_db, init_db
 from gateway.dashboard import DASHBOARD_PACKAGE_PATH, get_dashboard_build_id, get_dashboard_dir
 from gateway.inflight import InFlightMiddleware, InFlightRegistry
@@ -77,11 +77,12 @@ from gateway.services.tenancy.org_provider_key_service import (
 from gateway.services.tool_settings_service import apply_overrides_from_db as apply_tool_overrides_from_db
 from gateway.version import __version__
 
-_PUBLIC_PREFIXES = ("/health",)
+# Every path here must be mounted; a contract test checks.
+_PUBLIC_PREFIXES = (f"{API_ROOT}/health",)
 # Paths authenticated by the master key in the request body (sign-in) or the
 # session cookie (sign-out) rather than the header schemes; the OpenAPI
 # security stamp below skips them. They still get the no-store cache headers.
-_COOKIE_AUTH_PREFIXES = ("/v1/auth/session",)
+_COOKIE_AUTH_PREFIXES = (f"{API_ROOT}/auth/session",)
 # Paths that carry no credential at all. The deployment bootstrap is what tells a
 # browser whether signing in is even possible here, so requiring a credential to
 # read it would be circular; the invitation and signup/verification/reset routes
@@ -90,10 +91,10 @@ _COOKIE_AUTH_PREFIXES = ("/v1/auth/session",)
 # schemes this stamps everything else with). Matched exactly rather than by
 # prefix, unlike the two tuples above: a prefix would exempt any future route
 # mounted under it too, by inheritance rather than by decision (an operator-only
-# resend or list-pending endpoint, say; `/v1/auth/session` and
-# `/v1/auth/password` both live under `/v1/auth` and do require a credential),
-# and `/v1/auth/password/reset` is already a prefix of
-# `/v1/auth/password/reset/confirm`, so the inheritance is not hypothetical.
+# resend or list-pending endpoint, say; `/api/v1/auth/session` and
+# `/api/v1/auth/password` both live under `/api/v1/auth` and do require a credential),
+# and `/api/v1/auth/password/reset` is already a prefix of
+# `/api/v1/auth/password/reset/confirm`, so the inheritance is not hypothetical.
 # Listed separately from _PUBLIC_PREFIXES because these still get
 # the no-store cache headers: each answer is specific to the caller or the
 # request's own token, and bootstrap's changes with the deployment's
@@ -103,17 +104,17 @@ _COOKIE_AUTH_PREFIXES = ("/v1/auth/session",)
 # shared token rather than by either API-key header. Stamped separately below
 # because the difference is not decoration: an API key does not open these, and
 # a published contract that says it does sends a caller to a 401.
-_GATEWAY_TOKEN_PATHS = frozenset({"/v1/web-search/search"})
+_GATEWAY_TOKEN_PATHS = frozenset({f"{API_ROOT}/web-search/search"})
 _UNAUTHENTICATED_PATHS = frozenset(
     {
-        "/v1/bootstrap",
-        "/v1/invitations/validate",
-        "/v1/invitations/accept",
-        "/v1/auth/signup",
-        "/v1/auth/verify-email",
-        "/v1/auth/resend-verification",
-        "/v1/auth/password/reset",
-        "/v1/auth/password/reset/confirm",
+        f"{API_ROOT}/bootstrap",
+        f"{API_ROOT}/invitations/validate",
+        f"{API_ROOT}/invitations/accept",
+        f"{API_ROOT}/auth/signup",
+        f"{API_ROOT}/auth/verify-email",
+        f"{API_ROOT}/auth/resend-verification",
+        f"{API_ROOT}/auth/password/reset",
+        f"{API_ROOT}/auth/password/reset/confirm",
         # The passkey sign-in ceremony, both halves. Unauthenticated for the
         # reason the sign-in endpoint is: they are how a caller who holds no
         # credential obtains a session. The signed assertion in the second call
@@ -121,17 +122,30 @@ _UNAUTHENTICATED_PATHS = frozenset(
         # Registering, listing, renaming and deleting a passkey are *not* here:
         # those are done from inside a session and are stamped like the rest of
         # the management surface.
-        "/v1/auth/webauthn/authenticate/options",
-        "/v1/auth/webauthn/authenticate",
+        f"{API_ROOT}/auth/webauthn/authenticate/options",
+        f"{API_ROOT}/auth/webauthn/authenticate",
         # The OAuth sign-in, both halves, unauthenticated for the same reason:
         # they are how a caller who holds no credential obtains a session. The
         # authorization code in the second call is the credential, and it is not
         # one of the header schemes below. Spelled with the path parameter
         # because that is how the generated document keys them.
-        "/v1/auth/oauth/{provider}/authorize",
-        "/v1/auth/oauth/{provider}/callback",
+        f"{API_ROOT}/auth/oauth/{{provider}}/authorize",
+        f"{API_ROOT}/auth/oauth/{{provider}}/callback",
     }
 )
+def _under(path: str, prefixes: tuple[str, ...]) -> bool:
+    """Whether ``path`` is one of ``prefixes`` or sits inside one.
+
+    Compared on the segment boundary, not as a byte prefix, so a sibling that
+    merely begins with the same characters does not inherit the treatment:
+    ``/api/v1/health-internal`` is not under ``/api/v1/health``. The tuples
+    below that already end in a slash are safe either way; these do not, and
+    getting it wrong here fails open, shipping an authenticated response with
+    no ``no-store`` and no ``Vary: Authorization``.
+    """
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in prefixes)
+
+
 # Public, unauthenticated static assets that shared caches may keep. Paths here
 # set their own Cache-Control at the route (favicon.svg), so the middleware only
 # fills one in when it is missing.
@@ -162,7 +176,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         path = request.url.path
-        if path.startswith(_PUBLIC_PREFIXES):
+        if _under(path, _PUBLIC_PREFIXES):
             return response
         # A cacheable path's policy describes its content, so it applies only to a
         # response that carries any: an error under it is a fact about right now.
@@ -336,7 +350,7 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
                 # supplied it at all.
                 if missing_backend_url := config.search_tools_without_backend_url():
                     logger.warning(
-                        "No backend URL for search tool(s): %s. POST /v1/search refuses them with a 400 until "
+                        "No backend URL for search tool(s): %s. POST /api/v1/search refuses them with a 400 until "
                         "each declares an 'api_base' or a web-search URL is set (web_search_url, "
                         "OTARI_WEB_SEARCH_URL, or the dashboard's Tools page).",
                         ", ".join(sorted(missing_backend_url)),
@@ -466,7 +480,7 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
             # nothing to stop, but the refreshers above still needed cancelling.
             if log_writer_started:
                 await log_writer.stop()
-            # POST /v1/search dispatches on one pooled client for the process, so
+            # POST /api/v1/search dispatches on one pooled client for the process, so
             # shutdown owns closing it. A no-op when no search was ever served.
             await close_search_client()
             # After the log writer, whose final flush is the last thing to need
@@ -507,7 +521,7 @@ async def _validation_error_handler(_: Request, exc: Exception) -> Response:
     """Render a request-validation failure without echoing what was sent.
 
     Pydantic v2 puts the rejected value on every error entry, and FastAPI's
-    default handler serializes it straight back. On ``POST /v1/auth/session``
+    default handler serializes it straight back. On ``POST /api/v1/auth/session``
     that value is the credential: a password longer than the field's ceiling
     comes back in full, and a body carrying both credentials comes back with the
     master key in it. The dashboard renders the whole ``detail`` into its error
@@ -548,9 +562,10 @@ def create_app(config: GatewayConfig) -> FastAPI:
         title="otari",
         description="Otari, an OpenAI-compatible LLM gateway with API key management",
         version=__version__,
-        docs_url="/docs" if config.enable_docs else None,
-        redoc_url="/redoc" if config.enable_docs else None,
-        openapi_url="/openapi.json" if config.enable_docs else None,
+        docs_url=f"{API_ROOT}/docs" if config.enable_docs else None,
+        redoc_url=f"{API_ROOT}/redoc" if config.enable_docs else None,
+        openapi_url=f"{API_ROOT}/openapi.json" if config.enable_docs else None,
+        swagger_ui_oauth2_redirect_url=f"{API_ROOT}/docs/oauth2-redirect",
         lifespan=_create_lifespan(),
     )
 
@@ -595,7 +610,7 @@ def create_app(config: GatewayConfig) -> FastAPI:
         }
 
         for path, path_item in openapi_schema.get("paths", {}).items():
-            if path in _UNAUTHENTICATED_PATHS or path.startswith(_PUBLIC_PREFIXES + _COOKIE_AUTH_PREFIXES):
+            if path in _UNAUTHENTICATED_PATHS or _under(path, _PUBLIC_PREFIXES + _COOKIE_AUTH_PREFIXES):
                 continue
             requirement: list[dict[str, list[str]]] = (
                 [{"GatewayTokenAuth": []}]
@@ -625,7 +640,7 @@ def create_app(config: GatewayConfig) -> FastAPI:
             query the provider appended.
 
             It holds no credential and decides nothing: the code in that query
-            is spent by ``POST /v1/auth/oauth/{provider}/callback``, which the
+            is spent by ``POST /api/v1/auth/oauth/{provider}/callback``, which the
             page reaches only after checking the state against the value the
             browser stored. 303 rather than 307, so a browser that followed a
             POST here would not repeat it against a page.
@@ -658,7 +673,7 @@ def create_app(config: GatewayConfig) -> FastAPI:
         )
 
     # The same bundle is the root in both modes, because the mode is not this
-    # process's decision to make in the filesystem: the page reads /v1/bootstrap
+    # process's decision to make in the filesystem: the page reads /api/v1/bootstrap
     # and renders either the management shell (standalone) or the data-plane
     # landing page (hybrid), which is what keeps "which surfaces exist here" in
     # one answer rather than two. A hybrid gateway still hosts no management API;

@@ -56,7 +56,7 @@ from gateway.services.web_search_budget import WebSearchBudget
 from gateway.streaming import OPENAI_STREAM_FORMAT, StreamFormat
 from gateway.types.attempt import Attempt
 
-router = APIRouter(prefix="/v1/chat", tags=["chat"])
+router = APIRouter(prefix="/chat", tags=["chat"])
 
 # The label written to a usage-log row. An identifier, not a URL: it stays as
 # it is so new rows compare with old ones.
@@ -102,7 +102,7 @@ class ChatCompletionRequest(derive_request_base(CompletionParams)):  # type: ign
     # provider-specific ("auto"/"default"/"flex"/"scale"/"priority" on OpenAI,
     # "auto"/"standard_only" on Anthropic) and grows independently of this
     # gateway, so the provider is the right place to reject an unknown value.
-    # ``ResponsesParams`` already declares it, so /v1/responses never had the gap.
+    # ``ResponsesParams`` already declares it, so /api/v1/responses never had the gap.
     #
     # Stopgap: remove this declaration once ``CompletionParams`` models the param
     # and the SDK pin is bumped (mozilla-ai/any-llm#1269, tracked in #565). Until

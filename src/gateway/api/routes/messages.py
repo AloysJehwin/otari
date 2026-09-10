@@ -73,7 +73,7 @@ from gateway.services.web_search_budget import WebSearchBudget
 from gateway.streaming import ANTHROPIC_STREAM_FORMAT, StreamFormat
 from gateway.types.attempt import Attempt
 
-router = APIRouter(prefix="/v1", tags=["messages"])
+router = APIRouter(tags=["messages"])
 
 # See chat.USAGE_ENDPOINT.
 USAGE_ENDPOINT = "/v1/messages"
@@ -307,7 +307,7 @@ def _ensure_anthropic_error(exc: HTTPException) -> HTTPException:
 
     HTTPExceptions already carrying the Anthropic ``detail`` dict (raised via
     ``_anthropic_error``) pass through unchanged, so this is safe to apply to any
-    HTTPException on the ``/v1/messages`` path, including format-agnostic ones
+    HTTPException on the ``/api/v1/messages`` path, including format-agnostic ones
     raised by the hybrid preamble (platform resolve/auth) and the shared
     execution runners.
     """

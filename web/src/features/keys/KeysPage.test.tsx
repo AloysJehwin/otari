@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { ApiKey, DeploymentBootstrap, User } from "@/client"
 import { KeysPage } from "@/features/keys/KeysPage"
+import { API_ROOT } from "@/shared/api/client"
 import { DeploymentProvider } from "@/shared/hooks/useDeployment"
 import { apiKey, bootstrap, organizationMember } from "@/tests/fixtures"
 import { renderWithRouter } from "@/tests/router"
@@ -47,10 +48,10 @@ const REGEN_SECRET =
   "gw-REGEN00000000000000000000000000000000000000000000000000"
 
 // Both key surfaces answer identical shapes, so one handler serves them: the
-// operator's `/v1/keys` and the member's `/v1/organizations/me/keys`
+// operator's /api/v1/keys and the member's /api/api/v1/organizations/me/keys
 // (otari-ai#1941). Which one the page asked is what the member-view cases
 // assert, off the spy's recorded URLs.
-const KEYS_URL = /\/v1\/(?:organizations\/me\/)?keys(?:\/|\?|$)/
+const KEYS_URL = /\/api\/v1\/(?:organizations\/me\/)?keys(?:\/|\?|$)/
 
 function mockApi(
   opts: {
@@ -111,15 +112,15 @@ function mockApi(
         }
         return jsonResponse(list)
       }
-      // Before /v1/users, and paged: the owner picker names members through
+      // Before /api/v1/users, and paged: the owner picker names members through
       // this, and `fetchAllPaged` reads `data`/`count` rather than a bare list.
-      if (url.includes("/v1/organizations/me/members")) {
+      if (url.includes(`${API_ROOT}/organizations/me/members`)) {
         return jsonResponse({ data: members, count: members.length })
       }
       // Seeds the scope: `deployment_operator` is what routes the page onto the
       // operator surface or the member one. These suites default to the
       // operator's view, and the member cases flip it.
-      if (url.endsWith("/v1/organizations/me")) {
+      if (url.endsWith(`${API_ROOT}/organizations/me`)) {
         return jsonResponse({
           organization_member_id: "om-1",
           role: "member",
@@ -138,10 +139,10 @@ function mockApi(
           workspace_memberships: [],
         })
       }
-      if (url.includes("/v1/users")) {
+      if (url.includes(`${API_ROOT}/users`)) {
         return jsonResponse(users)
       }
-      if (url.includes("/v1/models/discoverable")) {
+      if (url.includes(`${API_ROOT}/models/discoverable`)) {
         return jsonResponse({
           providers: [
             {
@@ -153,10 +154,10 @@ function mockApi(
           ],
         })
       }
-      if (url.includes("/v1/providers")) {
+      if (url.includes(`${API_ROOT}/providers`)) {
         return jsonResponse({ providers: [{ instance: "openai" }] })
       }
-      if (url.includes("/v1/aliases")) {
+      if (url.includes(`${API_ROOT}/aliases`)) {
         return jsonResponse([])
       }
       return jsonResponse([])
@@ -273,7 +274,7 @@ describe("KeysPage", () => {
     )
     expect(curl).toBeInTheDocument()
     expect((curl as HTMLTextAreaElement).value).toContain(
-      `${window.location.origin}/v1/chat/completions`,
+      `${window.location.origin}${API_ROOT}/chat/completions`,
     )
 
     await user.click(
@@ -324,7 +325,9 @@ describe("KeysPage", () => {
     )
 
     const curl = dialog.getByLabelText("curl") as HTMLTextAreaElement
-    expect(curl.value).toContain("https://gateway.otari.ai/v1/chat/completions")
+    expect(curl.value).toContain(
+      `https://gateway.otari.ai${API_ROOT}/chat/completions`,
+    )
     expect(curl.value).not.toContain(window.location.origin)
     // Concealed, so the address it names is readable while the key is not.
     expect(curl.value).not.toContain(NEW_SECRET)
@@ -550,7 +553,7 @@ describe("KeysPage", () => {
 
     const patch = fetchMock.mock.calls.find(
       ([u, init]) =>
-        String(u).includes("/v1/keys/key-1") &&
+        String(u).includes(`${API_ROOT}/keys/key-1`) &&
         (init?.method ?? "") === "PATCH",
     )
     expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ is_active: false })
@@ -614,7 +617,7 @@ describe("KeysPage", () => {
 
     const del = fetchMock.mock.calls.find(
       ([u, init]) =>
-        String(u).includes("/v1/keys/key-1") &&
+        String(u).includes(`${API_ROOT}/keys/key-1`) &&
         (init?.method ?? "") === "DELETE",
     )
     expect(del).toBeDefined()
@@ -646,7 +649,8 @@ describe("KeysPage", () => {
 
     const post = fetchMock.mock.calls.find(
       ([u, init]) =>
-        String(u).endsWith("/v1/keys") && (init?.method ?? "") === "POST",
+        String(u).endsWith(`${API_ROOT}/keys`) &&
+        (init?.method ?? "") === "POST",
     )
     expect(JSON.parse(String(post?.[1]?.body)).allowed_models).toEqual([
       "openai:gpt-4o",
@@ -673,7 +677,8 @@ describe("KeysPage", () => {
 
     const post = fetchMock.mock.calls.find(
       ([u, init]) =>
-        String(u).endsWith("/v1/keys") && (init?.method ?? "") === "POST",
+        String(u).endsWith(`${API_ROOT}/keys`) &&
+        (init?.method ?? "") === "POST",
     )
     expect(JSON.parse(String(post?.[1]?.body)).exclude_from_budget).toBe(true)
   })
@@ -695,7 +700,8 @@ describe("KeysPage", () => {
 
     const post = fetchMock.mock.calls.find(
       ([u, init]) =>
-        String(u).endsWith("/v1/keys") && (init?.method ?? "") === "POST",
+        String(u).endsWith(`${API_ROOT}/keys`) &&
+        (init?.method ?? "") === "POST",
     )
     expect(JSON.parse(String(post?.[1]?.body)).reject_user_mismatch).toBe(false)
     // The created row carries the override back, so the list reflects it.
@@ -717,7 +723,8 @@ describe("KeysPage", () => {
 
     const post = fetchMock.mock.calls.find(
       ([u, init]) =>
-        String(u).endsWith("/v1/keys") && (init?.method ?? "") === "POST",
+        String(u).endsWith(`${API_ROOT}/keys`) &&
+        (init?.method ?? "") === "POST",
     )
     expect(JSON.parse(String(post?.[1]?.body)).reject_user_mismatch).toBeNull()
   })
@@ -786,7 +793,8 @@ describe("KeysPage", () => {
 
     const post = fetchMock.mock.calls.find(
       ([u, init]) =>
-        String(u).endsWith("/v1/keys") && (init?.method ?? "") === "POST",
+        String(u).endsWith(`${API_ROOT}/keys`) &&
+        (init?.method ?? "") === "POST",
     )
     expect(JSON.parse(String(post?.[1]?.body)).user_id).toBe("alice")
   })
@@ -808,7 +816,8 @@ describe("KeysPage", () => {
 
     const post = fetchMock.mock.calls.find(
       ([u, init]) =>
-        String(u).endsWith("/v1/keys") && (init?.method ?? "") === "POST",
+        String(u).endsWith(`${API_ROOT}/keys`) &&
+        (init?.method ?? "") === "POST",
     )
     expect(JSON.parse(String(post?.[1]?.body)).allowed_models).toEqual([])
   })
@@ -899,7 +908,7 @@ describe("KeysPage", () => {
 
     const patch = fetchMock.mock.calls.find(
       ([u, init]) =>
-        String(u).includes("/v1/keys/key-1") &&
+        String(u).includes(`${API_ROOT}/keys/key-1`) &&
         (init?.method ?? "") === "PATCH",
     )
     expect(JSON.parse(String(patch?.[1]?.body)).exclude_from_budget).toBe(true)
@@ -921,7 +930,7 @@ describe("KeysPage", () => {
 
     const patch = fetchMock.mock.calls.find(
       ([u, init]) =>
-        String(u).includes("/v1/keys/key-1") &&
+        String(u).includes(`${API_ROOT}/keys/key-1`) &&
         (init?.method ?? "") === "PATCH",
     )
     expect(JSON.parse(String(patch?.[1]?.body)).reject_user_mismatch).toBe(
@@ -953,7 +962,7 @@ describe("KeysPage", () => {
 
     const patch = fetchMock.mock.calls.find(
       ([u, init]) =>
-        String(u).includes("/v1/keys/key-1") &&
+        String(u).includes(`${API_ROOT}/keys/key-1`) &&
         (init?.method ?? "") === "PATCH",
     )
     // An explicit null is what clears the override; omitting it would leave it set.
@@ -1078,7 +1087,7 @@ describe("KeysPage", () => {
   })
 
   // The member's view of the same page (otari-ai#1941): every hook reads and
-  // writes `/v1/organizations/me/keys`, and the operator-only affordances (the
+  // writes /api/api/v1/organizations/me/keys, and the operator-only affordances (the
   // owner picker, the budget exemption, the Owner column, the links to pages a
   // member cannot open) are absent rather than present and refused.
   describe("as a member", () => {
@@ -1098,7 +1107,7 @@ describe("KeysPage", () => {
         .filter((u) => KEYS_URL.test(u))
       expect(listCalls.length).toBeGreaterThan(0)
       for (const u of listCalls) {
-        expect(u).toContain("/v1/organizations/me/keys")
+        expect(u).toContain(`${API_ROOT}/organizations/me/keys`)
       }
 
       // Every key here is the caller's own, so no Owner column; and the pages
@@ -1145,7 +1154,7 @@ describe("KeysPage", () => {
 
       const post = fetchMock.mock.calls.find(
         ([u, init]) =>
-          String(u).endsWith("/v1/organizations/me/keys") &&
+          String(u).endsWith(`${API_ROOT}/organizations/me/keys`) &&
           (init?.method ?? "") === "POST",
       )
       expect(post).toBeDefined()
@@ -1174,7 +1183,7 @@ describe("KeysPage", () => {
 
       const patch = fetchMock.mock.calls.find(
         ([u, init]) =>
-          String(u).endsWith("/v1/organizations/me/keys/key-1") &&
+          String(u).endsWith(`${API_ROOT}/organizations/me/keys/key-1`) &&
           (init?.method ?? "") === "PATCH",
       )
       expect(patch).toBeDefined()

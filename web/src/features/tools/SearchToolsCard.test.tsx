@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { SearchProviderInfo, SearchToolsResponse } from "@/client"
 import { SearchToolsCard } from "@/features/tools/SearchToolsCard"
+import { API_ROOT } from "@/shared/api/client"
 import { pickOption } from "@/tests/select"
 
 const PROVIDERS: SearchProviderInfo[] = [
@@ -84,10 +85,10 @@ function mockApi(opts: MockOpts = {}) {
     .mockImplementation(async (input, init) => {
       const url = String(input)
       const method = (init?.method ?? "GET").toUpperCase()
-      if (url.includes("/v1/search-tools/providers")) {
+      if (url.includes(`${API_ROOT}/search-tools/providers`)) {
         return jsonResponse(opts.providers ?? PROVIDERS)
       }
-      if (url.includes("/v1/search-tools")) {
+      if (url.includes(`${API_ROOT}/search-tools`)) {
         if (method !== "GET") {
           if (opts.writeStatus && opts.writeStatus >= 400) {
             return jsonResponse(
@@ -138,14 +139,14 @@ describe("SearchToolsCard", () => {
 
   it("does not read a failed request as an empty deployment", async () => {
     // `isLoading` goes false with no data behind it, so the fallback would
-    // otherwise claim no tools are configured and that POST /v1/search refuses
+    // otherwise claim no tools are configured and that POST /api/v1/search refuses
     // every request, on a read that never answered.
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input)
-      if (url.includes("/v1/search-tools/providers")) {
+      if (url.includes(`${API_ROOT}/search-tools/providers`)) {
         return jsonResponse(PROVIDERS)
       }
-      if (url.includes("/v1/search-tools")) {
+      if (url.includes(`${API_ROOT}/search-tools`)) {
         return jsonResponse({ detail: "boom" }, 500)
       }
       return jsonResponse([])
@@ -291,10 +292,10 @@ describe("SearchToolsCard", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input)
       const method = (init?.method ?? "GET").toUpperCase()
-      if (url.includes("/v1/search-tools/providers")) {
+      if (url.includes(`${API_ROOT}/search-tools/providers`)) {
         return jsonResponse(PROVIDERS)
       }
-      if (url.includes("/v1/search-tools") && method === "PATCH") {
+      if (url.includes(`${API_ROOT}/search-tools`) && method === "PATCH") {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>
         bodies.push(body)
         return jsonResponse({
@@ -351,7 +352,7 @@ describe("SearchToolsCard", () => {
       const call = fetchMock.mock.calls.find(
         ([, init]) => (init?.method ?? "") === "DELETE",
       )
-      expect(String(call?.[0])).toContain("/v1/search-tools/local")
+      expect(String(call?.[0])).toContain(`${API_ROOT}/search-tools/local`)
     })
   })
 })

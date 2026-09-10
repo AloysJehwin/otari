@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite"
 import { useState } from "react"
-
+import { API_ROOT } from "@/shared/api/client"
 import { accessLabel, ModelScopeControl } from "./ModelScopeControl"
 
 /**
@@ -67,9 +67,9 @@ const ALIASES = [
 ]
 
 const API = {
-  "/v1/models/discoverable": DISCOVERABLE,
-  "/v1/providers": PROVIDERS,
-  "/v1/aliases": ALIASES,
+  [`${API_ROOT}/models/discoverable`]: DISCOVERABLE,
+  [`${API_ROOT}/providers`]: PROVIDERS,
+  [`${API_ROOT}/aliases`]: ALIASES,
 }
 
 const meta = {

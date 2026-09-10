@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { OrganizationGuardrail } from "@/client"
 import { OrganizationGuardrailsCard } from "@/features/tools/OrganizationGuardrailsCard"
+import { API_ROOT } from "@/shared/api/client"
 import { organizationContext, organizationGuardrail } from "@/tests/fixtures"
 import { selectTrigger } from "@/tests/select"
 
@@ -33,7 +34,7 @@ function mockApi({
       }
       return Response.json(guardrails[0] ?? organizationGuardrail())
     }
-    if (url.includes("/v1/workspaces")) {
+    if (url.includes(`${API_ROOT}/workspaces`)) {
       return Response.json({
         data: [
           { id: ALPHA, name: "Alpha" },

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { DeploymentBootstrap, WorkspaceActivation } from "@/client"
 import { SetupGuideCard } from "@/features/onboarding/SetupGuideCard"
+import { API_ROOT } from "@/shared/api/client"
 import {
   SelectedWorkspaceProvider,
   useSelectedWorkspace,
@@ -68,7 +69,7 @@ function mockApi({
         const next = queue.length > 1 ? queue.shift() : queue[0]
         return Response.json(next)
       }
-      if (url.includes("/v1/models")) {
+      if (url.includes(`${API_ROOT}/models`)) {
         return Response.json({
           object: "list",
           data: models.map((id) => ({
@@ -202,7 +203,7 @@ describe("SetupGuideCard", () => {
       new RegExp(`Otari-Key: ${KEY}`),
     ) as HTMLTextAreaElement
     expect(curl.value).toContain(
-      `${window.location.origin}/v1/chat/completions`,
+      `${window.location.origin}${API_ROOT}/chat/completions`,
     )
     // The model comes from the catalog, so the snippet runs as pasted.
     expect(curl.value).toContain("openai:gpt-4o-mini")
@@ -227,7 +228,9 @@ describe("SetupGuideCard", () => {
     )
 
     const curl = (await screen.findByLabelText("curl")) as HTMLTextAreaElement
-    expect(curl.value).toContain("https://gateway.otari.ai/v1/chat/completions")
+    expect(curl.value).toContain(
+      `https://gateway.otari.ai${API_ROOT}/chat/completions`,
+    )
     expect(curl.value).not.toContain(window.location.origin)
     // Concealed, so the address it names is readable while the key is not.
     expect(curl.value).not.toContain(KEY)

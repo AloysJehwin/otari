@@ -20,7 +20,7 @@ export function useModels(enabled = true) {
   return useQuery({
     ...NO_RETRY,
     queryKey: [MODELS],
-    queryFn: () => apiFetch<ModelListResponse>("/v1/models"),
+    queryFn: () => apiFetch<ModelListResponse>("/models"),
     staleTime: 60_000,
     enabled,
   })
@@ -30,8 +30,7 @@ export function useDiscoverableModels(enabled = true) {
   return useQuery({
     ...NO_RETRY,
     queryKey: [DISCOVERABLE],
-    queryFn: () =>
-      apiFetch<DiscoverableModelsResponse>("/v1/models/discoverable"),
+    queryFn: () => apiFetch<DiscoverableModelsResponse>("/models/discoverable"),
     staleTime: 5 * 60_000,
     enabled,
   })
@@ -50,7 +49,7 @@ export function useModelMetadata(enabled = true) {
   return useQuery({
     ...NO_RETRY,
     queryKey: [METADATA],
-    queryFn: () => apiFetch<ModelMetadataResponse>("/v1/models/metadata"),
+    queryFn: () => apiFetch<ModelMetadataResponse>("/models/metadata"),
     staleTime: 10 * 60_000,
     enabled,
   })

@@ -1,7 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite"
-
+import { API_ROOT } from "@/shared/api/client"
 import { user } from "@/tests/fixtures"
-
 import { RouterReadiness } from "./RouterReadiness"
 
 /**
@@ -58,8 +57,8 @@ const meta = {
   },
   parameters: {
     api: {
-      "/v1/users": USERS,
-      "/v1/routing/status": status(),
+      [`${API_ROOT}/users`]: USERS,
+      [`${API_ROOT}/routing/status`]: status(),
     },
     layout: "padded",
   },
@@ -86,8 +85,8 @@ export const Warm: Story = {
 export const Cold: Story = {
   parameters: {
     api: {
-      "/v1/users": USERS,
-      "/v1/routing/status": status({
+      [`${API_ROOT}/users`]: USERS,
+      [`${API_ROOT}/routing/status`]: status({
         seed_count: 0,
         default_pool: { records: 0, warm: false },
         tasks: [],
