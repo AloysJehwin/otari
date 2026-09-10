@@ -1671,3 +1671,131 @@ describe("buttons come in three variants", () => {
     ).toEqual([])
   })
 })
+
+// Every prop of every design-system component is passed by some story.
+//
+// The catalog's claim is that it shows a component's variants and options, and
+// an optional prop is the one thing that can quietly fall outside it: `tsc` is
+// happy, the smoke run renders every story clean, and the story simply never
+// mentions the prop. #970 hit that three times in one rebase (`bounded`, and
+// `docsHref` on two components), each found by reading rather than by a check.
+//
+// Coverage is measured across the WHOLE catalog rather than per file. `Field`'s
+// `isInvalid` is exercised by `FieldMessages.stories.tsx`, which is the right
+// place for it, and a per-file rule would call that a gap.
+describe("the catalog shows every prop", () => {
+  const DS = join(WEB, "src", "design-system")
+
+  /**
+   * Props whose effect cannot be put on screen, each with the reason.
+   *
+   * Passing one in a story to satisfy a checker teaches a reader nothing, so
+   * these are named here instead. Keep it short: a prop lands here only when a
+   * story genuinely cannot show what it does, not when writing one is awkward.
+   */
+  const CANNOT_BE_SHOWN: Record<string, string> = {
+    "actions/CopyButton.selectOnFailure":
+      "the fallback for a refused clipboard write, which a story cannot provoke without breaking the clipboard",
+  }
+
+  // Not props: the first two are every component's, and a leading underscore is
+  // this tree's mark for a parameter destructured only to keep it off the DOM.
+  const NOT_A_PROP = new Set(["children", "className", "ref"])
+
+  function withoutComments(source: string): string {
+    return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+  }
+
+  /** A component's props, from its destructured parameters and its Props type. */
+  function propsOf(source: string): Set<string> {
+    const bare = withoutComments(source)
+    const names = new Set<string>()
+    for (const match of bare.matchAll(
+      /export (?:function|const) \w+(?:<[^>]*>)?\(\{([^}]*)\}/g,
+    )) {
+      for (const token of match[1].matchAll(/(?:^|,)\s*([a-zA-Z_]\w*)/g)) {
+        names.add(token[1])
+      }
+    }
+    // The Props declaration, read as a block rather than as a `{ ... }` right
+    // after the name. `Button`'s is `Omit<HeroButtonProps, …> & { … }`, so a
+    // pattern anchored on the brace missed `size`, which is declared there and
+    // forwarded through `...rest` without ever being destructured. Two props in
+    // the whole layer are only visible this way, and the canary above is what
+    // keeps that true.
+    //
+    // Line-anchored on purpose: a member of a nested object type is written
+    // inline here (`options: { value: string; label: string }[]`), so it cannot
+    // match and this stays free of the false positives a greedier read invites.
+    for (const match of bare.matchAll(/(?:interface|type)\s+\w*Props\w*\b/g)) {
+      const tail = bare.slice(match.index + match[0].length)
+      const stop = /\n(?:export|function|const|type|interface)\b/.exec(tail)
+      const block = stop ? tail.slice(0, stop.index) : tail
+      for (const token of block.matchAll(/^\s{2,}([a-zA-Z_]\w*)\??\s*:/gm)) {
+        names.add(token[1])
+      }
+    }
+    for (const name of [...names]) {
+      if (NOT_A_PROP.has(name) || name.startsWith("_")) names.delete(name)
+    }
+    return names
+  }
+
+  const stories = walk(DS)
+    .filter((name) => name.endsWith(".stories.tsx"))
+    .map((name) => readFileSync(join(DS, name), "utf8"))
+    .join("\n")
+
+  const components = walk(DS).filter(
+    (name) =>
+      name.endsWith(".tsx") &&
+      !name.endsWith(".test.tsx") &&
+      !name.endsWith(".stories.tsx"),
+  )
+
+  it("covers the layer and its catalog", () => {
+    expect(components.length).toBeGreaterThan(40)
+    expect(stories.length).toBeGreaterThan(10_000)
+
+    // A guard on the extractor, not on the layer. The rule below asserts only
+    // that a list of missing props is empty, so a regex that stopped matching a
+    // component shape would report every prop as covered and pass. Five
+    // components legitimately yield nothing (their only props are `children` or
+    // `className`), so a per-component floor is wrong; the total is what says
+    // the extractor still works.
+    const extracted = components.reduce(
+      (total, name) =>
+        total + propsOf(readFileSync(join(DS, name), "utf8")).size,
+      0,
+    )
+    expect(extracted).toBeGreaterThan(200)
+
+    // And a canary with known props, so a shape this file reads today cannot
+    // silently stop being read. `Button` is `Omit<HeroButtonProps, …> & { … }`,
+    // which is the least regex-friendly declaration in the layer.
+    const button = propsOf(
+      readFileSync(join(DS, "actions", "Button.tsx"), "utf8"),
+    )
+    expect([...button].sort()).toEqual(["size", "variant"])
+  })
+
+  it.each(components)("shows every prop of %s", (name) => {
+    const source = readFileSync(join(DS, name), "utf8")
+    const module = name.replace(/\.tsx$/, "")
+    const missing = [...propsOf(source)]
+      .filter((prop) => CANNOT_BE_SHOWN[`${module}.${prop}`] === undefined)
+      .filter((prop) => {
+        // `prop=` or `prop:` for a value, and bare `prop` for JSX boolean
+        // shorthand, which is how the stories pass `bounded` and `nested`.
+        const assigned = new RegExp(`\\b${prop}\\s*[=:]`)
+        const shorthand = new RegExp(`\\b${prop}\\s*(?:/?>|\\n)`)
+        return !assigned.test(stories) && !shorthand.test(stories)
+      })
+      .sort()
+
+    expect(
+      missing,
+      `no story passes ${missing.map((p) => `\`${p}\``).join(", ")} on ${module}. Add one, or name it in CANNOT_BE_SHOWN with the reason.`,
+    ).toEqual([])
+  })
+})
