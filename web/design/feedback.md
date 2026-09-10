@@ -143,7 +143,7 @@ one question; a form is a place to work.
   onSubmit={submit}
   isPending={create.isPending}
   error={create.error}
-  isDirty={name !== ""}
+  isDirty={isDirty}
 >
   <Field
     label="Key name"
@@ -189,6 +189,84 @@ disabled, because they genuinely are refused until it lands.
 **`isDirty` arms a guard in the footer, not a second dialog.** Escape and a
 click outside swap the actions for "Unsaved changes · Keep editing · Discard".
 A dialog never opens a dialog.
+
+**A draft is fresh on every open and untouched through the exit.** Reset on the
+way in, never on the way out. The frame keeps its content while it animates out,
+so clearing state when `isOpen` goes false blanks the body for the length of the
+exit, and a success step blanks to an empty form in front of the operator.
+
+**The component that renders the `FormDialog` owns everything that resets
+between opens: the draft *and* its mutation**, meaning the hook that yields
+`isPending` and `error`. Both live below the key. The page owns only `isOpen`,
+the open counter that keys the mount, and the list the mutation refreshes.
+
+```tsx
+// Correct: the mutation is inside the component the key remounts
+function CreateKeyDialog({ isOpen, onOpenChange }: …) {
+  const create = useCreateKey()
+  const [keyName, setKeyName] = useState("")
+  …
+}
+
+// and the page holds only what does not reset
+const [isOpen, setIsOpen] = useState(false)
+const [openCount, setOpenCount] = useState(0)
+…
+<Button onPress={() => { setOpenCount((n) => n + 1); setIsOpen(true) }}>
+  Create key
+</Button>
+<CreateKeyDialog key={openCount} isOpen={isOpen} onOpenChange={setIsOpen} />
+
+// Incorrect: the mutation sits above the key, so the key cannot reset it
+const createBudget = useCreateBudget()          // page level
+…
+<BudgetForm key={openCount} error={createBudget.error} … />
+```
+
+A mutation above the key is the shape to watch for, because the draft looks
+right and the error does not: the key remounts the fields, the mutation keeps
+its state, and a failed create's banner survives into a fresh form. `close()`
+only sets `isOpen` false; a `requestAnimationFrame` does not cover the exit,
+which is an animation rather than a frame.
+
+**`isDirty` comes from `useDirtySnapshot`**: hand it every field the form owns
+and it snapshots them on mount, so dirty means "differs from what was seeded".
+
+```tsx
+// Correct: the whole draft, and the hook holds the seed
+const { isDirty } = useDirtySnapshot({
+  name,
+  target,
+  chain,
+  conditions,
+  guardrails,
+})
+…
+<FormDialog isDirty={isDirty} … />
+
+// Incorrect: a predicate of empties, which reports an edit form dirty on arrival
+const isPristine = name === "" && target === "" && chain.length === 0
+```
+
+A field whose default arrives after mount (the first budget in a list, a
+workspace roster) is part of the seed, not a change: seed the state from the
+resolved value, or call the hook's `reset` when it lands. The hook cannot tell
+that default from a keystroke, and deliberately does not try.
+
+Dirty means "differs from what was seeded", and a create form is the case where
+the seed happens to be all empties. So a hand-listed predicate of empties is the
+create-only degenerate form: it is right until the same component edits
+something, and it drifts, because a field added to the form has to be remembered
+in a second place. The hook cannot omit a field, because it is handed the draft
+rather than a list of the fields to compare.
+
+A guard that lies lets Escape discard work it cannot see. That has happened here
+in both directions: a reopened dialog dirty on arrival, and a half-filled one
+discarded without a word.
+
+The remount is also what keeps one row's draft out of the next row's dialog,
+which is the promise this component's own docstring makes; a page that holds the
+draft above the dialog defeats it.
 
 **The success step is not a prop.** When a mutation has something to hand back
 (a key's secret), the caller swaps the children and the submit label to "Done"

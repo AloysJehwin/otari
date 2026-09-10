@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test"
 import { API_ROOT } from "@/shared/api/client"
 import {
   dismissComboBox,
+  dismissComboBoxInDialog,
   login,
   MASTER_KEY,
   nav,
@@ -176,14 +177,17 @@ test.describe("dashboard core flows", () => {
     await nav(page).getByRole("link", { name: "API keys" }).click()
     // A bootstrap key already exists, so use the header action, not onboarding.
     await page.getByRole("button", { name: "Create key" }).click()
-    await page.getByLabel("Name").fill("ci-bot")
+    // Scoped from here on, because "Create key" is now on screen twice: the
+    // heading's trigger stays visible while the dialog is open, and the labels
+    // rule makes the dialog's submit say the same words.
+    const dialog = page.getByRole("dialog")
+    await dialog.getByLabel("Name").fill("ci-bot")
     // Owner is required (user-first). Reuse the user created earlier; type it and
     // close the combobox popover so it does not aria-hide the submit button.
-    await page
-      .getByPlaceholder("Pick a user, or type a new id…")
-      .fill("alice@example.com")
-    await page.keyboard.press("Escape")
-    await page.getByRole("button", { name: "Create key" }).click()
+    const ownerBox = dialog.getByPlaceholder("Pick a user, or type a new id…")
+    await ownerBox.fill("alice@example.com")
+    await dismissComboBoxInDialog(ownerBox)
+    await dialog.getByRole("button", { name: "Create key" }).click()
 
     // The one-time reveal appears; acknowledge it.
     await page.getByRole("button", { name: /saved this key/i }).click()
