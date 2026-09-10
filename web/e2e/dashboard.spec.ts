@@ -1,7 +1,6 @@
 import { expect, test } from "@playwright/test"
 import { API_ROOT } from "@/shared/api/client"
 import {
-  dismissComboBox,
   dismissComboBoxInDialog,
   login,
   MASTER_KEY,
@@ -118,9 +117,12 @@ test.describe("dashboard core flows", () => {
     await openOrganization(page)
     await nav(page).getByRole("link", { name: "Spend & budgets" }).click()
     await page.getByRole("button", { name: "Create your first budget" }).click()
-    await page.getByLabel("Name (optional)").fill("e2e-budget")
-    await page.getByLabel("Spending limit (USD)").fill("100")
-    await page.getByRole("button", { name: "Create budget" }).click()
+    // Scoped: the heading's trigger and the dialog's submit both say "Create
+    // budget", so an unscoped press is ambiguous.
+    const dialog = page.getByRole("dialog")
+    await dialog.getByLabel("Name (optional)").fill("e2e-budget")
+    await dialog.getByLabel("Spending limit (USD)").fill("100")
+    await dialog.getByRole("button", { name: "Create budget" }).click()
 
     // The shared table renders on react-aria, so non-row-header cells are gridcells.
     await expect(page.getByRole("gridcell", { name: "$100.00" })).toBeVisible()
@@ -151,15 +153,17 @@ test.describe("dashboard core flows", () => {
     await nav(page).getByRole("link", { name: "Spend & budgets" }).click()
     const budgetRow = page.getByRole("row", { name: /e2e-budget/ })
     await budgetRow.getByRole("button", { name: "Edit" }).click()
-    // "Add a person" is the input's own accessible name; "Assign to people" is
-    // the section heading beside it and labels nothing. Same shape as
-    // `addFilterValue` otherwise: the popover aria-hides the rest of the page, so
-    // it has to be put away before the submit button is reachable.
-    const owners = page.getByRole("combobox", { name: "Add a person" })
+    // The field's visible label is its accessible name now: the picker used to
+    // carry a hidden "Add a person" beside a heading that labeled nothing, so
+    // one control had two names.
+    const editDialog = page.getByRole("dialog")
+    const owners = editDialog.getByRole("combobox", {
+      name: "Assign to people (optional)",
+    })
     await owners.fill("alice@example.com")
     await page.getByRole("option", { name: /alice@example\.com/ }).click()
-    await dismissComboBox(owners)
-    await page.getByRole("button", { name: "Save changes" }).click()
+    await dismissComboBoxInDialog(owners)
+    await editDialog.getByRole("button", { name: "Save" }).click()
 
     // The budget now reports one holder in its People column, which is the
     // assignment landing.

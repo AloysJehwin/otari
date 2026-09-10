@@ -49,6 +49,13 @@ function row(page: Page, ariaLabel: string, name: string | RegExp): Locator {
 // A routing form's model pickers take any selector, so the value is typed rather
 // than chosen. Their popover has to be put away afterwards or it aria-hides the
 // controls below it, including the form's own submit.
+//
+// The page-level dismissal, deliberately, even though this form is a dialog now.
+// The model box does not reopen on focus, so the `blur()` puts it away and the
+// wait passes. The people picker is the one that does: it is `menuTrigger="focus"`,
+// so blurring it inside a modal hands focus back and the popover returns, which
+// is what `dismissComboBoxInDialog` exists for. Move this to that helper if the
+// model box ever opens on focus too.
 async function fillModelBox(
   page: Page,
   name: RegExp,
@@ -193,24 +200,29 @@ test.describe("budgets", () => {
     await openPage(page, "Spend & budgets", "Budgets")
 
     await page.getByRole("button", { name: "Create budget" }).click()
-    await page.getByLabel("Name (optional)").fill(BUDGET)
-    await page.getByLabel("Spending limit (USD)").fill("25")
+    // Scoped: the heading's trigger and the dialog's submit both say "Create
+    // budget", so an unscoped press is ambiguous.
+    const dialog = page.getByRole("dialog")
+    await dialog.getByLabel("Name (optional)").fill(BUDGET)
+    await dialog.getByLabel("Spending limit (USD)").fill("25")
     // Assigning at creation is the path that makes a budget enforceable; a budget
     // with no users caps nothing.
-    const owner = page.getByRole("combobox", { name: "Add a person" })
+    const owner = dialog.getByRole("combobox", {
+      name: "Assign to people (optional)",
+    })
     await owner.fill(PARITY.users.heavy)
     // Plain string, not a RegExp built from the id: an address is full of regex
     // metacharacters, so `.` would match any character and the pattern could pick
     // a neighbouring option. Playwright matches an accessible name by substring
     // here, which is what an aliased user's "id (alias)" label needs anyway.
     await page.getByRole("option", { name: PARITY.users.heavy }).click()
-    await dismissComboBox(owner)
+    await dismissComboBoxInDialog(owner)
     // The picked user becomes a removable chip, which is the form's own record of
     // who this budget will cap before it is submitted.
     await expect(
-      page.getByRole("button", { name: `Remove ${PARITY.users.heavy}` }),
+      dialog.getByRole("button", { name: `Remove ${PARITY.users.heavy}` }),
     ).toBeVisible()
-    await page.getByRole("button", { name: "Create budget" }).click()
+    await dialog.getByRole("button", { name: "Create budget" }).click()
 
     const budget = row(page, "Budgets", BUDGET)
     await expect(budget).toContainText("$25.00")
@@ -219,8 +231,9 @@ test.describe("budgets", () => {
     await expect(budget).not.toContainText("No users assigned")
 
     await budget.getByRole("button", { name: "Edit" }).click()
-    await page.getByLabel("Spending limit (USD)").fill("50")
-    await page.getByRole("button", { name: "Save changes" }).click()
+    const editDialog = page.getByRole("dialog")
+    await editDialog.getByLabel("Spending limit (USD)").fill("50")
+    await editDialog.getByRole("button", { name: "Save" }).click()
     await expect(row(page, "Budgets", BUDGET)).toContainText("$50.00")
 
     // Reset history is a per-budget panel, not a page: it opens under the table
