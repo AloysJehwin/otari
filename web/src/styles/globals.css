@@ -2133,6 +2133,68 @@ main {
   overflow: visible;
 }
 
+/* FormDialog's geometry, which cannot live at its call site.
+ *
+ * The `.modal__dialog` rule above is unlayered, so it outranks
+ * `@layer utilities` and a `w-[32.5rem]` on the dialog compiles, lints, ships
+ * and loses; its `min-width` would beat that class even where the width landed,
+ * which is what makes the 440px size unreachable rather than merely fragile.
+ * Both were read out of the emitted stylesheet.
+ *
+ * `--visual-viewport-height` is HeroUI's own, already on the container, so the
+ * height budget follows a phone's keyboard rather than the layout viewport.
+ * 15rem is the 120px offset the dialog sits at, twice: the gap above and below
+ * is symmetric by design, and what is left is where the body starts scrolling
+ * while the header and footer stay put. */
+.otari-form-dialog {
+  min-width: 0;
+  max-width: calc(100vw - 2rem);
+  max-height: calc(var(--visual-viewport-height, 100dvh) - 15rem);
+}
+
+/* The three sizes, as modifiers rather than a value the component sets inline:
+ * what the unlayered rule above beats is a `width`, and nothing declares these,
+ * so a class here has nothing to lose to. The phone block below is later still,
+ * which is what lets a sheet ignore all three. */
+.otari-form-dialog--sm {
+  width: 27.5rem;
+}
+.otari-form-dialog--md {
+  width: 32.5rem;
+}
+.otari-form-dialog--lg {
+  width: 40rem;
+}
+
+/* A field fills this dialog. `Field` and `SecretField` cap themselves at
+ * `max-w-md`, which is right on a page (a 448px measure under a 620px column
+ * keeps a name field from reading as a paragraph) and wrong here: it left a
+ * 448px input in the 638px body of an `lg` dialog, with 190px of nothing beside
+ * it. The dialog is a named place the way a toolbar is, so the override belongs
+ * to the place rather than to every call site inside it, and it is keyed on
+ * HeroUI's own `data-slot` because that is the element carrying the cap. */
+.otari-form-dialog [data-slot="textfield"] {
+  max-width: none;
+}
+
+/* Below 640px every size is a full-screen sheet: a centered box with a phone's
+ * margins around it wastes the only axis a form needs, and the keyboard takes
+ * half of what is left.
+ *
+ * The footer takes no rule of its own: `env(safe-area-inset-bottom)` is 0
+ * without `viewport-fit=cover`, which `index.html` leaves off deliberately (the
+ * shell has no insets to sit out of the way), so a safe-area pad here would
+ * read as clearing the home indicator while adding nothing. */
+@media (max-width: 639px) {
+  .otari-form-dialog {
+    width: 100%;
+    max-width: none;
+    height: var(--visual-viewport-height, 100dvh);
+    max-height: none;
+    border: 0;
+  }
+}
+
 /* Backdrop dimming — HeroUI's default backdrop variant is `opaque`, and that
  * modifier applies `bg-backdrop` at full strength. `--color-backdrop` is pure
  * black in both themes on purpose (see its comment above: a fixed alpha then

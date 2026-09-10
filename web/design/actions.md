@@ -59,8 +59,58 @@ band, the secondary one becomes a ghost.
 <Button variant="outline" onPress={exportCsv}>Export CSV</Button>
 ```
 
-`Button` takes `isPending` while a mutation is in flight; it disables itself and
-shows its own spinner. Do not pair it with `isDisabled` for the same condition.
+`Button` takes `isPending` while a mutation is in flight. **It draws no spinner**,
+whatever this file used to say: HeroUI puts `data-pending` on the element and the
+stylesheet answers that with `pointer-events: none` and nothing else, so the
+spinner is the call site's to render. What `isPending` does supply is the press
+block, `aria-disabled`, and react-aria's announcement, and it paints the button
+at the disabled 0.4. Do not pair it with `isDisabled` for the same condition.
+
+Which means `isPending` is the wrong prop wherever the button should read as
+*working* rather than *refused*, since 0.4 is the denied treatment
+([motion-and-access.md](motion-and-access.md)). `FormDialog`'s submit is the
+worked example: it keeps its fill, blocks its own press, and says `aria-busy`.
+
+## Where a create action lives, and what it says
+
+Two rules, and both are "always the same" rather than "usually". The dashboard
+had the action in a page's top right on one route and halfway down another, and
+pressing it opened a modal on one and appended a section on the next, so an
+operator learned each page separately.
+
+**Placement: the heading row of the collection being created into.** When the
+page is one collection that is `PageIntro`'s `action` slot; when the page holds
+several it is the section's own heading row, right-aligned, the same button. An
+empty state may repeat the call to action, and it opens the same dialog. The
+header button does not hide while the form is open: the form is a dialog now, so
+there is nothing for hiding it to prevent.
+
+**Surface: `FormDialog`, every time.** See [feedback.md](feedback.md).
+
+**Labels: the trigger and the submit are the same string, word for word.** The
+dialog's title names the object instead.
+
+| Trigger | Title | Submit |
+| --- | --- | --- |
+| Create key | New key | Create key |
+| Add MCP server | New MCP server | Add MCP server |
+
+**Create or Add** is not a style choice: *create* is for an object born here (a
+key, a budget, a policy, a workspace), *add* is for attaching something that
+already exists elsewhere (a provider, a provider key, an MCP server, a member,
+an override, a ceiling). *Invite* and *Claim* keep their own verb, because
+neither is either of those.
+
+```tsx
+// Correct
+<PageIntro title="API keys" action={
+  <Button variant="primary" onPress={openCreate}>Create key</Button>
+} />
+
+// Incorrect: a second vocabulary for the same act, and a title that restates
+// the button instead of naming what appears
+<Button variant="primary" onPress={openCreate}>New key +</Button>
+```
 
 ## Sizes
 
