@@ -46,8 +46,8 @@ PageError: { error: unknown, children? }
 ConfirmDialog: { isOpen, onOpenChange, heading, body, confirmLabel, onConfirm,
   confirmVariant = "danger", isPending?, error? }
 FormDialog: { isOpen, onOpenChange, title, description?, size = "md",
-  submitLabel, onSubmit, isPending, error?, isDirty?, footerStart?, tabs?,
-  children }
+  submitLabel, onSubmit, isPending, error?, isDirty?, isDismissable = true,
+  isSubmitDisabled?, returnFocusRef?, footerStart?, tabs?, children }
 ErrorBoundary: { children, resetKey? }
 ```
 
@@ -185,6 +185,19 @@ is **not** disabled while it runs: disabled is one treatment at 0.4 opacity and
 it has to read as denied, and a submit in flight is working rather than refused,
 so it keeps its fill and blocks its own press. Cancel and the close control *are*
 disabled, because they genuinely are refused until it lands.
+
+**An empty state or first-run panel whose action opens the dialog stays mounted
+while the dialog is open; it is the node focus returns to.** Hiding it while the
+form is up was right when the form was a band on the page and takes away the
+only thing focus can go back to now that it is a dialog over one.
+
+**A page whose empty state disappears after the first create passes
+`returnFocusRef` to the control that survives.** React Aria restores focus to
+whatever opened the dialog, and that node is gone when creating the first row is
+what emptied the empty state; focus falls to `<body>` and the next Tab starts at
+the top of the document. The check runs when the frame is actually gone, not when
+it was asked to close: the overlay subtree lives through its exit animation, so a
+`requestAnimationFrame` at close time finds the dialog still holding focus.
 
 **`isDirty` arms a guard in the footer, not a second dialog.** Escape and a
 click outside swap the actions for "Unsaved changes · Keep editing · Discard".
