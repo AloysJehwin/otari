@@ -2,7 +2,7 @@ import { Button } from "@heroui/react"
 import { useEffect, useState } from "react"
 
 import type { OrganizationGuardrail, Workspace } from "@/client"
-import { ConfirmButton } from "@/design-system/actions/ConfirmButton"
+import { ConfirmDialog } from "@/design-system/feedback/ConfirmDialog"
 import { ErrorBanner } from "@/design-system/feedback/ErrorBanner"
 import { errorMessage } from "@/design-system/feedback/errorMessage"
 import { InfoBanner } from "@/design-system/feedback/InfoBanner"
@@ -147,6 +147,7 @@ function GuardrailRow({
   // never shows what is stored, only whether something is.
   const [credential, setCredential] = useState("")
   const [error, setError] = useState("")
+  const [isDeleteOpen, setDeleteOpen] = useState(false)
 
   // Rehydrate from whatever the server last said, so the row never drifts from
   // the stored entry after a save.
@@ -297,23 +298,51 @@ function GuardrailRow({
         >
           {update.isPending ? "Saving…" : "Save"}
         </Button>
-        <ConfirmButton
-          confirmLabel="Remove permanently"
-          isPending={busy}
-          onConfirm={() => {
-            setError("")
-            remove.mutate(guardrail.id, {
-              onSuccess: () => onSaved(`${guardrail.profile} removed`),
-              onError: (err) => setError(errorMessage(err)),
-            })
-          }}
+        <Button
+          size="sm"
+          variant="ghost"
+          // Named per row, as the Save beside it is: the card is a list of
+          // profiles, so a bare "Remove guardrail" is the same name N times.
+          aria-label={`Remove ${guardrail.profile}`}
+          isDisabled={busy}
+          onPress={() => setDeleteOpen(true)}
         >
           Remove guardrail
-        </ConfirmButton>
+        </Button>
       </div>
       {error ? (
         <span className="break-words text-caption text-danger">{error}</span>
       ) : null}
+
+      <ConfirmDialog
+        isOpen={isDeleteOpen}
+        // Cleared on the way out: a refusal otherwise sits on the mutation
+        // and greets the next open as if it had just happened.
+        onOpenChange={(open) => {
+          setDeleteOpen(open)
+          if (!open) remove.reset()
+        }}
+        heading="Remove guardrail"
+        // The stored mode, not the row's unsaved `mode`: this describes what is
+        // in force, and a monitoring guardrail never blocked anything.
+        body={
+          guardrail.mode === "block"
+            ? `${guardrail.profile} stops running on every request it covers, and its stored credential is removed with it. Requests it would have blocked are served.`
+            : `${guardrail.profile} stops running on every request it covers, and its stored credential is removed with it. Requests it would have recorded go unchecked.`
+        }
+        confirmLabel="Remove permanently"
+        isPending={remove.isPending}
+        error={remove.error}
+        onConfirm={() => {
+          setError("")
+          remove.mutate(guardrail.id, {
+            onSuccess: () => {
+              setDeleteOpen(false)
+              onSaved(`${guardrail.profile} removed`)
+            },
+          })
+        }}
+      />
     </div>
   )
 }
