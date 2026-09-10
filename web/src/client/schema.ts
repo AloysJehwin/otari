@@ -1326,6 +1326,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/mcp/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Execute Mcp Tool
+         * @description Execute one caller-authorized tool call against a stored MCP server.
+         *
+         *     The calling application owns any user approval, argument editing,
+         *     cancellation and action history; Otari executes exactly the tool name and
+         *     arguments it is given, once, and returns the remote server's native result.
+         *     A result with ``isError: true`` is a definitive outcome and comes back as an
+         *     HTTP 200.
+         *
+         *     **This request must never be retried automatically.** ``client_execution_id``
+         *     is correlation, not idempotency: once the call has been dispatched Otari
+         *     cannot know whether the tool ran, and an ``outcome_unknown`` response means
+         *     exactly that. Proxies, service meshes and SDKs on this path have to disable
+         *     retries for it, including on connection resets and 5xx responses.
+         */
+        post: operations["execute_mcp_tool_v1_mcp_execute_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/mcp/servers/{mcp_server_id}/tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Mcp Tools
+         * @description List the tools a stored MCP server exposes to the authenticated workspace.
+         *
+         *     Call this once per server when preparing a model or workflow run, and reuse
+         *     the answer for every tool from that server for the length of the run: there
+         *     is no cross-run cache in this version, so a later run rediscovers and
+         *     staleness stays bounded without any invalidation state to keep.
+         *
+         *     The response is the whole authorized catalog or an error. It is never
+         *     partial, because a caller would read a short catalog as the complete input
+         *     to its own authorization and risk policy. The single exception is
+         *     ``warnings``, which names a tool whose descriptor Otari could not carry.
+         *
+         *     A tool the server removes after discovery may still be proposed from the
+         *     run's snapshot; execution then returns the remote server's own typed error.
+         */
+        get: operations["list_mcp_tools_v1_mcp_servers__mcp_server_id__tools_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/messages": {
         parameters: {
             query?: never;
@@ -4947,6 +5012,37 @@ export interface components {
             /** Workspace Id */
             workspace_id?: string | null;
         };
+        /** Annotations */
+        Annotations: {
+            /** Audience */
+            audience?: ("user" | "assistant")[] | null;
+            /** Priority */
+            priority?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * AudioContent
+         * @description Audio content for a message.
+         */
+        AudioContent: {
+            /** Meta */
+            _meta?: {
+                [key: string]: unknown;
+            } | null;
+            annotations?: components["schemas"]["Annotations"] | null;
+            /** Data */
+            data: string;
+            /** Mimetype */
+            mimeType: string;
+            /**
+             * Type
+             * @constant
+             */
+            type: "audio";
+        } & {
+            [key: string]: unknown;
+        };
         /**
          * AudioSpeechRequest
          * @description OpenAI-compatible audio speech (TTS) request.
@@ -5034,6 +5130,27 @@ export interface components {
             tools?: {
                 [key: string]: components["schemas"]["ToolMeter"];
             };
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * BlobResourceContents
+         * @description Binary contents of a resource.
+         */
+        BlobResourceContents: {
+            /** Meta */
+            _meta?: {
+                [key: string]: unknown;
+            } | null;
+            /** Blob */
+            blob: string;
+            /** Mimetype */
+            mimeType?: string | null;
+            /**
+             * Uri
+             * Format: uri
+             */
+            uri: string;
         } & {
             [key: string]: unknown;
         };
@@ -5132,6 +5249,29 @@ export interface components {
              * @default 0
              */
             user_count: number;
+        };
+        /**
+         * CallToolResult
+         * @description The server's response to a tool call.
+         */
+        CallToolResult: {
+            /** Meta */
+            _meta?: {
+                [key: string]: unknown;
+            } | null;
+            /** Content */
+            content: (components["schemas"]["TextContent"] | components["schemas"]["ImageContent"] | components["schemas"]["AudioContent"] | components["schemas"]["ResourceLink"] | components["schemas"]["EmbeddedResource"])[];
+            /**
+             * Iserror
+             * @default false
+             */
+            isError: boolean;
+            /** Structuredcontent */
+            structuredContent?: {
+                [key: string]: unknown;
+            } | null;
+        } & {
+            [key: string]: unknown;
         };
         /**
          * CallerIdentityPublic
@@ -6068,6 +6208,29 @@ export interface components {
             selector: string;
         };
         /**
+         * EmbeddedResource
+         * @description The contents of a resource, embedded into a prompt or tool call result.
+         *
+         *     It is up to the client how best to render embedded resources for the benefit
+         *     of the LLM and/or the user.
+         */
+        EmbeddedResource: {
+            /** Meta */
+            _meta?: {
+                [key: string]: unknown;
+            } | null;
+            annotations?: components["schemas"]["Annotations"] | null;
+            /** Resource */
+            resource: components["schemas"]["TextResourceContents"] | components["schemas"]["BlobResourceContents"];
+            /**
+             * Type
+             * @constant
+             */
+            type: "resource";
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * EmbeddingRequest
          * @description OpenAI-compatible embedding request.
          */
@@ -6086,6 +6249,17 @@ export interface components {
             /** User */
             user?: string | null;
         };
+        /**
+         * ExecutionState
+         * @description Whether the remote tool may have run (R-ERR-2).
+         *
+         *     A retry-safety classification, not a description of how the HTTP request
+         *     went. ``NOT_STARTED`` is Otari saying it knows the tool did not run;
+         *     ``OUTCOME_UNKNOWN`` is Otari saying it cannot know, which is the only honest
+         *     answer once the transport has begun writing ``tools/call``.
+         * @enum {string}
+         */
+        ExecutionState: "not_started" | "outcome_unknown" | "completed";
         /**
          * ExplainRequest
          * @description Ask what a policy would do, without dispatching anything.
@@ -6356,6 +6530,42 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * Icon
+         * @description An icon for display in user interfaces.
+         */
+        Icon: {
+            /** Mimetype */
+            mimeType?: string | null;
+            /** Sizes */
+            sizes?: string[] | null;
+            /** Src */
+            src: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * ImageContent
+         * @description Image content for a message.
+         */
+        ImageContent: {
+            /** Meta */
+            _meta?: {
+                [key: string]: unknown;
+            } | null;
+            annotations?: components["schemas"]["Annotations"] | null;
+            /** Data */
+            data: string;
+            /** Mimetype */
+            mimeType: string;
+            /**
+             * Type
+             * @constant
+             */
+            type: "image";
+        } & {
+            [key: string]: unknown;
         };
         /**
          * ImageGenerationRequest
@@ -6722,8 +6932,66 @@ export interface components {
             object: "tool";
         };
         /**
+         * McpErrorBody
+         * @description The one error shape both stored-server endpoints return (R-ERR-1).
+         */
+        McpErrorBody: {
+            /** Code */
+            code: string;
+            /** Detail */
+            detail: string;
+            execution_state: components["schemas"]["ExecutionState"];
+            /** Request Id */
+            request_id: string;
+        };
+        /**
+         * McpExecuteRequest
+         * @description One stored server, and the exact call the application authorized.
+         *
+         *     No inline server fields (R-REQ-4): a caller registers a remote MCP server
+         *     through the control plane once and refers to it by id afterwards, which
+         *     keeps URLs, credentials, revocation and allowlist policy on Otari's side of
+         *     the boundary instead of in every request.
+         *
+         *     Extras are forbidden rather than ignored, so a caller still sending the old
+         *     inline ``server`` block is told its configuration was not used instead of
+         *     watching Otari quietly execute against a different server than the one it
+         *     named.
+         */
+        McpExecuteRequest: {
+            /**
+             * Arguments
+             * @description The exact caller-authorized JSON-object arguments.
+             */
+            arguments?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Client Execution Id
+             * Format: uuid
+             * @description A caller-generated UUID, for correlation only. It is not proof of approval and not an idempotency key: repeating a request with the same value may execute the tool again, so this request must never be retried automatically.
+             */
+            client_execution_id: string;
+            /**
+             * Mcp Server Id
+             * Format: uuid
+             * @description The stored MCP server to execute against.
+             */
+            mcp_server_id: string;
+            /**
+             * Server Revision
+             * @description The stored-server revision returned by tool discovery. Required, and compared against the current one so a configuration change since the caller authorized this call is refused rather than executed. Not an approval credential.
+             */
+            server_revision: string;
+            /**
+             * Tool Name
+             * @description The remote MCP tool name the caller authorized for this one execution.
+             */
+            tool_name: string;
+        };
+        /**
          * McpServerConfig
-         * @description Inline MCP server configuration accepted on the chat completions request.
+         * @description Inline MCP server configuration accepted by generation requests.
          *
          *     Streamable HTTP transport. The `url` must be reachable from the gateway process.
          *
@@ -6746,6 +7014,77 @@ export interface components {
             purpose_hint?: string | null;
             /** Url */
             url: string;
+        };
+        /**
+         * McpToolDefinition
+         * @description One live tool a caller-orchestrated application may expose to its model.
+         *
+         *     ``annotations`` is the remote server's own metadata, passed through as
+         *     untrusted data. Otari never turns ``readOnlyHint`` into an authorization
+         *     decision (R-RISK-1); each application owns its risk policy, and a server
+         *     cannot waive an application's approval gate by labeling itself read-only.
+         */
+        McpToolDefinition: {
+            /**
+             * Annotations
+             * @description The server's MCP annotations, untrusted metadata rather than policy.
+             */
+            annotations?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Description
+             * @description The server's own description, untrusted.
+             */
+            description?: string | null;
+            /**
+             * Input Schema
+             * @description The tool's MCP inputSchema, unmodified.
+             */
+            input_schema: {
+                [key: string]: unknown;
+            };
+            /**
+             * Name
+             * @description The remote MCP tool name to send back to /v1/mcp/execute.
+             */
+            name: string;
+        };
+        /**
+         * McpToolWarning
+         * @description One tool that was omitted, and the code that omitted it (R-SCHEMA-3).
+         */
+        McpToolWarning: {
+            /** Code */
+            code: string;
+            /** Tool Name */
+            tool_name: string;
+        };
+        /**
+         * McpToolsResponse
+         * @description The authorized catalog for one stored server.
+         *
+         *     Carries no server URL, no credential, and no allowlist entry that the live
+         *     catalog did not return (R-DISC-2). ``server_revision`` is what an
+         *     application persists with a proposed call and sends back to
+         *     ``/v1/mcp/execute``, so a stored-configuration change between the two is
+         *     refused rather than executed.
+         */
+        McpToolsResponse: {
+            /**
+             * Server Id
+             * Format: uuid
+             */
+            server_id: string;
+            /**
+             * Server Revision
+             * @description An opaque revision of the stored server's URL, credential, enabled state and allowlist. It detects Otari-side and platform-side configuration changes only: a remote server that changes its own catalog or a tool's behavior behind an unchanged URL will not move it.
+             */
+            server_revision: string;
+            /** Tools */
+            tools: components["schemas"]["McpToolDefinition"][];
+            /** Warnings */
+            warnings: components["schemas"]["McpToolWarning"][];
         };
         /**
          * Message
@@ -8491,6 +8830,43 @@ export interface components {
             token: string;
         };
         /**
+         * ResourceLink
+         * @description A resource that the server is capable of reading, included in a prompt or tool call result.
+         *
+         *     Note: resource links returned by tools are not guaranteed to appear in the results of `resources/list` requests.
+         */
+        ResourceLink: {
+            /** Meta */
+            _meta?: {
+                [key: string]: unknown;
+            } | null;
+            annotations?: components["schemas"]["Annotations"] | null;
+            /** Description */
+            description?: string | null;
+            /** Icons */
+            icons?: components["schemas"]["Icon"][] | null;
+            /** Mimetype */
+            mimeType?: string | null;
+            /** Name */
+            name: string;
+            /** Size */
+            size?: number | null;
+            /** Title */
+            title?: string | null;
+            /**
+             * Type
+             * @constant
+             */
+            type: "resource_link";
+            /**
+             * Uri
+             * Format: uri
+             */
+            uri: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * ResponsesRequest
          * @description OpenAI Responses API-compatible request.
          *
@@ -9157,6 +9533,47 @@ export interface components {
             ok: boolean;
             /** Reason */
             reason: string;
+        };
+        /**
+         * TextContent
+         * @description Text content for a message.
+         */
+        TextContent: {
+            /** Meta */
+            _meta?: {
+                [key: string]: unknown;
+            } | null;
+            annotations?: components["schemas"]["Annotations"] | null;
+            /** Text */
+            text: string;
+            /**
+             * Type
+             * @constant
+             */
+            type: "text";
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * TextResourceContents
+         * @description Text contents of a resource.
+         */
+        TextResourceContents: {
+            /** Meta */
+            _meta?: {
+                [key: string]: unknown;
+            } | null;
+            /** Mimetype */
+            mimeType?: string | null;
+            /** Text */
+            text: string;
+            /**
+             * Uri
+             * Format: uri
+             */
+            uri: string;
+        } & {
+            [key: string]: unknown;
         };
         /**
          * TokenChargeLine
@@ -12641,6 +13058,250 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    execute_mcp_tool_v1_mcp_execute_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["McpExecuteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallToolResult"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Payment Required */
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Gateway Timeout */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+        };
+    };
+    list_mcp_tools_v1_mcp_servers__mcp_server_id__tools_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mcp_server_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpToolsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Payment Required */
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpErrorBody"];
                 };
             };
         };

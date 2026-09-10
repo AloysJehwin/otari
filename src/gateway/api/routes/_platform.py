@@ -35,9 +35,15 @@ from gateway.core.usage import (
 )
 from gateway.log_config import logger
 from gateway.metrics import record_abandoned_attempt
-from gateway.models.mcp import McpServerConfig
+from gateway.models.mcp import McpServerConfig, ResolvedMcpServer
 from gateway.services.bedrock_gateway_auth import build_bedrock_client_args
 from gateway.services.mcp_loop import MaxToolIterationsExceeded
+from gateway.services.mcp_stateless import (
+    CODE_RESOLUTION_FAILED,
+    CODE_SERVER_NOT_FOUND,
+    ExecutionState,
+    McpExecutionError,
+)
 from gateway.services.sandbox_backend import SandboxNotReachableError
 from gateway.services.web_search_backend import WebSearchNotReachableError
 
@@ -550,7 +556,13 @@ async def _post_resolve(
         ) from None
 
     if response.status_code == 200:
-        return response.json()
+        try:
+            return response.json()
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Authorization service unavailable",
+            ) from None
 
     if response.status_code in {400, 401, 402, 403, 404, 429}:
         detail = _safe_detail_from_platform(response, client_error_detail)
@@ -941,6 +953,61 @@ async def _resolve_platform_mcp_servers(
         )
         for s in payload.get("servers", [])
     ]
+
+
+async def _resolve_platform_mcp_server(
+    config: GatewayConfig,
+    user_token: str,
+    mcp_server_id: uuid.UUID,
+) -> ResolvedMcpServer:
+    """Resolve one stored MCP server for the stored-server endpoints.
+
+    The same platform resolver `_resolve_platform_mcp_servers` calls, with a
+    one-id request. A current peer may echo ``id`` and ``enabled``; an older peer
+    returns only the connection config and omits a disabled server. Exactly one
+    legacy entry is therefore bound to the only id requested and treated as
+    enabled. An explicit id must still match, and an explicit enabled value must
+    still be a strict boolean (R-RES-1).
+
+    An empty list is the legacy disabled-server answer and is indistinguishable
+    here from an inaccessible server, which is also the public 404 contract.
+    Several entries, a mismatched id, a missing ``servers`` list, or a field
+    Otari cannot read remain resolution failures.
+
+    Raises:
+        McpExecutionError: the server was inaccessible, or the answer was not a
+            matching, well-formed entry.
+        HTTPException: the platform itself refused, for the route to classify.
+    """
+    payload = await _post_resolve(
+        config,
+        user_token=user_token,
+        path="/gateway/mcp-servers/resolve",
+        body={"mcp_server_ids": [str(mcp_server_id)]},
+        client_error_detail="MCP server resolution failed",
+    )
+    servers = payload.get("servers") if isinstance(payload, dict) else None
+    if not isinstance(servers, list):
+        raise McpExecutionError(CODE_RESOLUTION_FAILED, ExecutionState.NOT_STARTED, 502)
+    if not servers:
+        raise McpExecutionError(CODE_SERVER_NOT_FOUND, ExecutionState.NOT_STARTED, 404)
+    if len(servers) != 1:
+        raise McpExecutionError(CODE_RESOLUTION_FAILED, ExecutionState.NOT_STARTED, 502)
+
+    entry = servers[0]
+    if isinstance(entry, dict):
+        entry = dict(entry)
+        entry.setdefault("id", mcp_server_id)
+        entry.setdefault("enabled", True)
+    try:
+        resolved = ResolvedMcpServer.model_validate(entry)
+    except ValidationError:
+        # No detail from the validator travels: it would quote the resolver's
+        # own payload, which carries the stored URL and credential.
+        raise McpExecutionError(CODE_RESOLUTION_FAILED, ExecutionState.NOT_STARTED, 502) from None
+    if resolved.id != mcp_server_id:
+        raise McpExecutionError(CODE_RESOLUTION_FAILED, ExecutionState.NOT_STARTED, 502)
+    return resolved
 
 
 async def _resolve_platform_web_search(
