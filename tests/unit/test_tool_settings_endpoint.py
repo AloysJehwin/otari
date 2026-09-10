@@ -1,6 +1,6 @@
 """Endpoint tests for /v1/tool-settings (sqlite-backed TestClient)."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -183,6 +183,8 @@ def test_tool_settings_not_mounted_in_hybrid_mode(tmp_path: Path, _hybrid_env: N
     with TestClient(create_app(config)) as client:
         # Standalone-only: the management route is not registered in hybrid mode.
         assert client.get(f"{API_ROOT}/tool-settings", headers=AUTH).status_code == 404
+        # And the catalog read with it, since it is mounted on the same router.
+        assert client.get(f"{API_ROOT}/tool-settings/guardrails/profiles", headers=AUTH).status_code == 404
 
 
 def test_patch_persists_the_sandbox_image(tmp_path: Path) -> None:
@@ -204,3 +206,88 @@ def test_patch_persists_the_sandbox_image(tmp_path: Path) -> None:
     assert fields["sandbox_session_image"]["value"] == "mzdotai/otari-sandbox-container:latest"
     assert fields["sandbox_session_image"]["service"] == "sandbox"
     assert "sandbox_allowed_session_images" not in fields
+
+
+def _stub_guardrails_service(
+    monkeypatch: pytest.MonkeyPatch, handler: Callable[[httpx.Request], httpx.Response]
+) -> None:
+    """Answer the guardrails service's ``GET /profiles`` from ``handler``.
+
+    Through the transport rather than by patching a method, because the catalog
+    streams the body to cap its size and so calls no single request method.
+    """
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient  # captured before patching, to avoid recursion
+
+    def factory(*_args: object, **_kwargs: object) -> httpx.AsyncClient:
+        return real_async_client(transport=transport)
+
+    monkeypatch.setattr("gateway.services.guardrail_catalog.httpx.AsyncClient", factory)
+
+
+def test_guardrail_profiles_lists_what_the_service_built(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "http://anyguardrails:8000/profiles"
+        return httpx.Response(200, json=[{"name": "house-policy", "guardrail_name": "any_llm"}])
+
+    _stub_guardrails_service(monkeypatch, handler)
+    with _client(tmp_path, guardrails_url="http://anyguardrails:8000") as client:
+        resp = client.get(f"{API_ROOT}/tool-settings/guardrails/profiles", headers=AUTH)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["available"] is True
+    assert body["profiles"][0]["profile"] == "house-policy"
+    assert "policy" in {parameter["name"] for parameter in body["profiles"][0]["parameters"]}
+
+
+def test_guardrail_profiles_reports_an_unconfigured_service(tmp_path: Path) -> None:
+    """A deployment with no guardrails service gets a reason, not an error.
+
+    This drives the page an operator configures guardrails on, so it has to
+    render before the service they are configuring exists.
+    """
+    with _client(tmp_path) as client:
+        resp = client.get(f"{API_ROOT}/tool-settings/guardrails/profiles", headers=AUTH)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is False
+    assert body["profiles"] == []
+    assert body["reason"]
+
+
+def test_guardrail_profiles_never_returns_the_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reader router serves a tenant, from whom the GET above withholds URLs."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    _stub_guardrails_service(monkeypatch, handler)
+    with _client(tmp_path, guardrails_url="https://guardrails.internal.example") as client:
+        resp = client.get(f"{API_ROOT}/tool-settings/guardrails/profiles", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert "guardrails.internal.example" not in resp.text
+
+
+def test_guardrail_profiles_requires_master_key(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        assert client.get(f"{API_ROOT}/tool-settings/guardrails/profiles").status_code == 401
+        
+
+def test_guardrail_profiles_refuses_an_oversized_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The timeout bounds how long the answer takes, not how much of it is held."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        row = {"name": "x" * 200, "guardrail_name": "injec_guard"}
+        return httpx.Response(200, json=[row] * 20_000)
+
+    _stub_guardrails_service(monkeypatch, handler)
+    with _client(tmp_path, guardrails_url="http://anyguardrails:8000") as client:
+        resp = client.get(f"{API_ROOT}/tool-settings/guardrails/profiles", headers=AUTH)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is False
+    assert body["profiles"] == []
