@@ -20,7 +20,7 @@ foundations, components with their states, and the page archetypes as artboards.
 
 ## Runtime contract
 
-`src/main.tsx` fetches unauthenticated `GET /v1/bootstrap` before mounting
+`src/main.tsx` fetches unauthenticated `GET /api/v1/bootstrap` before mounting
 React. Do not guess a deployment when that request fails.
 
 A gateway older than a bootstrap field does not send it, whatever the generated
@@ -111,6 +111,13 @@ and loading behavior follow the frontend standards topic guides.
 Import API shapes from `@/client`, not directly from the generated schema.
 `src/client/schema.ts` is generated from `docs/public/openapi.json` and
 committed. Keep `src/client/local.ts` limited to shapes OpenAPI cannot own.
+
+`apiFetch` in `shared/api/client.ts` prepends `API_ROOT` to every request. A
+call site passes the resource only, `apiFetch("/keys")`, and never spells
+`/api/v1`. A test that stubs `fetch` sees the whole URL; one that spies on
+`apiFetch` sees the resource. The gateway's
+`tests/integration/test_api_prefix_contract.py` fails on a doubled root
+anywhere under `src/`.
 
 File routes live in `src/routes/`. Each route file exports `Route` and
 nothing else so automatic code splitting works. The generated
