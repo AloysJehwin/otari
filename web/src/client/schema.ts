@@ -2016,6 +2016,10 @@ export interface paths {
          *     the ``invited`` one the platform uses. An address that belongs to no
          *     identity yet creates one, which carries the address as the handle a future
          *     sign-in flow will claim it by, and can do nothing until then.
+         *
+         *     When mail is not configured the response includes ``claim_link``: the
+         *     identity is password-less, so the admin can share this link out-of-band so
+         *     the member can set their own password and sign in.
          */
         post: operations["organizations-create_active_organization_member"];
         delete?: never;
