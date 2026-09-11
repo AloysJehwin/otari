@@ -1,5 +1,5 @@
-import { Button } from "@heroui/react"
 import { useState } from "react"
+import { Button } from "@/design-system/actions/Button"
 import { ErrorBanner } from "@/design-system/feedback/ErrorBanner"
 import { Checkbox } from "@/design-system/forms/Checkbox"
 import { useSignup } from "@/shared/api/auth"

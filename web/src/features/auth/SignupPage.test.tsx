@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { SignupPage } from "@/features/auth/SignupPage"
 import { ApiError, apiFetch } from "@/shared/api/client"
 import { DeploymentProvider } from "@/shared/hooks/useDeployment"
+import { ThemeProvider } from "@/shared/hooks/useTheme"
 import { TELEMETRY_EVENTS } from "@/shared/telemetry/events"
 import { bootstrap } from "@/tests/fixtures"
 import { recordEvent, resetTelemetrySpy } from "@/tests/telemetry"
@@ -46,7 +47,9 @@ function renderPage(
           terms_url: deployment.termsUrl ?? null,
         })}
       >
-        <SignupPage hash={hash} />
+        <ThemeProvider>
+          <SignupPage hash={hash} />
+        </ThemeProvider>
       </DeploymentProvider>
     </QueryClientProvider>,
   )
