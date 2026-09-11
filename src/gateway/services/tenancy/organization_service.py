@@ -149,7 +149,7 @@ def _invitation_accept_path(token: str) -> str:
 def _claim_link(config: GatewayConfig | None) -> str | None:
     """The signup link to show an admin when mail is not configured.
 
-    Null when mail is ready: the member can reach ``POST /v1/auth/signup``
+    Null when mail is ready: the member can reach ``POST /api/v1/auth/signup``
     through the normal sign-in screen and nothing extra is needed.  Non-null
     when mail is absent: the identity is password-less and the only road in is
     the admin sharing this link out-of-band so the member can set a password

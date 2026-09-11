@@ -4628,7 +4628,7 @@ export interface components {
          *     ``claim_link`` is set when mail is not configured: the identity is
          *     password-less and unverified, so an admin who has nowhere to send credentials
          *     can share this link out-of-band instead.  It is null when mail is ready
-         *     (the member can use ``POST /v1/auth/signup`` normally) and on every existing
+         *     (the member can use ``POST /api/v1/auth/signup`` normally) and on every existing
          *     row that pre-dates this field.
          */
         ActiveOrganizationMemberCreateResultPublic: {
