@@ -502,8 +502,9 @@ type ProviderTab = "known" | "custom"
  *
  * What is shared is the frame. Each half renders the same `FormDialog` with the
  * same title, size and tab row, so switching tabs changes the fields and
- * nothing else, and a half-filled tab still does not survive a switch away from
- * it, which is what it did as a panel.
+ * nothing else. Both forms stay mounted at all times; the inactive one receives
+ * `isOpen={false}`, which hides its dialog while keeping its React state alive
+ * so a half-filled tab survives a switch away from it.
  */
 function AddProviderForm({
   isOpen,
@@ -528,10 +529,19 @@ function AddProviderForm({
     </TabRow>
   )
 
-  return tab === "known" ? (
-    <KnownProviderForm isOpen={isOpen} onClose={onClose} tabs={tabs} />
-  ) : (
-    <CustomProviderForm isOpen={isOpen} onClose={onClose} tabs={tabs} />
+  return (
+    <>
+      <KnownProviderForm
+        isOpen={isOpen && tab === "known"}
+        onClose={onClose}
+        tabs={tabs}
+      />
+      <CustomProviderForm
+        isOpen={isOpen && tab === "custom"}
+        onClose={onClose}
+        tabs={tabs}
+      />
+    </>
   )
 }
 
