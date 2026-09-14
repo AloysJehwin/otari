@@ -97,6 +97,68 @@ describe("CopyField", () => {
     expect(laidOut()).toBe(before)
   })
 
+  it("selects after the attempt in the default arrangement too", async () => {
+    const user = userEvent.setup()
+    // The same order the `action` arrangement keeps, and it started mattering
+    // here when this path moved onto the shared helper: `legacyCopy` restores
+    // the selection and focus it found on its way out, so a selection made
+    // before the attempt is undone by the fallback. The end state alone cannot
+    // tell the two orders apart in jsdom, so the sequence is asserted.
+    const order: string[] = []
+    vi.spyOn(navigator.clipboard, "writeText").mockImplementation(() => {
+      order.push("attempt")
+      return Promise.reject(new Error("not a secure context"))
+    })
+    render(<CopyField label="Secret key" value="gw-real-secret" />)
+    screen
+      .getByLabelText("Secret key")
+      .addEventListener("focus", () => order.push("focus"))
+
+    await user.click(screen.getByRole("button", { name: "Copy" }))
+
+    await waitFor(() => expect(order).toContain("focus"))
+    expect(order).toEqual(["attempt", "focus"])
+  })
+
+  it("copies on an origin with no Clipboard API, through the legacy path", async () => {
+    const user = userEvent.setup()
+    // A plain-HTTP LAN origin, which is what this dashboard is routinely served
+    // from: the async Clipboard API is gated on a secure context, so the object
+    // is simply absent rather than throwing (otari#957).
+    //
+    // Both globals are restored in `finally` rather than left to
+    // `restoreAllMocks`, which only knows about spies: an absent
+    // `navigator.clipboard` left behind fails every later case in this file.
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard")
+    const exec = Object.getOwnPropertyDescriptor(document, "execCommand")
+    const execCommand = vi.fn().mockReturnValue(true)
+    try {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: undefined,
+      })
+      Object.defineProperty(document, "execCommand", {
+        configurable: true,
+        value: execCommand,
+      })
+
+      render(<CopyField label="Secret key" value="gw-real-secret" />)
+      await user.click(screen.getByRole("button", { name: "Copy" }))
+
+      // The claim is only made because something wrote: the offscreen textarea
+      // is the only clipboard write such an origin has.
+      expect(execCommand).toHaveBeenCalledWith("copy")
+      expect(
+        await screen.findByText("Copied to clipboard."),
+      ).toBeInTheDocument()
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard)
+      else Reflect.deleteProperty(navigator, "clipboard")
+      if (exec) Object.defineProperty(document, "execCommand", exec)
+      else Reflect.deleteProperty(document, "execCommand")
+    }
+  })
+
   it("selects the value when a copy fails, so Ctrl/Cmd-C still works", async () => {
     const user = userEvent.setup()
     // Both clipboard paths refused, which is the case this fallback exists for.

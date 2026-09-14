@@ -12,75 +12,28 @@ import { useDiscoverableModels, useModels } from "@/shared/api/models"
 // list silently ending.
 const MAX_VISIBLE = 50
 
+/** Where a picker's suggestions come from. */
+export type ModelSource = "discovery" | "catalog"
+
 /**
- * Model selector backed by the deployment's model discovery or by the catalog.
+ * The model source behind the picker: the options to offer and what to say about
+ * them.
  *
- * Free text is always allowed: neither source is authoritative. Discovery only
- * sees what the configured credentials expose and the catalog only what this
- * caller could route to, so a model behind an unconfigured provider, a
- * brand-new release, or a backend that cannot list must stay typeable. The
- * dropdown is a shortcut, never a whitelist.
+ * Exported because the hint is a sentence, and a sentence cannot live inside a
+ * control row: a field whose message wraps is taller than its siblings, and a
+ * row laid out `items-end` then floats that field's input line above theirs.
+ * `web/design/forms.md` names that break and its remedy, which is to put the
+ * message under the row rather than inside one of its fields. A caller doing
+ * that reads the hint from here and renders it itself.
  *
- * Everything a provider reports is offered, unfiltered. any-llm's model type
- * carries no capability field, so there is no honest way to tell a chat model
- * from an embedding or TTS one here, and guessing from name patterns would hide
- * real models. Search is the answer instead.
- *
- * Rows are flat, each showing the full `provider:model` selector, rather than
- * grouped under provider headers. React Aria's sectioned collections
- * (ListBoxSection/Collection) throw "childNodes is not supported" under React
- * 19.2's development build, whose performance-track logging walks props and
- * trips over React Aria's synthetic collection DOM. The uncaught error breaks
- * the commit, so picking an option silently fails to update the field.
- * Production builds are unaffected, but a picker that only works in prod is not
- * worth the headers, and the provider is legible on every row regardless.
- *
- * Nothing discovered is the ordinary state of a gateway with no provider
- * credential, not an edge case, so the empty popover says which of the two it
- * is and what fills it. The wording names the credential rather than the page
- * that holds one: a hosted deployment keeps those under the organization
- * instead of the process-wide providers page.
+ * `description` is deliberately not a parameter: the last branch returns
+ * `undefined` and the caller falls back to its own, so this answers only what
+ * the source has to say.
  */
-export function ModelComboBox({
-  label,
-  value,
-  onChange,
-  description,
-  placeholder = "provider:model",
-  autoFocus,
-  isRequired,
-  isInvalid,
-  errorMessage,
-  source = "discovery",
-}: {
-  label: string
-  value: string
-  onChange: (value: string) => void
-  description?: ReactNode
-  placeholder?: string
-  autoFocus?: boolean
-  isRequired?: boolean
-  isInvalid?: boolean
-  /**
-   * The correction, announced on the input and rendered under it beside the
-   * hint rather than in place of it: the hint line is already spoken for while
-   * a search is being narrowed ("Showing 50 of 210 matches"), and a form that
-   * put the correction there would lose it exactly when the operator is typing.
-   */
-  errorMessage?: string
-  /**
-   * Where the suggestions come from.
-   *
-   * `"discovery"` reads GET /v1/models/discoverable, which is a
-   * deployment-operator read: an organization admin who does not operate the
-   * deployment is refused it (#821). `"catalog"` reads GET /v1/models, which
-   * answers any signed-in caller and is already narrowed server-side to what
-   * that caller could route to, so it is what a tenant-facing form asks for.
-   * The two are composed with `enabled` rather than branched on at the call
-   * site, so only the chosen one is ever requested.
-   */
-  source?: "discovery" | "catalog"
-}) {
+export function useModelCatalog(
+  value: string,
+  source: ModelSource = "discovery",
+) {
   const isDiscovery = source === "discovery"
   const discoverable = useDiscoverableModels(isDiscovery)
   const catalog = useModels(!isDiscovery)
@@ -151,8 +104,100 @@ export function ModelComboBox({
     if (total > visible.length) {
       return `Showing ${visible.length} of ${total} matches. Keep typing to narrow them.`
     }
-    return description
+    return undefined
   })()
+
+  return { visible, isSourceEmpty, emptyMessage, hint }
+}
+
+/**
+ * Model selector backed by the deployment's model discovery or by the catalog.
+ *
+ * Free text is always allowed: neither source is authoritative. Discovery only
+ * sees what the configured credentials expose and the catalog only what this
+ * caller could route to, so a model behind an unconfigured provider, a
+ * brand-new release, or a backend that cannot list must stay typeable. The
+ * dropdown is a shortcut, never a whitelist.
+ *
+ * Everything a provider reports is offered, unfiltered. any-llm's model type
+ * carries no capability field, so there is no honest way to tell a chat model
+ * from an embedding or TTS one here, and guessing from name patterns would hide
+ * real models. Search is the answer instead.
+ *
+ * Rows are flat, each showing the full `provider:model` selector, rather than
+ * grouped under provider headers. React Aria's sectioned collections
+ * (ListBoxSection/Collection) throw "childNodes is not supported" under React
+ * 19.2's development build, whose performance-track logging walks props and
+ * trips over React Aria's synthetic collection DOM. The uncaught error breaks
+ * the commit, so picking an option silently fails to update the field.
+ * Production builds are unaffected, but a picker that only works in prod is not
+ * worth the headers, and the provider is legible on every row regardless.
+ *
+ * Nothing discovered is the ordinary state of a gateway with no provider
+ * credential, not an edge case, so the empty popover says which of the two it
+ * is and what fills it. The wording names the credential rather than the page
+ * that holds one: a hosted deployment keeps those under the organization
+ * instead of the process-wide providers page.
+ */
+export function ModelComboBox({
+  label,
+  value,
+  onChange,
+  description,
+  placeholder = "provider:model",
+  autoFocus,
+  isRequired,
+  isInvalid,
+  errorMessage,
+  source = "discovery",
+  hintPlacement = "field",
+  describedBy,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  description?: ReactNode
+  placeholder?: string
+  autoFocus?: boolean
+  isRequired?: boolean
+  isInvalid?: boolean
+  /**
+   * The correction, announced on the input and rendered under it beside the
+   * hint rather than in place of it: the hint line is already spoken for while
+   * a search is being narrowed ("Showing 50 of 210 matches"), and a form that
+   * put the correction there would lose it exactly when the operator is typing.
+   */
+  errorMessage?: string
+  /**
+   * Where the suggestions come from.
+   *
+   * `"discovery"` reads GET /v1/models/discoverable, which is a
+   * deployment-operator read: an organization admin who does not operate the
+   * deployment is refused it (#821). `"catalog"` reads GET /v1/models, which
+   * answers any signed-in caller and is already narrowed server-side to what
+   * that caller could route to, so it is what a tenant-facing form asks for.
+   * The two are composed with `enabled` rather than branched on at the call
+   * site, so only the chosen one is ever requested.
+   */
+  source?: ModelSource
+  /**
+   * Where the catalog hint goes. `"field"` renders it under the input, which is
+   * right for a field standing on its own. `"detached"` renders nothing and
+   * leaves the caption line empty, for a caller inside a control row that
+   * renders the hint under the whole row instead; it reads the text from
+   * `useModelCatalog`.
+   *
+   * Named for the placement rather than the hint, because `useModelCatalog`
+   * returns a `hint` too and that one is the sentence.
+   */
+  hintPlacement?: "field" | "detached"
+  /** Id of the detached hint, so it is still announced with this input. */
+  describedBy?: string
+}) {
+  const { visible, isSourceEmpty, emptyMessage, hint } = useModelCatalog(
+    value,
+    source,
+  )
 
   return (
     <ComboBoxField
@@ -160,7 +205,13 @@ export function ModelComboBox({
       value={value}
       onChange={onChange}
       options={visible}
-      description={hint}
+      description={
+        hintPlacement === "detached" ? undefined : (hint ?? description)
+      }
+      // Only while the hint exists: `SectionRow` renders the span carrying this
+      // id conditionally, so passing it unconditionally pointed five inputs at
+      // nothing in the ordinary state, where the catalog lists cleanly.
+      describedBy={hint ? describedBy : undefined}
       placeholder={placeholder}
       autoFocus={autoFocus}
       isRequired={isRequired}

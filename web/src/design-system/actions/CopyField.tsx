@@ -70,10 +70,11 @@ export const CONCEALED_SECRET = "•••••••••••••••�
 // one-time reveal and the setup guide, which hand out the same key and the same
 // snippets.
 //
-// The Clipboard API is undefined on the non-secure origins this dashboard is
-// routinely served from, so the text is selected on click and Ctrl/Cmd-C always
-// works even when the button cannot copy programmatically. "Copied" is only
-// claimed when it truly copied.
+// The async Clipboard API is undefined on the non-secure origins this dashboard
+// is routinely served from, so every copy path here goes through
+// `copyToClipboard` and its offscreen-textarea fallback. The text is also
+// selected on click, so Ctrl/Cmd-C still works when even that is refused.
+// "Copied" is only claimed when it truly copied.
 //
 // The label is a real `<label>` for the field, not a caption beside it: these
 // values are handed over in pairs and threes (a key and two snippets), so
@@ -268,19 +269,24 @@ export function CopyField({
       setSelectHintFor(copying)
       return
     }
+    // The same helper the concealed path above uses, rather than
+    // `navigator.clipboard` alone: the async Clipboard API is gated on a secure
+    // context and this dashboard is routinely served from a plain-HTTP LAN
+    // address, where it is undefined. The helper falls back to an offscreen
+    // textarea and `execCommand`, which is the only clipboard write such an
+    // origin has (otari#957).
+    if (await copyToClipboard(value)) {
+      acknowledgeCopy()
+      return
+    }
+    // Nothing could write, so the value is selected for Ctrl/Cmd-C instead, and
+    // the copy is never claimed. Selected only now rather than before the
+    // attempt, which is the order the `action` arrangement above already keeps:
+    // `legacyCopy` restores whatever selection and focus it found on its way
+    // out, so a selection made first is undone by the fallback itself, and a
+    // successful copy has no business moving the operator's selection either.
     ref.current?.focus()
     ref.current?.select()
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(value)
-        acknowledgeCopy()
-        return
-      }
-    } catch {
-      // fall through to the manual path
-    }
-    // No Clipboard API (or it threw): the text is selected, so the operator can
-    // press Ctrl/Cmd-C. Never claim it was copied.
     setSelectHintFor(value)
   }
 
