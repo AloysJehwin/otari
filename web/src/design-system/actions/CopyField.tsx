@@ -1,7 +1,7 @@
-import { Button } from "@heroui/react"
 import type { ReactElement, ReactNode } from "react"
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react"
-import { FiEye, FiEyeOff } from "react-icons/fi"
+import { FiCheck, FiCopy, FiEye, FiEyeOff } from "react-icons/fi"
+import { Button } from "@/design-system/actions/Button"
 import { CopyButton } from "@/design-system/actions/CopyButton"
 import { copyToClipboard } from "@/design-system/helpers/clipboard"
 
@@ -65,6 +65,28 @@ export function CopyableValue({
  */
 export const CONCEALED_SECRET = "••••••••••••••••"
 
+/**
+ * A credential's stand-in that still identifies it: the first eight characters,
+ * a fixed bullet run, then the last four.
+ *
+ * Shown where an operator has to tell one key from another while it is
+ * concealed. The bullet run is fixed for `CONCEALED_SECRET`'s reason, so the
+ * length of the key stays off the screen; a value too short to keep those two
+ * ends apart falls back to the plain stand-in rather than showing most of
+ * itself.
+ */
+export function concealedFingerprint(value: string): string {
+  return value.length >= 16
+    ? `${value.slice(0, 8)}••••••••${value.slice(-4)}`
+    : CONCEALED_SECRET
+}
+
+// A 44x44 target below `md` for an icon-only control, back to the button's own
+// 32px where a pointer is doing the pressing. A `before:` bleed is unavailable
+// here: the two controls sit a `gap-1` apart, so their bleeds would overlap and
+// a press near the seam would land on the wrong one.
+const ICON_CONTROL_BOX = "min-h-11 min-w-11 md:min-h-8 md:min-w-8"
+
 // A readonly, always-selectable field with a copy button: how a value an
 // operator has to paste elsewhere is handed over. Shared by the Keys page's
 // one-time reveal and the setup guide, which hand out the same key and the same
@@ -96,14 +118,12 @@ type CopyFieldProps = {
        * has been asked for, while Copy copies the real value either way, so a
        * key can be handed over without being read off the screen (otari-ai#2111).
        *
-       * The one-time secret step is the exception and opens revealed, by product
-       * ruling: that screen exists to hand the key over, and there is no second
-       * chance to read it. The toggle and copying without reading survive there,
-       * which is what otari-ai#2111 asked for.
-       *
-       * A whole-value field passes `CONCEALED_SECRET`. A snippet passes the same
-       * snippet built around that stand-in, so what is hidden is the key rather
-       * than the request that explains it.
+       * A whole-value field passes `CONCEALED_SECRET`, or
+       * `concealedFingerprint` where the operator has to tell one credential
+       * from another. A snippet passes the same snippet built around whichever
+       * of those the field beside it shows, so what is hidden is the key rather
+       * than the request that explains it, and one credential does not wear two
+       * stand-ins on one screen.
        */
       concealed?: string
       /**
@@ -361,6 +381,9 @@ export function CopyField({
       size="sm"
       variant="ghost"
       isIconOnly
+      // `size` alone is 32px, under the 44px touch floor. Grow the box below
+      // `md` and let it settle back to the button's own size on a pointer.
+      className={ICON_CONTROL_BOX}
       aria-label={`${revealed ? "Hide" : "Show"} ${label}`}
       onPress={() => setRevealed(!revealed)}
     >
@@ -368,6 +391,30 @@ export function CopyField({
         <FiEyeOff aria-hidden="true" className="h-3.5 w-3.5" />
       ) : (
         <FiEye aria-hidden="true" className="h-3.5 w-3.5" />
+      )}
+    </Button>
+  )
+
+  const inlineControls = concealed !== undefined && !multiline
+  const copyButton = (
+    <Button
+      size="sm"
+      variant="ghost"
+      isIconOnly={inlineControls}
+      className={inlineControls ? ICON_CONTROL_BOX : "min-h-11 md:min-h-8"}
+      aria-label={inlineControls ? `Copy ${label}` : undefined}
+      onPress={copy}
+    >
+      {inlineControls ? (
+        copied ? (
+          <FiCheck aria-hidden="true" className="h-3.5 w-3.5" />
+        ) : (
+          <FiCopy aria-hidden="true" className="h-3.5 w-3.5" />
+        )
+      ) : copied ? (
+        "Copied"
+      ) : (
+        "Copy"
       )}
     </Button>
   )
@@ -390,13 +437,13 @@ export function CopyField({
       readOnly
       value={shown}
       onFocus={selectUnlessConcealed}
-      // Concealed, the right padding clears the toggle rather than the value
+      // Concealed, the right padding clears both controls rather than the value
       // running under it, and the field grows below `md` so the 44px touch
       // floor fits between its borders.
       className={
         concealed === undefined
           ? shared
-          : `${shared} min-h-[2.875rem] pr-14 md:min-h-0 md:pr-11`
+          : `${shared} min-h-[2.875rem] pr-24 md:min-h-0 md:pr-20`
       }
       {...credentialProps}
     />
@@ -415,16 +462,15 @@ export function CopyField({
               for the reason `action` is barred from the multiline variant at
               all: right padding on a textarea indents every line of it. */}
           {concealed !== undefined && multiline ? revealToggle : null}
-          <Button size="sm" variant="ghost" onPress={copy}>
-            {copied ? "Copied" : "Copy"}
-          </Button>
+          {!inlineControls ? copyButton : null}
         </div>
       </div>
       {concealed !== undefined && !multiline ? (
         <div className="relative">
           {field}
-          <span className="absolute top-1/2 right-1 -translate-y-1/2">
+          <span className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-1">
             {revealToggle}
+            {copyButton}
           </span>
         </div>
       ) : (
