@@ -13,11 +13,13 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from typing_extensions import override
 
+from gateway import features
 from gateway.api.deps import set_config
 from gateway.api.main import register_routers
 from gateway.container import build_container
 from gateway.core.config import API_KEY_HEADER, API_ROOT, GATEWAY_TOKEN_HEADER, X_API_KEY_HEADER, GatewayConfig
 from gateway.core.database import create_session, dispose_db, init_db
+from gateway.core.feature import Worker
 from gateway.dashboard import DASHBOARD_PACKAGE_PATH, get_dashboard_build_id, get_dashboard_dir
 from gateway.inflight import InFlightMiddleware, InFlightRegistry
 from gateway.log_config import logger
@@ -263,7 +265,7 @@ def _warn_if_hosted_has_no_data_plane(config: GatewayConfig) -> None:
     )
 
 
-# How long shutdown waits for refreshers to acknowledge cancellation.
+# How long shutdown waits for refreshers and feature workers to acknowledge cancellation.
 #
 # Cancelling a task is a request, not a guarantee. The CancelledError is
 # delivered at whatever the task is awaiting, and a nested cancel scope there can
@@ -274,13 +276,14 @@ def _warn_if_hosted_has_no_data_plane(config: GatewayConfig) -> None:
 # unbounded ``await task`` never returns, so the lifespan never finishes and
 # uvicorn's shutdown hangs behind a background refresh. Bounding the wait and
 # moving on is the right trade: the event loop is torn down immediately after,
-# and no refresher owns state that a late tick could corrupt.
+# and no refresher owns state that a late tick could corrupt. A feature worker
+# shares the bound, so ``CoreFeature`` asks the same of it.
 _REFRESHER_STOP_TIMEOUT_SECONDS = 5.0
 
 
 def _log_abandoned_refresher(name: str) -> None:
     logger.warning(
-        "%s refresher did not stop within %.0fs; abandoning it so shutdown can finish",
+        "%s did not stop within %.0fs; abandoning it so shutdown can finish",
         name,
         _REFRESHER_STOP_TIMEOUT_SECONDS,
     )
@@ -288,7 +291,7 @@ def _log_abandoned_refresher(name: str) -> None:
 
 def _log_refresher_stop(task: asyncio.Task[None], name: str) -> None:
     if not task.cancelled() and (error := task.exception()) is not None:
-        logger.warning("%s refresher stopped with an unexpected error", name, exc_info=error)
+        logger.warning("%s stopped with an unexpected error", name, exc_info=error)
 
 
 async def _wait_for_refresher_stop(task: asyncio.Task[None], name: str) -> None:
@@ -329,6 +332,20 @@ async def _stop_refreshers(refreshers: list[tuple[asyncio.Task[None], str]]) -> 
             _log_refresher_stop(task, name)
 
 
+async def _run_feature_worker(name: str, worker: Worker, config: GatewayConfig) -> None:
+    """Run one feature worker, reporting a failure when it happens rather than at shutdown.
+
+    The refreshers above loop and catch their own errors; a feature worker is
+    another feature's code and may not. This is the top of the task, so the
+    error is handled here once: nothing awaits the task before shutdown, and
+    re-raising would only have the supervisor log the same death again then.
+    """
+    try:
+        await worker(config)
+    except Exception:
+        logger.exception("%s worker stopped with an unexpected error and will not run again", name)
+
+
 def _create_lifespan() -> Callable[[FastAPI], Any]:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -354,6 +371,7 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
         catalog_refresher: asyncio.Task[None] | None = None
         selector_refresher: asyncio.Task[None] | None = None
         reservation_sweeper: asyncio.Task[None] | None = None
+        feature_workers: list[tuple[asyncio.Task[None], str]] = []
         if config.is_hybrid_mode:
             log_writer = NoopLogWriter()
         else:
@@ -475,6 +493,17 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
                         retention_sec=config.budget_reservation_retention_sec,
                     )
                 )
+            # Workers of the enabled features. Same supervisor as the
+            # refreshers above: created here, cancelled together in ``finally``
+            # under one shared bound.
+            feature_workers = [
+                (
+                    asyncio.create_task(_run_feature_worker(feature.name, feature.worker, config)),
+                    f"{feature.name} worker",
+                )
+                for feature in app.state.enabled_features
+                if feature.worker is not None
+            ]
 
         # Start the writer inside the try so a failure here still runs the cleanup
         # below; the refresher tasks are already created and would otherwise leak.
@@ -498,7 +527,9 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
                 (selector_refresher, "catalog selectors"),
                 (reservation_sweeper, "budget reservation sweep"),
             ]
-            await _stop_refreshers([(task, name) for task, name in refreshers if task is not None])
+            await _stop_refreshers(
+                [(task, f"{name} refresher") for task, name in refreshers if task is not None] + feature_workers
+            )
             if alias_refresher is not None:
                 reset_alias_cache()
             if policy_refresher is not None:
@@ -822,6 +853,9 @@ def create_app(config: GatewayConfig) -> FastAPI:
 
     app.state.config = config
     app.state.gateway_mode = config.effective_mode
+    # Asked once, so the routers, the workers and the published surfaces cannot
+    # disagree when a setting changes after this point.
+    app.state.enabled_features = tuple(feature for feature in features.CORE_FEATURES if feature.enabled(config))
 
     # The composition root, built before the routers because a bootstrap may
     # contribute some of them. Per app rather than module-global, for the same

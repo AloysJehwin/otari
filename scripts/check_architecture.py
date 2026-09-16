@@ -10,6 +10,10 @@ Enforces:
 6. Port boundaries: a port may describe the domain but not import a caller or an adapter.
 7. Composition root: only gateway/container.py may name a concrete adapter.
 8. Entrypoint purity: gateway/main.py may not import a route module.
+9. Registry: only the app wiring reads gateway/features.py, so a service or a
+   route may not import it; and nothing under gateway/ imports
+   importlib.metadata, importlib_metadata or pkg_resources, so nothing is
+   discovered.
 
 Usage:
     uv run python scripts/check_architecture.py
@@ -76,7 +80,10 @@ RULES: dict[str, LayerRule] = {
         # A service depends on the port and gets its adapter from the container;
         # naming a concrete adapter would pin the capability to one
         # implementation and defeat the seam (ARCHITECTURE.md, rule 5).
-        "forbidden": ["gateway.api", "gateway.adapters"],
+        # gateway.features is the registry the app wiring reads; a service
+        # that imported it could register itself, which is discovery by
+        # another name.
+        "forbidden": ["gateway.api", "gateway.adapters", "gateway.features"],
         "description": "Services",
     },
     # The API layer resolves a port through the container in deps.py; only the
@@ -107,7 +114,8 @@ RULES: dict[str, LayerRule] = {
             "gateway.core",
             "gateway.auth",
         ],
-        "forbidden": ["sqlalchemy.orm"],
+        # gateway.features for the reason services forbid it.
+        "forbidden": ["sqlalchemy.orm", "gateway.features"],
         "description": "API routes",
     },
     "gateway/repositories": {
@@ -169,6 +177,14 @@ COMPOSITION_ROOT = "gateway/container.py"
 ADAPTERS_PACKAGE = "gateway/adapters/"
 ADAPTER_IMPORT = "gateway.adapters"
 
+# Entry-point discovery is banned everywhere under gateway/, with a message of
+# its own because "OSS base" would not say why: the feature registry in
+# gateway/features.py is a literal tuple on purpose (ARCHITECTURE.md), and these
+# are the modules discovery is written with.
+DISCOVERY_SCOPE = "gateway/"
+DISCOVERY_IMPORTS = ("importlib.metadata", "importlib_metadata", "pkg_resources")
+DISCOVERY_RULE = "OSS base (no entry-point discovery; the feature registry is a literal tuple)"
+
 
 def _matches(module: str, prefix: str) -> bool:
     """Return whether a module path is the prefix module itself or lives inside it."""
@@ -221,6 +237,8 @@ def check_file(file_path: Path, src_root: Path) -> list[tuple[int, str, str]]:
         forbidden = [(prefix, file_rule["description"]) for prefix in file_rule["forbidden"]] + forbidden
     if relative_path == COMPOSITION_ROOT or relative_path.startswith(ADAPTERS_PACKAGE):
         forbidden = [entry for entry in forbidden if entry[0] != ADAPTER_IMPORT]
+    if relative_path.startswith(DISCOVERY_SCOPE):
+        forbidden += [(prefix, DISCOVERY_RULE) for prefix in DISCOVERY_IMPORTS]
     if not forbidden:
         return []
 

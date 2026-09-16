@@ -20,7 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from gateway.api.deps import reset_config
 from gateway.api.routes import bootstrap as bootstrap_route
-from gateway.api.routes.bootstrap import HOSTED_SURFACES, STANDALONE_SURFACES
+from gateway.api.routes.bootstrap import HOSTED_SURFACES, STANDALONE_SURFACES, published_surfaces
 from gateway.core.config import API_ROOT, GatewayConfig
 from gateway.core.database import reset_db
 from gateway.main import create_app
@@ -272,10 +272,13 @@ def test_every_surface_names_a_route_the_gateway_mounts(
     than in a browser. Hosted's data plane is the half that does differ, and
     ``test_hosted_mode_surface`` is where that is asserted.
     """
-    app = create_app(build(tmp_path))
+    config = build(tmp_path)
+    app = create_app(config)
     mounted = {getattr(route, "path", "") for route in app.routes}
 
-    for surface in surfaces:
+    # The fixed tuple and what the endpoint publishes, which adds each enabled
+    # registry feature's surface: a feature whose route is not mounted fails here.
+    for surface in {*surfaces, *published_surfaces(config, app.state.enabled_features)}:
         prefix = SURFACE_ROUTE_PREFIXES.get(surface, f"{API_ROOT}/{surface}")
         assert any(path.startswith(prefix) for path in mounted), f"surface {surface!r} names no mounted /api/v1/ route"
 
