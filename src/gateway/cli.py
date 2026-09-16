@@ -231,6 +231,18 @@ def gen_secret_key() -> None:
 # Claude Code's own edit tools and the tool_input field naming their target.
 _HOOK_EDIT_TOOL_PATH_FIELDS = {"Edit": "file_path", "Write": "file_path", "NotebookEdit": "notebook_path"}
 
+# Claude Code's shell tool and the tool_input field naming the command it is
+# about to run. A PreToolUse call for this tool is the only evidence a
+# command_match gate gets before the command runs; see docs/agent-gates.md.
+_HOOK_COMMAND_TOOL_FIELDS = {"Bash": "command"}
+
+# Mirrors the Hook Server's own per-command bound (routes/hooks.py's
+# _MAX_COMMAND_LENGTH). A literal rather than an import: this command talks to
+# a gateway over HTTP that may be a different build, so the number it truncates
+# to is its own best guess at the far side's limit, not a shared constant that
+# would imply the two are always one process.
+_HOOK_MAX_COMMAND_LENGTH = 4096
+
 
 def _hook_find_repo_root(start: Path) -> Path | None:
     current = start.resolve()
@@ -335,21 +347,50 @@ def hook(harness: str, config: str | None, url: str | None, api_key: str | None)
     if not gates_file.is_file():
         return
 
-    changed_paths: list[str]
+    changed_paths: list[str] = []
+    commands: list[str] = []
     if event == "PreToolUse":
-        field = _HOOK_EDIT_TOOL_PATH_FIELDS.get(payload.get("tool_name", ""))
-        target = (payload.get("tool_input") or {}).get(field) if field else None
-        if not target:
-            return
-        try:
-            # as_posix(), not str(): a forbidden glob is a repo-relative POSIX
-            # path and the evaluator splits it on "/", so a WindowsPath's
-            # native "docs\\foo.md" spelling matches nothing. That fails open
-            # and silently, a passing gate being indistinguishable from no
-            # forbidden change, so every PreToolUse gate would pass on Windows.
-            changed_paths = [Path(target).resolve().relative_to(root).as_posix()]
-        except ValueError:
-            return  # Outside the repo: nothing this policy can name.
+        tool_name = payload.get("tool_name", "")
+        tool_input = payload.get("tool_input") or {}
+        # A tool call is either an edit or a shell command, never both, so at
+        # most one of these evidence lists is ever populated per call.
+        path_field = _HOOK_EDIT_TOOL_PATH_FIELDS.get(tool_name)
+        command_field = _HOOK_COMMAND_TOOL_FIELDS.get(tool_name)
+        if path_field:
+            target = tool_input.get(path_field)
+            if not target:
+                return
+            try:
+                # as_posix(), not str(): a forbidden glob is a repo-relative
+                # POSIX path and the evaluator splits it on "/", so a
+                # WindowsPath's native "docs\\foo.md" spelling matches
+                # nothing. That fails open and silently, a passing gate being
+                # indistinguishable from no forbidden change, so every
+                # PreToolUse gate would pass on Windows.
+                changed_paths = [Path(target).resolve().relative_to(root).as_posix()]
+            except ValueError:
+                return  # Outside the repo: nothing this policy can name.
+        elif command_field:
+            command = tool_input.get(command_field)
+            if not command:
+                return
+            # Truncated rather than sent whole: the Hook Server rejects an
+            # oversize command with a 422, and a 422 fails the *whole* check
+            # open, taking every changed_path gate in the same policy with it.
+            # A Bash call carrying a heredoc clears this limit routinely, so
+            # that is the common case rather than a pathological one. A tool
+            # name is argv[0], so keeping the head is what preserves detection
+            # for the shape this gate is actually for.
+            if len(command) > _HOOK_MAX_COMMAND_LENGTH:
+                click.echo(
+                    f"otari hook: command is {len(command):,} characters, checking only the first "
+                    f"{_HOOK_MAX_COMMAND_LENGTH:,}.",
+                    err=True,
+                )
+                command = command[:_HOOK_MAX_COMMAND_LENGTH]
+            commands = [command]
+        else:
+            return  # A tool this harness integration does not check yet.
     elif event == "Stop":
         collected = _hook_collect_changed_paths(root)
         if collected is None:
@@ -380,7 +421,11 @@ def hook(harness: str, config: str | None, url: str | None, api_key: str | None)
     try:
         response = httpx.post(
             f"{resolved_url.rstrip('/')}{API_ROOT}/hooks/check",
-            json={"policy_yaml": gates_file.read_text(encoding="utf-8"), "changed_paths": changed_paths},
+            json={
+                "policy_yaml": gates_file.read_text(encoding="utf-8"),
+                "changed_paths": changed_paths,
+                "commands": commands,
+            },
             headers={API_KEY_HEADER: resolved_key},
             timeout=15.0,
         )
@@ -388,6 +433,18 @@ def hook(harness: str, config: str | None, url: str | None, api_key: str | None)
         result = response.json()
         failing = [gate for gate in result["results"] if gate["outcome"] not in ("pass", "not_applicable")]
         blocked = result["blocked"]
+    except httpx.HTTPStatusError as exc:
+        # Split from the transport branch below on purpose: the request did
+        # arrive and was answered, so "could not reach" would send whoever
+        # debugs this to the network instead of to the status and body that
+        # say what was actually wrong (a policy this build cannot parse, or
+        # evidence over one of the route's limits).
+        detail = exc.response.text[:500]
+        click.echo(
+            f"otari hook: {resolved_url} rejected the check ({exc.response.status_code}: {detail}), not blocking.",
+            err=True,
+        )
+        return
     except httpx.HTTPError as exc:
         click.echo(f"otari hook: could not reach {resolved_url} ({exc}), not blocking.", err=True)
         return
@@ -405,8 +462,15 @@ def hook(harness: str, config: str | None, url: str | None, api_key: str | None)
     if not failing:
         return
 
+    # .get(), not [...]: the try/except above only protects the shape checks
+    # that build `failing` itself (result["results"], gate["outcome"]), not a
+    # gate dict's other fields. A gate missing 'enforcement'/'gate_id'/
+    # 'message' (an older or otherwise mismatched otari serve behind --url)
+    # must not raise KeyError here, outside that protection, and surface as a
+    # traceback in place of the fail-open message this command promises.
     summary = "\n".join(
-        f"  [{'x' if gate['enforcement'] == 'required' else '!'}] {gate['gate_id']}: {gate['message']}"
+        f"  [{'x' if gate.get('enforcement') == 'required' else '!'}] "
+        f"{gate.get('gate_id', '?')}: {gate.get('message', '(no message)')}"
         for gate in failing
     )
     if blocked:

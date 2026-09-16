@@ -10192,13 +10192,36 @@
         "description": "A policy body plus the evidence to check it against, both caller-supplied.",
         "properties": {
           "changed_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 10000,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "description": "Repo-relative paths the caller observed changed (e.g. `git status --porcelain`).",
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 10000,
-            "title": "Changed Paths",
-            "type": "array"
+            "title": "Changed Paths"
+          },
+          "commands": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 10000,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Shell commands the caller observed run or is about to run.",
+            "title": "Commands"
           },
           "policy_yaml": {
             "maxLength": 262144,
