@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.metered_pricing import estimate_metered_cost
 from gateway.log_config import logger
-from gateway.metrics import record_budget_exceeded
+from gateway.metrics import REGISTRY, Counter
 from gateway.models.entities import MAX_COUNT_LIMIT, Budget, BudgetResetLog, ModelPricing, User
 from gateway.models.money import to_usd
 from gateway.repositories.users_repository import get_active_user
@@ -34,6 +34,12 @@ from gateway.services.scoped_budget_service import release as release_scoped
 from gateway.services.scoped_budget_service import reserve as reserve_scoped
 from gateway.services.scoped_budget_service import settle as settle_scoped
 from gateway.types.budget_state import BudgetState
+
+BUDGET_EXCEEDED = Counter(
+    "gateway_budget_exceeded",
+    "Total number of budget exceeded events",
+    registry=REGISTRY,
+)
 
 # Every counter in this module is a ``NUMERIC(18, 6)`` column, so the constants
 # the SQL is built from are ``Decimal`` too. A bare ``0.0`` in a CASE arm or a
@@ -613,7 +619,7 @@ async def reserve_budget(
             db, scoped, usd, tokens=held_tokens, requests=held_requests, new_request=new_request
         )
         if refused is not None:
-            record_budget_exceeded()
+            BUDGET_EXCEEDED.inc()
             axis = await blocked_axis(
                 db,
                 refused,
@@ -715,7 +721,7 @@ async def reserve_budget(
     await db.commit()
 
     if not getattr(result, "rowcount", 0):
-        record_budget_exceeded()
+        BUDGET_EXCEEDED.inc()
         # The scoped ceilings admitted this request and are already holding it, so
         # give every axis back before rejecting. Without this the holds would leak
         # on every per-user refusal and permanently shrink each ceiling.
@@ -1026,7 +1032,7 @@ async def increase_reservation(
             db, handle.scoped_budgets, additional, tokens=grown_tokens, requests=0, new_request=False
         )
         if refused is not None:
-            record_budget_exceeded()
+            BUDGET_EXCEEDED.inc()
             axis = await blocked_axis(
                 db,
                 refused,
