@@ -59,13 +59,14 @@ export function AuthEmailField({
         autoComplete="username"
         className="read-only:bg-surface-alt read-only:text-muted"
       />
-      <FieldMessages>
-        {description ? (
-          // HeroUI's Description reaches the input as aria-describedby through
-          // the TextField's "description" slot, which a raw span does not.
+      {description ? (
+        <FieldMessages>
+          {/* HeroUI's Description reaches the input as aria-describedby
+              through the TextField's "description" slot, which a raw span
+              does not. */}
           <Description className="text-muted">{description}</Description>
-        ) : null}
-      </FieldMessages>
+        </FieldMessages>
+      ) : null}
     </TextField>
   )
 }
@@ -93,11 +94,11 @@ export function AuthPasswordField({
     >
       <Label className="text-body">{label}</Label>
       <Input autoComplete={autoComplete} />
-      <FieldMessages>
-        {description ? (
+      {description ? (
+        <FieldMessages>
           <Description className="text-muted">{description}</Description>
-        ) : null}
-      </FieldMessages>
+        </FieldMessages>
+      ) : null}
     </TextField>
   )
 }
@@ -123,11 +124,11 @@ export function AuthTextField({
     >
       <Label className="text-body">{label}</Label>
       <Input autoComplete={autoComplete} />
-      <FieldMessages>
-        {description ? (
+      {description ? (
+        <FieldMessages>
           <Description className="text-muted">{description}</Description>
-        ) : null}
-      </FieldMessages>
+        </FieldMessages>
+      ) : null}
     </TextField>
   )
 }
