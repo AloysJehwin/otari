@@ -16,6 +16,8 @@ from prometheus_client import (
     ProcessCollector,
     generate_latest,
 )
+from prometheus_client.core import GaugeMetricFamily
+from prometheus_client.registry import Collector
 from starlette.responses import Response
 
 from gateway.core.config import API_ROOT, API_VERSION
@@ -24,7 +26,16 @@ if TYPE_CHECKING:
     from starlette.requests import Request
     from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-__all__ = ["Counter", "Gauge", "Histogram", "MetricsMiddleware", "REGISTRY", "metrics_endpoint"]
+__all__ = [
+    "REGISTRY",
+    "Collector",
+    "Counter",
+    "Gauge",
+    "GaugeMetricFamily",
+    "Histogram",
+    "MetricsMiddleware",
+    "metrics_endpoint",
+]
 
 REGISTRY = CollectorRegistry()
 
@@ -53,7 +64,6 @@ ACTIVE_REQUESTS = Gauge(
     "Number of currently in-flight requests",
     registry=REGISTRY,
 )
-
 
 _PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 

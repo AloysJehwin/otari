@@ -30,6 +30,10 @@ _EXPOSED_FAMILIES: set[tuple[str, str, tuple[str, ...]]] = {
     ("gateway_active_requests", "gauge", ()),
     ("gateway_auth_failures", "counter", ("reason",)),
     ("gateway_budget_exceeded", "counter", ()),
+    ("gateway_db_pool_capacity", "gauge", ("pool",)),
+    ("gateway_db_pool_connections_checked_out", "gauge", ("pool",)),
+    ("gateway_db_pool_connections_idle", "gauge", ("pool",)),
+    ("gateway_db_pool_overflow_connections", "gauge", ("pool",)),
     ("gateway_inline_cost_settlements", "counter", ("outcome",)),
     ("gateway_rate_limit_hits", "counter", ()),
     ("gateway_request_cost_dollars", "histogram", ("provider", "model")),
@@ -47,7 +51,8 @@ def test_scrape_exposes_the_pinned_families() -> None:
     """The set of gateway metric families, with their types and label names, is fixed.
 
     A labeled family with no series yet shows only its HELP and TYPE lines in a
-    scrape, so the label names are read off the collectors rather than the text.
+    scrape, so the label names are read off the collector, or off the family it
+    yields where the collector is a custom one that keeps no label names.
     """
     import gateway.main  # noqa: F401  # imports every module that registers a metric
 
@@ -56,7 +61,8 @@ def test_scrape_exposes_the_pinned_families() -> None:
         describe = getattr(collector, "describe", collector.collect)
         for metric in describe():
             if metric.name.startswith("gateway_"):
-                families.add((metric.name, metric.type, tuple(getattr(collector, "_labelnames", ()))))
+                labelnames = getattr(collector, "_labelnames", ()) or getattr(metric, "_labelnames", ())
+                families.add((metric.name, metric.type, tuple(labelnames)))
 
     assert families == _EXPOSED_FAMILIES
 
