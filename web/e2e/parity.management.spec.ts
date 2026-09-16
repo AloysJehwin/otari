@@ -2,6 +2,7 @@ import { expect, type Locator, type Page, test } from "@playwright/test"
 
 import {
   dismissComboBoxInDialog,
+  expectedKeyFingerprint,
   gotoRoute,
   login,
   nav,
@@ -179,6 +180,10 @@ test.describe("api keys", () => {
     await reveal.getByRole("button", { name: "Show Secret key" }).click()
     const secret = await secretField.inputValue()
     expect(secret).not.toContain("•")
+    // The shape assertion above is all the concealed field can be held to
+    // before the secret is known; now that it is, the stand-in is pinned to the
+    // fingerprint of this key rather than of any key.
+    expect(masked).toBe(expectedKeyFingerprint(secret))
     await expect(reveal.getByLabel("curl", { exact: true })).toHaveValue(
       new RegExp(secret),
     )
