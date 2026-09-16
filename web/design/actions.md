@@ -132,6 +132,9 @@ the first-run sheet's Skip, which is the screen's one way out and is quieted on
 purpose so it does not compete with the request the screen is asking for. A lone
 button is otherwise not a reason to name a container.
 
+`.otari-actions` groups inline actions or a list of suggested actions. It drops
+ghost edges without imposing the field density of a filter toolbar.
+
 Put the class on the container, not on the button. If you are building a new
 container that holds a row of ghosts and the edges read as a grid of boxes, add a
 place rather than styling the buttons.

@@ -95,6 +95,18 @@ Anchored to its trigger, takes focus, and is dismissed deliberately. Right for a
 column picker, a small confirm about one row, a panel of detail about the thing
 that opened it.
 
+The default panel owns its padding. For sectioned content with full-width
+rules, use `padding="none"` and put padding on each child section. Use
+`placement="bottom end"` to align the panel's right edge with its trigger.
+
+`label` is required and names the panel. A heading drawn inside it does not
+supply that name, so without `label` the dialog is announced unnamed.
+
+The trigger is rendered as-is, not wrapped, which is what keeps one button in
+the accessibility tree rather than the two the Tooltip section describes. So it
+has to be a react-aria pressable: `Button` or `IconButton`. A `<span>` or a
+native `<button>` renders and never opens the panel, and nothing reports it.
+
 Uncontrolled by default, which is the opposite of the dialogs and deliberate: a
 popover's trigger is inside it, so it can own that state. Pass `isOpen` and
 `onOpenChange` for the case where something else has to close it, such as a
