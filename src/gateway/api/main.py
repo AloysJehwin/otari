@@ -21,6 +21,7 @@ from gateway.api.routes import (
     embeddings,
     files,
     health,
+    hooks,
     hosted_mode,
     hybrid_mode,
     images,
@@ -146,6 +147,13 @@ def _register_core_routers(api: APIRouter, config: GatewayConfig) -> None:
         # authenticates through the platform's MCP resolver without opening a local
         # database; standalone uses the ordinary API/master-key path.
         api.include_router(mcp.router)
+
+    # Agent Gates' Hook Server, mounted in every mode. It evaluates only the
+    # policy and evidence the caller sent in the same request, so it needs no
+    # local tenancy, no provider and no database, and a hybrid gateway is as
+    # able to answer it as a standalone one. ``hooks.verify_hook_caller``
+    # authenticates per mode.
+    api.include_router(hooks.router)
 
     if config.is_hybrid_mode:
         # The hybrid stub router is mounted by register_routers, after the
