@@ -741,15 +741,47 @@ def test_status_less_invalid_request_error_maps_to_400() -> None:
     assert "max_tokens" in mapping.detail
 
 
+class _StatusLessWrapper(Exception):
+    """A wrapper carrying no status of its own, holding the real failure on
+    ``original_exception``. ``_WrappedError`` cannot model this: it requires a
+    status, and a failure that carries one is classified by that status."""
+
+    def __init__(self, original: BaseException) -> None:
+        super().__init__("Invalid request")
+        self.status_code = None
+        self.original_exception = original
+
+
 def test_status_less_invalid_request_error_survives_wrapped_error() -> None:
     """The InvalidRequestError type check fires when it lives on
-    ``original_exception`` (the ANY_LLM_UNIFIED_EXCEPTIONS=1 shape)."""
+    ``original_exception`` rather than on the failure itself."""
     original = InvalidRequestError("invalid message role: 'system'")
-    wrapped = _WrappedError(500, original)
-    mapping = classify_provider_error(wrapped)
+    mapping = classify_provider_error(_StatusLessWrapper(original))
     assert mapping is not None
     assert mapping.status_code == 400
     assert "invalid message role" in mapping.detail
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [
+        (401, (502, PROVIDER_CREDENTIALS_DETAIL)),
+        (429, (429, PROVIDER_RATE_LIMITED_DETAIL)),
+    ],
+)
+def test_a_carried_status_wins_over_an_invalid_request_error_in_the_chain(
+    status_code: int, expected: tuple[int, str]
+) -> None:
+    """A failure that carries its own status keeps it, even when a status-less
+    InvalidRequestError sits anywhere on ``original_exception``.
+
+    Guarding per-link rather than on the failure's own status reclassified these
+    as a client 400 and echoed the upstream text, which is how a rejected
+    credential's message would reach the caller."""
+    wrapped = _WrappedError(status_code, InvalidRequestError("upstream text"))
+    mapping = classify_provider_error(wrapped)
+    assert mapping is not None
+    assert (mapping.status_code, mapping.detail) == expected
 
 
 def test_status_less_invalid_request_error_is_recorded_as_400() -> None:
