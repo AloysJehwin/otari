@@ -514,9 +514,9 @@ class CallerIdentityPublic(SQLModel):
     names. Publishing it costs nothing either, since it is the caller's own
     identity and they are holding the credential that resolved to it.
 
-    Both fields are nullable, and for opposite reasons. A local operator
-    identity has no address, because first boot provisions it with a name and
-    nothing to sign in with but the master key; a member added to the roster by
+    ``email`` and ``full_name`` are nullable for opposite reasons. A local
+    operator identity has no address, because first boot provisions it with a
+    name and nothing to sign in with but the master key; a member added by
     address has no name until they claim the identity and supply one. So a shell
     has to be ready to draw either one alone.
     """
@@ -524,6 +524,23 @@ class CallerIdentityPublic(SQLModel):
     user_id: uuid.UUID
     email: str | None = None
     full_name: str | None = None
+    # Whether a password exists, never anything derived from its value. It is
+    # here rather than left to the deployment-wide ``sign_in_methods``, which
+    # answers what this gateway accepts and not what the caller holds: somebody
+    # who signed in with Google, GitHub or a passkey has no current password to
+    # type into the change form (mozilla-ai/otari-ai#2099).
+    #
+    # Required rather than defaulted, because the safe-looking default is the
+    # wrong one: "no password" for an identity that holds one selects the form
+    # the gateway refuses.
+    has_password: bool = Field(
+        description=(
+            "Whether this identity holds a dashboard password. False for one that signs in "
+            "only through an OAuth provider or a passkey, and for a roster entry nobody has "
+            "claimed yet. PUT /api/v1/auth/password requires current_password from a "
+            "cookie-authenticated caller exactly while this is true."
+        ),
+    )
 
 
 class OrganizationMembershipContextPublic(SQLModel):
