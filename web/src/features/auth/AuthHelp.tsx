@@ -1,4 +1,5 @@
 import { Link } from "@heroui/react"
+import { Button } from "@/design-system/actions/Button"
 import { Popover } from "@/design-system/overlays/Popover"
 import { PublicAuthLink } from "./PublicAuthLayout"
 
@@ -12,6 +13,11 @@ import { PublicAuthLink } from "./PublicAuthLayout"
  * typed, and where recovery is offered. `Login` keeps "Forgot your password?"
  * beside the password box itself, so this popover carries it only for the
  * master-key box, where there is no password field to put it next to.
+ *
+ * The trigger is a `Button` because a popover trigger has to be a react-aria
+ * pressable, and reads as the text link beside it because both call sites put it
+ * in an `.otari-auth-actions` row (`globals.css`). Outside one of those rows it
+ * gets the default ghost box back.
  */
 export function AuthHelp({
   offersRecovery,
@@ -22,11 +28,8 @@ export function AuthHelp({
 }) {
   return (
     <Popover
-      trigger={
-        <span className="inline-flex min-h-11 items-center px-3 text-sm font-medium text-link">
-          Help
-        </span>
-      }
+      label="Help"
+      trigger={<Button variant="ghost">Help</Button>}
       placement="top"
     >
       <div className="flex max-w-xs flex-col gap-2">
