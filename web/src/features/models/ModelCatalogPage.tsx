@@ -320,31 +320,17 @@ function ModelCard({
   publicView: boolean
 }) {
   const title = model.vendor ? `${model.vendor}: ${model.name}` : model.name
-  const titleClass = "text-heading text-link hover:text-link-hover break-words"
+  const titleClass =
+    "text-heading text-link group-hover:text-link-hover break-words"
   const providers =
     model.provider_count === 1
       ? "1 provider"
       : `${model.provider_count} providers`
-  return (
-    <article className="flex flex-col gap-2 border border-border bg-surface p-4">
+  const content = (
+    <>
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-          {publicView ? (
-            <a href={publicCatalogHref(model.id)} className={titleClass}>
-              {title}
-            </a>
-          ) : (
-            // No onClick: the link navigates on a plain click by itself, and
-            // intercepting one would take Cmd/Ctrl-click and middle-click
-            // (which opens a new tab) with it. `onOpen` is the table row's.
-            <Link
-              to="/models/$"
-              params={{ _splat: model.id }}
-              className={titleClass}
-            >
-              {title}
-            </Link>
-          )}
+          <span className={titleClass}>{title}</span>
           {model.open_weights ? <Badge tone="muted">Open weights</Badge> : null}
           {model.deprecated ? <Badge tone="warn">Deprecated</Badge> : null}
         </div>
@@ -382,80 +368,127 @@ function ModelCard({
           </>
         ) : null}
       </p>
+    </>
+  )
+  const cardClass =
+    "group flex flex-col gap-2 border border-border bg-surface p-4 transition-colors duration-150 ease-out hover:bg-surface-alt motion-reduce:transition-none"
+  return (
+    <article>
+      {publicView ? (
+        <a
+          href={publicCatalogHref(model.id)}
+          aria-label={title}
+          className={cardClass}
+        >
+          {content}
+        </a>
+      ) : (
+        <Link
+          to="/models/$"
+          params={{ _splat: model.id }}
+          aria-label={title}
+          className={cardClass}
+        >
+          {content}
+        </Link>
+      )}
     </article>
   )
 }
 
-function tableColumns(): DataTableColumn<CatalogModelSummary>[] {
-  return [
-    {
-      id: "name",
-      header: "Model",
-      isRowHeader: true,
-      allowsSorting: true,
-      cell: (row) => (
-        <div className="flex min-w-0 flex-col">
-          <span className="text-body break-words">{row.name}</span>
-          <span className="text-caption">
-            {row.vendor ?? "Unknown vendor"} ·{" "}
-            {row.provider_count === 1
-              ? "1 provider"
-              : `${row.provider_count} providers`}
-          </span>
-        </div>
-      ),
-    },
-    {
-      id: "context",
-      header: "Context",
-      align: "end",
-      allowsSorting: true,
-      cell: (row) => (
-        <span className="text-mono-caption">
-          {formatContext(row.context_window)}
+const TABLE_COLUMNS: DataTableColumn<CatalogModelSummary>[] = [
+  {
+    id: "name",
+    header: "Model",
+    isRowHeader: true,
+    allowsSorting: true,
+    cell: (row) => (
+      <div className="flex min-w-0 flex-col">
+        <span className="text-body break-words">{row.name}</span>
+        <span className="text-caption">
+          {row.vendor ?? "Unknown vendor"} ·{" "}
+          {row.provider_count === 1
+            ? "1 provider"
+            : `${row.provider_count} providers`}
         </span>
-      ),
-    },
-    {
-      id: "released",
-      header: "Released",
-      align: "end",
-      allowsSorting: true,
-      cell: (row) => (
-        <span className="text-mono-caption">
-          {formatReleaseDate(row.release_date)}
-        </span>
-      ),
-    },
-    {
-      id: "input",
-      header: "Input / 1M",
-      align: "end",
-      allowsSorting: true,
-      cell: (row) => (
-        <span className="text-mono-caption">
-          {fromRate(row.min_input_price_per_million)}
-        </span>
-      ),
-    },
-    {
-      id: "output",
-      header: "Output / 1M",
-      align: "end",
-      allowsSorting: true,
-      cell: (row) => (
-        <span className="text-mono-caption">
-          {fromRate(row.min_output_price_per_million)}
-        </span>
-      ),
-    },
-  ]
-}
+      </div>
+    ),
+  },
+  {
+    id: "context",
+    header: "Context",
+    align: "end",
+    allowsSorting: true,
+    cell: (row) => (
+      <span className="text-mono-caption">
+        {formatContext(row.context_window)}
+      </span>
+    ),
+  },
+  {
+    id: "released",
+    header: "Released",
+    align: "end",
+    allowsSorting: true,
+    cell: (row) => (
+      <span className="text-mono-caption">
+        {formatReleaseDate(row.release_date)}
+      </span>
+    ),
+  },
+  {
+    id: "input",
+    header: "Input / 1M",
+    align: "end",
+    allowsSorting: true,
+    cell: (row) => (
+      <span className="text-mono-caption">
+        {fromRate(row.min_input_price_per_million)}
+      </span>
+    ),
+  },
+  {
+    id: "output",
+    header: "Output / 1M",
+    align: "end",
+    allowsSorting: true,
+    cell: (row) => (
+      <span className="text-mono-caption">
+        {fromRate(row.min_output_price_per_million)}
+      </span>
+    ),
+  },
+]
+
+const CATALOG_VIEWS = ["list", "table"] as const
+type CatalogView = (typeof CATALOG_VIEWS)[number]
 
 const VIEW_OPTIONS = [
   { value: "list", label: "List" },
   { value: "table", label: "Table" },
-]
+] as const satisfies { value: CatalogView; label: string }[]
+
+function isCatalogView(value: string | null): value is CatalogView {
+  return (CATALOG_VIEWS as readonly string[]).includes(value ?? "")
+}
+
+// Hoisted beside the columns: DataTable caches its rendered rows on these two,
+// and an inline arrow would rebuild every row on each render.
+const rowKey = (row: CatalogModelSummary) => row.id
+
+const VIEW_STORAGE_KEY = "otari.dashboard.modelsView"
+
+function readStoredView(): CatalogView {
+  if (typeof window === "undefined") return "list"
+  try {
+    const stored = window.localStorage.getItem(VIEW_STORAGE_KEY)
+    return isCatalogView(stored) ? stored : "list"
+  } catch {
+    // Private-mode Safari and a disabled-storage policy both throw. The list is
+    // the view a first visit gets, so it is what a blocked read falls back to.
+    return "list"
+  }
+}
 
 export function ModelCatalogView({
   onOpen,
@@ -479,7 +512,18 @@ export function ModelCatalogView({
     providers: initialProvider ? [initialProvider] : [],
   })
   const [sort, setSort] = useState("newest")
-  const [view, setView] = useState("list")
+  const [view, setView] = useState<CatalogView>(readStoredView)
+  // `Segmented` hands back a plain string, so the union is re-established here,
+  // on the same default a stored value nobody recognizes falls to.
+  const changeView = (next: string) => {
+    const chosen = isCatalogView(next) ? next : "list"
+    setView(chosen)
+    try {
+      window.localStorage.setItem(VIEW_STORAGE_KEY, chosen)
+    } catch {
+      // Keep the control usable when browser storage is unavailable.
+    }
+  }
   const [railOpen, setRailOpen] = useState(false)
   const [page, setPage] = useState(0)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
@@ -600,7 +644,7 @@ export function ModelCatalogView({
               label="View"
               options={VIEW_OPTIONS}
               value={view}
-              onChange={setView}
+              onChange={changeView}
             />
             <Button
               size="sm"
@@ -630,9 +674,9 @@ export function ModelCatalogView({
             <TableScrollFrame className="otari-models-table">
               <DataTable
                 ariaLabel="Models"
-                columns={tableColumns()}
+                columns={TABLE_COLUMNS}
                 rows={pageRows}
-                getRowKey={(row) => row.id}
+                getRowKey={rowKey}
                 sortDescriptor={sortDescriptor}
                 onSortChange={onSortChange}
                 onRowAction={onOpen}

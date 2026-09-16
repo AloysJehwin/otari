@@ -192,6 +192,7 @@ function renderPage(ui: ReactElement, url = "/models") {
 describe("ModelCatalogPage", () => {
   afterEach(() => {
     vi.restoreAllMocks()
+    localStorage.clear()
   })
 
   it("lists one card per model with the cheapest offering's price and a link to its page", async () => {
@@ -209,6 +210,62 @@ describe("ModelCatalogPage", () => {
     expect(within(card).getByText("200K context")).toBeInTheDocument()
     expect(within(card).getByText("Z.ai's flagship.")).toBeInTheDocument()
     expect(screen.getByText(/2 models across 2 providers/)).toBeInTheDocument()
+  })
+
+  it("opens a model from the description inside its card", async () => {
+    mockApi()
+    renderPage(<ModelCatalogPage />)
+    const user = userEvent.setup()
+    const description = await screen.findByText("Z.ai's flagship.")
+    expect(description.closest("a")).toHaveAccessibleName("Z.ai: GLM-5.3")
+    await user.click(description)
+    expect(await screen.findByText("opened a model")).toBeInTheDocument()
+  })
+
+  it.each(["List", "Table"])(
+    "remembers %s after leaving and remounting the catalog",
+    async (view) => {
+      mockApi()
+      const user = userEvent.setup()
+      const first = renderPage(<ModelCatalogPage />)
+      await user.click(await screen.findByRole("radio", { name: "Table" }))
+      if (view === "List")
+        await user.click(screen.getByRole("radio", { name: "List" }))
+      first.unmount()
+      renderPage(<ModelCatalogPage />)
+      expect(await screen.findByRole("radio", { name: view })).toBeChecked()
+      expect(
+        await screen.findByRole(view === "Table" ? "grid" : "list", {
+          name: "Models",
+        }),
+      ).toBeInTheDocument()
+    },
+  )
+
+  it("keeps the view switch usable when browser storage is blocked", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("Storage blocked", "SecurityError")
+    })
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage blocked", "SecurityError")
+    })
+    mockApi()
+    renderPage(<ModelCatalogPage />)
+    const user = userEvent.setup()
+    await screen.findByRole("list", { name: "Models" })
+    await user.click(screen.getByRole("radio", { name: "Table" }))
+    expect(
+      await screen.findByRole("grid", { name: "Models" }),
+    ).toBeInTheDocument()
+  })
+
+  it("falls back to list for an invalid saved view", async () => {
+    localStorage.setItem("otari.dashboard.modelsView", "invalid")
+    mockApi()
+    renderPage(<ModelCatalogPage />)
+    expect(
+      await screen.findByRole("list", { name: "Models" }),
+    ).toBeInTheDocument()
   })
 
   it("narrows the list to the provider the Providers page linked with", async () => {
@@ -293,6 +350,9 @@ describe("ModelCatalogPage", () => {
     const grid = await screen.findByRole("grid", { name: "Models" })
     expect(within(grid).getByText("GLM-5.3")).toBeInTheDocument()
     expect(within(grid).getByText("from $0.50")).toBeInTheDocument()
+    const row = within(grid).getByRole("row", { name: /GLM-5.3/ })
+    await user.click(within(row).getByRole("gridcell", { name: "200K" }))
+    expect(await screen.findByText("opened a model")).toBeInTheDocument()
   })
 
   it("opens a model when its card is pressed", async () => {
