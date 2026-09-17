@@ -27,6 +27,8 @@ The release runs in two halves so the changelog is reviewable before the tag:
    (`otari-release.yml`) workflow from the Actions UI with the target version
    (for example `0.4.0`). It regenerates `CHANGELOG.md` for `v0.4.0` and opens a
    `release/v0.4.0` PR labeled `release` with the rendered notes in the body.
+   A release that contains a breaking change needs a larger version; see
+   [Breaking changes](#breaking-changes).
 2. **Merge it.** Review the changelog diff and squash-merge the PR.
    **Otari Release (tag + publish)** (`otari-tag-release.yml`) then tags the
    squash commit `v0.4.0` and publishes the GitHub Release with the git-cliff
@@ -70,13 +72,35 @@ User-visible prefixes appear in release notes:
 Routine maintenance is intentionally hidden: `chore:` (including `chore(deps):`
 and `chore: release`), `build:`, `ci:`, `docs:`, `style:`, `refactor:`, `test:`.
 Scope visibility via the prefix: `feat(web): ...` / `fix(web): ...` show up;
-`refactor(web):` / `chore(web):` / `test(web):` stay out.
+`refactor(web):` / `chore(web):` / `test(web):` stay out. A breaking change is
+never hidden: see [Breaking changes](#breaking-changes).
 
 A non-conventional title is not silently dropped: `cliff.toml`'s catch-all parser
 routes anything without a recognized prefix into a generic "Other" group, and the
 release workflow fails if git-cliff still flags a parse-error skip. The PR Title
 Check refuses the merge before that can happen, so "Other" should only ever catch
 direct pushes to `main`.
+
+### Breaking changes
+
+A change is breaking when a deployment must do work of its own to upgrade. For
+example, a new required method on a port breaks every adapter that a deployment
+wrote against the old port.
+
+Mark a breaking change with `!` in the PR title, after the type or the scope:
+`feat(api)!: remove GET /v1/usage/summary.csv`. The squash title is what
+git-cliff parses. git-cliff also reads a `BREAKING CHANGE:` footer, but a footer
+reaches the squash commit only from a branch commit message, so do not rely on it.
+
+The release notes put the marker **BREAKING:** at the start of each breaking
+entry. The entry stays in the group of its type. A breaking commit of a hidden
+type, such as `refactor(ports)!:`, appears under "Maintenance".
+
+A release that contains a breaking change raises the minor version while Otari is
+below 1.0 (`0.6.3` becomes `0.7.0`), and the major version from 1.0 on. The
+**Otari Release (open PR)** workflow compares the requested version with the last
+release tag. When the version is too small, it puts a warning at the top of the
+release PR body. It does not stop the release.
 
 ### Prerequisites (repository secrets)
 
