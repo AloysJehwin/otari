@@ -161,6 +161,9 @@ function KnownProviderForm({
   setClientArgsText,
   credentials,
   setCredentials,
+  isDirty,
+  apiBaseSeededFor,
+  setApiBaseSeededFor,
 }: {
   isOpen: boolean
   onClose: () => void
@@ -179,6 +182,9 @@ function KnownProviderForm({
   setClientArgsText: (v: string) => void
   credentials: CredentialFieldValues
   setCredentials: (v: CredentialFieldValues) => void
+  isDirty: boolean
+  apiBaseSeededFor: string | null
+  setApiBaseSeededFor: (v: string | null) => void
 }) {
   const create = useCreateStoredProvider()
   const test = useTestProviderCredentials()
@@ -194,12 +200,18 @@ function KnownProviderForm({
   // picker itself never imports every provider SDK (issue #365).
   const detail = useProviderDetail(providerId)
   const selected = detail.data?.id === providerId ? detail.data : undefined
-  // Prefill the (editable) API base with the provider's built-in default once its
-  // detail loads, so Advanced shows what will be used. Keyed on the selected
-  // provider so it fires once per selection and does not clobber later edits.
+  // Prefill the (editable) API base with the provider's built-in default once
+  // its detail loads, so Advanced shows what will be used. Keyed on the provider
+  // already seeded, held above this component, rather than on mount: the draft
+  // now outlives a tab switch while this component does not, so `selected` is
+  // truthy on the first render after a switch (TanStack Query answers from
+  // cache) and a mount-keyed effect overwrote a hand-edited base every time.
   useEffect(() => {
-    if (selected) setApiBase(selected.default_api_base ?? "")
-  }, [selected, setApiBase])
+    if (selected && apiBaseSeededFor !== selected.id) {
+      setApiBaseSeededFor(selected.id)
+      setApiBase(selected.default_api_base ?? "")
+    }
+  }, [selected, apiBaseSeededFor, setApiBaseSeededFor, setApiBase])
   const envKeyPresent = selected?.env_key_present ?? false
   // The key is only mandatory when the provider needs one and its env var is not
   // already set on the server; any-llm falls back to that env var otherwise.
@@ -209,18 +221,10 @@ function KnownProviderForm({
   // Require the key when the chosen provider says it needs one; keyless local
   // backends (Ollama, llama.cpp) can submit without it.
   // One snapshot of everything the form owns, seeded on mount, rather than a
-  // list of fields: the list was two of six, so Advanced's rename, API base,
-  // client options and every typed credential (a Bedrock region) were invisible
-  // to the guard and went on Escape with nothing asked. `key={addOpenCount}`
-  // reseeds it per open. See feedback.md.
-  const { isDirty } = useDirtySnapshot({
-    providerId,
-    apiKey,
-    name,
-    apiBase,
-    clientArgsText,
-    credentials,
-  })
+  // isDirty arrives as a prop rather than being computed here: this component
+  // remounts on every tab switch, and useDirtySnapshot seeds on mount, so a
+  // local snapshot reseeded against already-filled values and read clean. It is
+  // computed once in AddProviderForm over both drafts instead. See feedback.md.
   const canSubmit =
     providerId !== "" &&
     !nameHasDelimiter &&
@@ -389,6 +393,7 @@ function CustomProviderForm({
   setApiKey,
   clientArgsText,
   setClientArgsText,
+  isDirty,
 }: {
   isOpen: boolean
   onClose: () => void
@@ -403,21 +408,15 @@ function CustomProviderForm({
   setApiKey: (v: string) => void
   clientArgsText: string
   setClientArgsText: (v: string) => void
+  isDirty: boolean
 }) {
   const create = useCreateStoredProvider()
   const test = useTestProviderCredentials()
   const clientArgs = parseClientArgs(clientArgsText)
 
   const nameHasDelimiter = /[:/]/.test(name)
-  // Same snapshot as the known tab, for the same reason: this list had missed
-  // `providerType` and the client options.
-  const { isDirty } = useDirtySnapshot({
-    name,
-    providerType,
-    apiBase,
-    apiKey,
-    clientArgsText,
-  })
+  // isDirty is a prop for the same reason it is on the known tab: this
+  // component remounts per tab switch, so a local snapshot reads clean.
   const canSubmit =
     name.trim() !== "" &&
     !nameHasDelimiter &&
@@ -559,6 +558,11 @@ function AddProviderForm({
   const [knownClientArgsText, setKnownClientArgsText] = useState("")
   const [knownCredentials, setKnownCredentials] =
     useState<CredentialFieldValues>({})
+  // Which provider the known tab's API base was seeded from. Lifted with the
+  // draft it guards, so a tab switch cannot reseed over a hand-edited value.
+  const [knownApiBaseSeededFor, setKnownApiBaseSeededFor] = useState<
+    string | null
+  >(null)
 
   // Custom-tab field values — lifted for the same reason.
   const [customName, setCustomName] = useState("")
@@ -567,6 +571,26 @@ function AddProviderForm({
   const [customApiBase, setCustomApiBase] = useState("")
   const [customApiKey, setCustomApiKey] = useState("")
   const [customClientArgsText, setCustomClientArgsText] = useState("")
+
+  // One snapshot over both drafts, held here rather than in either tab
+  // component. The drafts outlive a tab switch but the components do not, and
+  // useDirtySnapshot seeds on mount, so a snapshot taken inside a tab reseeded
+  // against already-filled values and read clean: Escape then closed with the
+  // pasted key and nothing asked. Held here it also covers the inactive tab,
+  // which a per-tab snapshot could not see at all. See feedback.md.
+  const { isDirty } = useDirtySnapshot({
+    knownProviderId,
+    knownApiKey,
+    knownApiBase,
+    knownName,
+    knownClientArgsText,
+    knownCredentials,
+    customName,
+    customProviderType,
+    customApiBase,
+    customApiKey,
+    customClientArgsText,
+  })
 
   const tabs = (
     <TabRow>
@@ -604,6 +628,9 @@ function AddProviderForm({
           setClientArgsText={setKnownClientArgsText}
           credentials={knownCredentials}
           setCredentials={setKnownCredentials}
+          isDirty={isDirty}
+          apiBaseSeededFor={knownApiBaseSeededFor}
+          setApiBaseSeededFor={setKnownApiBaseSeededFor}
         />
       )}
       {tab === "custom" && (
@@ -621,6 +648,7 @@ function AddProviderForm({
           setApiKey={setCustomApiKey}
           clientArgsText={customClientArgsText}
           setClientArgsText={setCustomClientArgsText}
+          isDirty={isDirty}
         />
       )}
     </>
