@@ -7,6 +7,11 @@ Before changing the backend, read
 [backend-standards](../../.github/skills/backend-standards/SKILL.md). The root
 [AGENTS.md](../../AGENTS.md) owns runtime modes, validation, and generated
 artifacts. [ARCHITECTURE.md](../../ARCHITECTURE.md) owns the extension boundary.
+[The modular monolith](../../ARCHITECTURE.md#the-modular-monolith) names the
+target shape and its import rules,
+[Layering](../../.github/skills/backend-standards/SKILL.md#layering) gives the
+rules for each layer, and [docs/domains.md](../../docs/domains.md) maps every
+module to its domain.
 
 ## Ports and composition
 
@@ -231,8 +236,11 @@ Request code gets a session through `get_db`; non-request code uses
 draws from a pool of its own so metering is not starved by request traffic.
 Services own commits and rollbacks. The one exception is
 `release_session(db)`, which the request path calls before dispatching upstream
-so a pooled connection is not held across the provider call. Migrations live
-under `alembic/versions/`.
+so a pooled connection is not held across the provider call. Both describe the
+code as it is today;
+[Who commits](../../.github/skills/backend-standards/SKILL.md#who-commits)
+gives the target shape, where a Unit of Work block commits and no route does.
+Migrations live under `alembic/versions/`.
 
 Once a client-side `db_command_timeout` is configured, a database call can
 raise a bare `TimeoutError` as well as a `SQLAlchemyError`. Statement timeouts
