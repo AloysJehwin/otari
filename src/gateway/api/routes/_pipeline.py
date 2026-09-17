@@ -573,7 +573,7 @@ def classify_provider_error(exc: BaseException) -> ProviderErrorMapping | None:
         # detail instead of echoing the upstream text as a client 400.
         if any(isinstance(candidate, InvalidRequestError) for candidate in upstream_exception_chain(exc)):
             return ProviderErrorMapping(
-                status.HTTP_400_BAD_REQUEST, _caller_fault_detail(exc, PROVIDER_BAD_REQUEST_DETAIL)
+                status.HTTP_400_BAD_REQUEST, _upstream_message_detail(exc, PROVIDER_BAD_REQUEST_DETAIL)
             )
         return None
     # Account billing exhaustion, which several providers report as a 400/422

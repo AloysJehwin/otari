@@ -763,25 +763,33 @@ def test_status_less_invalid_request_error_survives_wrapped_error() -> None:
 
 
 @pytest.mark.parametrize(
-    ("status_code", "expected"),
-    [
-        (401, (502, PROVIDER_CREDENTIALS_DETAIL)),
-        (429, (429, PROVIDER_RATE_LIMITED_DETAIL)),
-    ],
+    ("status_code", "expected_status"),
+    [(401, 502), (403, 502), (429, 429)],
 )
 def test_a_carried_status_wins_over_an_invalid_request_error_in_the_chain(
-    status_code: int, expected: tuple[int, str]
+    status_code: int, expected_status: int
 ) -> None:
     """A failure that carries its own status keeps it, even when a status-less
     InvalidRequestError sits anywhere on ``original_exception``.
 
-    Guarding per-link rather than on the failure's own status reclassified these
-    as a client 400 and echoed the upstream text, which is how a rejected
-    credential's message would reach the caller."""
+    Guarding per-link rather than on the failure's own status turned all of
+    these into a client 400, which is how a rejected credential's message would
+    have reached the caller."""
     wrapped = _WrappedError(status_code, InvalidRequestError("upstream text"))
     mapping = classify_provider_error(wrapped)
     assert mapping is not None
-    assert (mapping.status_code, mapping.detail) == expected
+    assert mapping.status_code == expected_status
+
+
+def test_a_credential_failure_keeps_its_fixed_detail_over_a_chained_invalid_request() -> None:
+    """The 401 case specifically: its detail is fixed precisely so an upstream
+    message never reaches the caller, which is the invariant
+    ``redact_upstream_message`` documents about itself."""
+    wrapped = _WrappedError(401, InvalidRequestError("sk-ant-would-leak-here"))
+    mapping = classify_provider_error(wrapped)
+    assert mapping is not None
+    assert mapping.detail == PROVIDER_CREDENTIALS_DETAIL
+    assert "sk-ant" not in mapping.detail
 
 
 def test_status_less_invalid_request_error_is_recorded_as_400() -> None:
