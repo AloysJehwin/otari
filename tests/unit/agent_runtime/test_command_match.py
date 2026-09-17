@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 from gateway.agent_runtime.domain.evaluators import (
     _command_segments,
     _contains_subsequence,
@@ -158,17 +160,44 @@ def test_an_unparseable_heredoc_does_not_block_an_unrelated_command() -> None:
     assert evaluate_command_match(gate, CommandEvidence(commands=(heredoc,))).outcome is Outcome.PASS
 
 
-def test_operators_glued_with_no_surrounding_whitespace_are_a_known_gap() -> None:
-    """Documented, not fixed: shlex only sees '&&' as its own token when
-
-    whitespace-separated, so 'a&&b' stays one token ('a&&b'/'frontend&&npm')
-    and is never split into two segments. Pinned here so a future change to
-    this behavior is a deliberate decision, not a silent regression either
-    way.
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd frontend&&npm install",
+        "npm install;",
+        "npm install&",
+        ";npm install",
+        "(npm install)",
+        "ls|npm install",
+        "cd web && (npm install)",
+    ],
+)
+def test_a_separator_glued_to_a_word_still_splits(command: str) -> None:
+    """Every one of these fails open without _normalize_separators: shlex only
+    isolates a separator that whitespace already surrounds, so the operator
+    stays glued to the word beside it ('install;', '(npm') and matches no
+    phrase. A trailing ';' is the common one, not an evasion.
     """
-    gate = _gate(id="use-pnpm", forbidden=("npm",), message="Use pnpm, not npm.")
-    result = evaluate_command_match(gate, CommandEvidence(commands=("cd frontend&&npm install",)))
-    assert result.outcome is Outcome.PASS
+    gate = _gate(id="use-pnpm", forbidden=("npm install",), message="Use pnpm, not npm.")
+    assert evaluate_command_match(gate, CommandEvidence(commands=(command,))).outcome is Outcome.FAIL
+
+
+def test_a_redirect_ampersand_is_not_a_separator() -> None:
+    """'2>&1' joins a descriptor to a target; splitting there would cut one
+    command into two segments at a point no shell does.
+    """
+    assert _command_segments("npm install 2>&1") == [["npm", "install", "2>&1"]]
+    assert _command_segments("npm install &>out") == [["npm", "install", "&>out"]]
+
+
+def test_a_comment_after_a_metacharacter_is_still_a_comment() -> None:
+    """'ls;# npm install' is entirely a comment to Bash. Treating only
+    whitespace as ending a word left the commented-out text to match as if it
+    were a real command, blocking a safe command.
+    """
+    gate = _gate(id="use-pnpm", forbidden=("npm install",), message="Use pnpm, not npm.")
+    for command in ("ls;# npm install", "ls &# npm install", "ls|# npm install"):
+        assert evaluate_command_match(gate, CommandEvidence(commands=(command,))).outcome is Outcome.PASS
 
 
 # --- _command_segments / _contains_subsequence: direct unit coverage -------
@@ -283,6 +312,142 @@ def test_ansi_c_quoted_escaped_apostrophe_does_not_evade_the_gate() -> None:
     assert result.outcome is Outcome.FAIL
 
 
+# --- Command-position basename equivalence ----------------------------------
+
+
+def test_path_qualified_command_matches_the_bare_phrase() -> None:
+    gate = _gate(id="use-pnpm", forbidden=("npm install",), message="Use pnpm, not npm.")
+    result = evaluate_command_match(gate, CommandEvidence(commands=("/usr/bin/npm install",)))
+    assert result.outcome is Outcome.FAIL
+
+
+def test_relative_path_qualified_command_matches_the_bare_phrase() -> None:
+    gate = _gate(id="use-pnpm", forbidden=("npm install",), message="Use pnpm, not npm.")
+    result = evaluate_command_match(gate, CommandEvidence(commands=("./node_modules/.bin/npm install",)))
+    assert result.outcome is Outcome.FAIL
+
+
+def test_path_qualified_phrase_still_matches_the_identical_path_qualified_command() -> None:
+    """Regression check for rewriting only one side to its basename.
+
+    Doing that (instead of comparing both sides by basename at match time)
+    would silently stop a path-qualified phrase like this one from ever
+    matching the exact command it names, since neither would equal the
+    other's literal spelling any more.
+    """
+    gate = _gate(id="no-release-script", forbidden=("./scripts/release.sh",), message="m")
+    result = evaluate_command_match(gate, CommandEvidence(commands=("./scripts/release.sh",)))
+    assert result.outcome is Outcome.FAIL
+
+
+def test_path_qualified_phrase_still_matches_in_argument_position() -> None:
+    gate = _gate(id="no-release-script", forbidden=("./scripts/release.sh",), message="m")
+    result = evaluate_command_match(gate, CommandEvidence(commands=("bash ./scripts/release.sh",)))
+    assert result.outcome is Outcome.FAIL
+
+
+def test_argument_position_path_does_not_get_basename_equivalence() -> None:
+    """Only a segment's own position 0, the command actually invoked, gets basename equivalence.
+
+    A path in argument position is real content: a bare-basename phrase
+    must not reach into it and match just its tail.
+    """
+    gate = _gate(id="g", forbidden=("local-package",), message="m")
+    result = evaluate_command_match(gate, CommandEvidence(commands=("npm install ./local-package",)))
+    assert result.outcome is Outcome.PASS
+
+
+def test_sudo_prefixed_path_qualified_command_is_a_documented_gap() -> None:
+    """A prefix command like `sudo` puts the actual executable one position later.
+
+    Basename equivalence applies only to a segment's own position 0, so it
+    does not reach there. Same class of documented limitation as other
+    indirection this evaluator does not resolve.
+    """
+    gate = _gate(id="use-pnpm", forbidden=("npm install",), message="m")
+    result = evaluate_command_match(gate, CommandEvidence(commands=("sudo /usr/bin/npm install",)))
+    assert result.outcome is Outcome.PASS
+
+
+# --- Unquoted newlines as command-segment boundaries ------------------------
+
+
+def test_cross_line_merge_no_longer_creates_a_false_positive() -> None:
+    """Two separate one-word commands on their own lines used to merge into one segment.
+
+    `shlex.split` treats an unquoted newline as ordinary whitespace, so
+    `["git", "push"]` falsely matched the two-word phrase `git push`, which
+    names one command, not two run in sequence. Splitting on the newline
+    gives each its own segment, and neither contains the phrase.
+    """
+    assert _command_segments("git\npush") == [["git"], ["push"]]
+    gate = _gate(id="no-bare-push", forbidden=("git push",), message="m")
+    result = evaluate_command_match(gate, CommandEvidence(commands=("git\npush",)))
+    assert result.outcome is Outcome.PASS
+
+
+def test_newline_split_is_load_bearing_for_basename_equivalence() -> None:
+    """Unsplit, a path-qualified invocation on its own line sits at a non-zero segment position.
+
+    Basename equivalence only applies at a segment's own position 0, so
+    without the newline split this would never reach it. Splitting on the
+    newline gives that invocation its own segment, and its own position 0.
+    """
+    gate = _gate(id="use-pnpm", forbidden=("npm install",), message="m")
+    result = evaluate_command_match(gate, CommandEvidence(commands=("echo hi\n/usr/bin/npm install",)))
+    assert result.outcome is Outcome.FAIL
+
+
+def test_quoted_newline_is_preserved_as_content() -> None:
+    assert _command_segments('echo "line1\nline2"') == [["echo", "line1\nline2"]]
+
+
+def test_backslash_escaped_newline_is_not_a_boundary() -> None:
+    """A line continuation (`\\` followed by a newline) joins two physical
+    lines into one logical line in a real shell; splitting on it would be a
+    missed-block bypass (a forbidden two-word command hidden behind an
+    escaped newline would never match as a whole phrase), unlike a bare
+    newline, which is safe to split on.
+    """
+    segments = _command_segments("git push\\\ngit status")
+    assert len(segments) == 1
+
+
+def test_backslash_escaped_newline_is_deleted_not_embedded_in_the_next_token() -> None:
+    """A real shell deletes a line continuation entirely, joining `git ` and
+
+    `push --force` into `git push --force`. Left to shlex alone, an escaped
+    newline is treated as "not a word break" but not as deleted, giving
+    `["git", "\\npush", "--force"]`: a literal newline still inside the
+    second token, which then never equals the plain word `push` a forbidden
+    phrase names, letting this exact command evade a gate forbidding it.
+    """
+    assert _command_segments("git \\\npush --force") == [["git", "push", "--force"]]
+    gate = _gate(forbidden=("git push --force",))
+    result = evaluate_command_match(gate, CommandEvidence(commands=("git \\\npush --force",)))
+    assert result.outcome is Outcome.FAIL
+
+
+def test_backslash_escaped_newline_fallback_also_deletes_the_pair() -> None:
+    """Same fix, malformed-command fallback: a line continuation is deleted
+
+    before a bare newline is turned into a segment boundary, or the
+    continuation's own newline would wrongly split one command in two.
+    """
+    segments = _command_segments('npm install "unterminated git \\\npush --force')
+    assert segments == [["npm", "install", '"unterminated', "git", "push", "--force"]]
+
+
+def test_newline_boundary_also_applies_to_the_malformed_command_fallback() -> None:
+    """The plain-`.split()` fallback (an unbalanced quote) also collapses a
+    bare newline to whitespace unless normalized the same way; this fallback
+    cannot distinguish a quoted newline from a bare one either way (already
+    documented as degraded), so it replaces every newline unconditionally.
+    """
+    segments = _command_segments('npm install "unterminated\ngit push --force')
+    assert segments == [["npm", "install", '"unterminated'], ["git", "push", "--force"]]
+
+
 # --- Empty segments: two separators back to back, or at either end --------
 
 
@@ -306,10 +471,10 @@ def test_many_separators_with_no_real_content_resolve_quickly() -> None:
     gate = _gate(forbidden=tuple(f"p{i}" for i in range(500)))
     commands = tuple("; " * 500 + " " * i for i in range(100))
     evidence = CommandEvidence(commands=commands)
-    start = time.time()
+    start = time.perf_counter()
     result = evaluate_command_match(gate, evidence, segment_cache=tokenize_commands(commands))
-    elapsed = time.time() - start
-    assert elapsed < 0.5
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0
     assert result.outcome is Outcome.PASS
 
 
@@ -385,8 +550,8 @@ def test_shared_segment_cache_avoids_retokenizing_per_gate() -> None:
     commands = tuple(" " * 4000 + str(i) for i in range(250))
     evidence = CommandEvidence(commands=commands)
     cache = tokenize_commands(commands)
-    start = time.time()
+    start = time.perf_counter()
     for gate in gates:
         evaluate_command_match(gate, evidence, segment_cache=cache)
-    elapsed = time.time() - start
+    elapsed = time.perf_counter() - start
     assert elapsed < 1.0

@@ -9,6 +9,7 @@ as a clean result.
 
 from __future__ import annotations
 
+import re
 import shlex
 
 from gateway.agent_runtime.domain.types import (
@@ -21,10 +22,44 @@ from gateway.agent_runtime.domain.types import (
 )
 
 # Tokens that separate one simple command from the next within a shell
-# command line. Only recognized as a *whole token* (see _command_segments):
-# an operator glued to a word with no surrounding whitespace, e.g. "a&&b",
-# is a known gap this does not close (domain/types.py's CommandMatchGate).
-_COMMAND_SEPARATORS = frozenset({"&&", "||", ";", "|"})
+# command line. Only recognized as a *whole token* (see _command_segments);
+# _normalize_separators is what guarantees one glued to a word ("a&&b",
+# "npm install;") is still its own token by the time this is consulted.
+# A subshell's parentheses are separators too: what they enclose is a command
+# of its own, and "(npm install)" must reach _contains_subsequence with "npm"
+# at its segment's head, not glued to the paren.
+_COMMAND_SEPARATORS = frozenset({"&&", "||", ";", "|", "&", "(", ")"})
+
+# Bash's own metacharacter set: the unquoted characters that end a word, so
+# a `#` directly after one still starts a comment and a separator directly
+# after one is still a separator. Space and tab are handled by str.isspace.
+_METACHARACTERS = frozenset("|&;()<>")
+
+# What _normalize_separators pads with whitespace, longest first so "&&" is
+# never read as two "&". A case arm's ";;" needs no entry of its own: padding
+# each ";" gives two separators and an empty segment, which is dropped.
+_PADDED_OPERATORS = ("&&", "||", ";", "|", "&", "(", ")")
+
+# Any character that could begin one of the above, or a bare newline, so
+# _normalize_separators can rule out the common case with one C-level scan
+# instead of a Python loop over every character.
+_SEPARATOR_SCAN = re.compile(r"[\n|&;()]")
+
+# The same padding with no quote awareness at all, for the fallback path in
+# _command_segments, which is reached only by a command shlex could not parse
+# and is already documented as degraded.
+_BLIND_SEPARATOR_PAD = re.compile(r"&&|\|\||;|\||(?<![<>])&(?!>)|\(|\)")
+
+
+def _basename(token: str) -> str:
+    """The final path component of `token`, or `token` itself if that's empty.
+
+    `token.rsplit("/", 1)[-1]` already returns `token` unchanged when it has
+    no `/`; the `or token` fallback only matters for the rare token that
+    *is* a path but ends in `/` (e.g. a bare `/usr/bin/`), where the split
+    would otherwise silently produce `""`.
+    """
+    return token.rsplit("/", 1)[-1] or token
 
 
 def _segment_matches(pattern: str, text: str) -> bool:
@@ -119,8 +154,12 @@ def _strip_shell_comment(command: str) -> str:
     """Remove every shell comment, at a real POSIX word boundary.
 
     A `#` starts a comment only at the start of a word (the start of the
-    command, or right after unquoted whitespace) and only outside any
-    quoting. `shlex`'s own `comments=True` is not used here: it treats *any*
+    command, or right after unquoted whitespace or one of Bash's own
+    metacharacters, `_METACHARACTERS`) and only outside any quoting. The
+    metacharacters matter as much as the whitespace: `ls;# npm install` is
+    entirely a comment to Bash, and treating only whitespace as ending a
+    word left the commented-out text to be matched as if it were a real
+    command. `shlex`'s own `comments=True` is not used here: it treats *any*
     `#` as starting a comment, even mid-word, which is not what a shell does
     (`echo a#b` prints `a#b`, not `a`) and is not safe for this purpose: a
     URL fragment or a `--flag=value#123` mid-command would silently swallow
@@ -222,7 +261,112 @@ def _strip_shell_comment(command: str) -> str:
             index = newline_index + 1
             at_word_start = True
             continue
-        at_word_start = char.isspace()
+        at_word_start = char.isspace() or char in _METACHARACTERS
+        result.append(char)
+        index += 1
+    return "".join(result)
+
+
+def _operator_at(command: str, index: int) -> str | None:
+    """The separator starting at `index`, or None if no separator starts there.
+
+    Callers must already have established that `index` is outside quoting and
+    not escaped; this looks only at the characters themselves.
+    """
+    if command[index] == "&" and (command[index - 1 : index] in ("<", ">") or command[index + 1 : index + 2] == ">"):
+        return None  # Part of a redirect (2>&1, &>out), not a separator.
+    return next((operator for operator in _PADDED_OPERATORS if command.startswith(operator, index)), None)
+
+
+def _normalize_separators(command: str) -> str:
+    """Pad every unquoted separator with whitespace, newlines included.
+
+    `_command_segments` only recognizes a separator as a *whole token*, and
+    shlex only isolates one when whitespace surrounds it (`"a;b"` stays one
+    token, `"a ; b"` becomes three). Without this padding the gate failed
+    open on any command whose operator was written without spaces, which is
+    how people actually type the commonest of them: `npm install;` tokenized
+    to `["npm", "install;"]`, matching no phrase, and `(npm install)` to
+    `["(npm", "install)"]`, matching none either.
+
+    A `&` belonging to a redirect (`2>&1`, `&>out`) is left alone: it joins a
+    file descriptor to a redirect target rather than ending a command, and
+    padding it would split one command into two segments at a point no shell
+    does.
+
+    A bare newline becomes a `;` for the same reason. Left as the ordinary
+    whitespace shlex treats it as, `git\\npush` (two one-word commands)
+    merges into one segment `["git", "push"]` and falsely matches the
+    two-word phrase naming one command. It is also what puts a command at
+    its own segment's head, where `_contains_subsequence` applies the
+    basename equivalence: `echo hi\\n/usr/bin/npm install`, unsplit, has
+    `/usr/bin/npm` at a non-zero position, where that equivalence does not.
+
+    Meant to run on `_strip_shell_comment`'s own output, which has already
+    rewritten Bash's `$'...'` quoting into plain `'...'`, so this only needs
+    to track plain single/double quotes and backslash escaping, not ANSI-C
+    quoting a second time. A quoted newline (inside `'...'` or `"..."`) is
+    real content, not a boundary, and is left untouched. A backslash before
+    a newline, outside single quotes, is a line continuation: a real shell
+    deletes both characters, joining the two physical lines with nothing
+    between them, so this does too, rather than leaving the pair for shlex.
+    Left alone, shlex only treats that escaped newline as "not a word
+    break," not as deleted: `shlex.split("git \\\npush --force")` gives
+    `["git", "\\npush", "--force"]`, a literal newline still embedded in
+    the second token, which then never equals the plain word `push` a
+    forbidden phrase names, letting `git push --force` typed across two
+    continued lines pass a gate forbidding exactly that.
+    """
+    if not _SEPARATOR_SCAN.search(command):
+        # A command with nothing to pad, cheap to rule out up front: one
+        # C-level scan, versus the character-by-character Python loop below
+        # running to the end of the string on top of `_strip_shell_comment`'s
+        # own pass over it.
+        return command
+    quote: str | None = None
+    result: list[str] = []
+    index = 0
+    length = len(command)
+    while index < length:
+        char = command[index]
+        if quote == "'":
+            result.append(char)
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if char == "\\":
+            if command[index + 1 : index + 2] == "\n":
+                index += 2  # Delete the line continuation entirely.
+                continue
+            if index + 1 < length:
+                result.append(char)
+                result.append(command[index + 1])
+                index += 2
+                continue
+            result.append(char)
+            index += 1
+            continue
+        if quote == '"':
+            result.append(char)
+            if char == '"':
+                quote = None
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            result.append(char)
+            index += 1
+            continue
+        if char == "\n":
+            result.append(" ; ")
+            index += 1
+            continue
+        operator = _operator_at(command, index)
+        if operator is not None:
+            result.append(f" {operator} ")
+            index += len(operator)
+            continue
         result.append(char)
         index += 1
     return "".join(result)
@@ -231,12 +375,21 @@ def _strip_shell_comment(command: str) -> str:
 def _command_segments(command: str) -> list[list[str]]:
     """Split a command into simple-command segments, each already tokenized.
 
-    Strips a trailing comment, then tokenizes with `shlex` (POSIX quoting
-    rules), then splits the resulting token list on any token that is
-    exactly one of `&&`, `||`, `;`, `|`: a quoted argument that happens to
-    contain that text, like `"a && b"`, survives as a single token from
-    shlex and is never mistaken for a separator, since this only looks at
-    whole tokens, never substrings of one.
+    Strips a trailing comment, pads every unquoted separator and bare newline
+    so shlex will isolate it (`_normalize_separators`), then tokenizes with
+    `shlex` (POSIX quoting rules), then splits the resulting token list on
+    any token that is exactly one of `_COMMAND_SEPARATORS`: a quoted argument
+    that happens to contain that text, like `"a && b"`, survives as a single
+    token from shlex and is never mistaken for a separator, since this only
+    looks at whole tokens, never substrings of one.
+
+    Each segment's own first token, the command actually being invoked for
+    that segment, is later compared by path basename rather than literally
+    (`_contains_subsequence`), so a path-qualified invocation of an
+    executable matches a phrase naming it unqualified and vice versa. That
+    equivalence is applied at comparison time, not by rewriting a token
+    here: this function's own output is always the literal tokens a
+    caller's command actually contained.
 
     A command shlex cannot tokenize even after comment-stripping (an
     unbalanced quote outside any comment) falls back to a plain whitespace
@@ -253,6 +406,13 @@ def _command_segments(command: str) -> list[list[str]]:
     not have in a parseable one. That trade is the right way round. It costs
     a false positive on a command that was malformed to begin with, and it
     buys back detection on the shape an evasion would actually take.
+    Separator normalization degrades the same way here: `_normalize_separators`
+    is quote-aware, but a command that reaches this branch has an unbalanced
+    quote, which leaves its state machine believing every character from the
+    opening quote onward is still inside it, so it pads none of them. This
+    branch instead pads unconditionally (`_BLIND_SEPARATOR_PAD`), on the
+    original comment-stripped text rather than that already-attempted,
+    possibly-incomplete normalization.
 
     An empty segment (two separators back to back, or one at either end,
     e.g. `";" * n`) is dropped rather than returned: `_contains_subsequence`
@@ -265,9 +425,16 @@ def _command_segments(command: str) -> list[list[str]]:
     """
     stripped = _strip_shell_comment(command)
     try:
-        tokens = shlex.split(stripped, posix=True)
+        tokens = shlex.split(_normalize_separators(stripped), posix=True)
     except ValueError:
-        tokens = stripped.split()
+        # Same blind, non-quote-aware treatment as the newline replacement
+        # right after it: strip a line continuation first (a backslash
+        # right before a newline), or the newline that follows it gets the
+        # bare-newline treatment instead and turns one continued line into
+        # two segments that were never meant to be split.
+        tokens = _BLIND_SEPARATOR_PAD.sub(
+            lambda match: f" {match.group()} ", stripped.replace("\\\n", "").replace("\n", " ; ")
+        ).split()
 
     segments: list[list[str]] = [[]]
     for token in tokens:
@@ -322,10 +489,41 @@ def tokenize_commands(commands: tuple[str, ...]) -> dict[str, list[list[str]]]:
 
 
 def _contains_subsequence(segment: list[str], phrase: list[str]) -> bool:
-    """Whether `phrase`'s tokens appear, in order and unbroken, inside `segment`."""
+    """Whether `phrase`'s tokens appear, in order and unbroken, inside `segment`.
+
+    Every position compares literally except one: when a candidate window
+    starts at `segment[0]`, that position is the executable actually
+    invoked for this segment, so it is compared to `phrase[0]` by path
+    basename rather than by literal equality. A policy author writes a
+    forbidden phrase against the name they would type (`npm install`), and
+    a path-qualified invocation of the same executable (`/usr/bin/npm
+    install`) is not a different command; the same equivalence also lets a
+    path-qualified *phrase* (`./scripts/release.sh`) keep matching a
+    command that invokes that exact path, which comparing only the segment
+    side against a literal phrase would silently stop doing the moment the
+    phrase's own spelling no longer equals the normalized token. Comparing
+    both sides by basename, rather than rewriting either one ahead of time,
+    is what keeps every direction working: bare phrase vs. qualified
+    command, qualified phrase vs. bare command, and qualified phrase vs. the
+    identical qualified command.
+
+    Everywhere else, including `segment[0]` itself when the window instead
+    starts later (an earlier phrase token already matched a prefix
+    command), a path is real content and compared literally: `sudo
+    /usr/bin/npm install` does not match `npm install`, since the actual
+    executable sits at `segment[1]`, not `segment[0]`, for that segment; and
+    `npm install ./local-package` does not match a phrase naming just
+    `local-package`, since an argument's path is not a command position.
+    """
     if not phrase or len(phrase) > len(segment):
         return False
-    return any(segment[start : start + len(phrase)] == phrase for start in range(len(segment) - len(phrase) + 1))
+    for start in range(len(segment) - len(phrase) + 1):
+        head_matches = (
+            _basename(segment[0]) == _basename(phrase[0]) if start == 0 else segment[start] == phrase[0]
+        )
+        if head_matches and segment[start + 1 : start + len(phrase)] == phrase[1:]:
+            return True
+    return False
 
 
 def evaluate_command_match(
@@ -368,16 +566,21 @@ def evaluate_command_match(
             message="No commands were submitted to check.",
         )
 
-    phrases_by_text = phrase_cache if phrase_cache is not None else tokenize_phrases(gate.forbidden)
-    forbidden_phrases = [phrases_by_text[phrase] for phrase in gate.forbidden]
-    segments_by_command = segment_cache if segment_cache is not None else tokenize_commands(evidence.commands)
+    # A cache built for a different gate is tolerated rather than a KeyError:
+    # the parameter is optional and a caller that passes a partial one should
+    # get a slower evaluation, not a 500.
+    phrases_by_text = phrase_cache if phrase_cache is not None else {}
+    forbidden_phrases = [
+        phrases_by_text.get(phrase) or tokenize_phrase(phrase) for phrase in gate.forbidden
+    ]
+    segments_by_command = segment_cache if segment_cache is not None else {}
 
     matched = sorted(
         command
         for command in evidence.commands
         if any(
             _contains_subsequence(segment, phrase)
-            for segment in segments_by_command[command]
+            for segment in (segments_by_command.get(command) or _command_segments(command))
             for phrase in forbidden_phrases
         )
     )
