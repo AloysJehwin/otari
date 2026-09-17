@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Uuid
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from gateway.models.base import Base
@@ -14,6 +14,30 @@ class APIKey(Base):
     """API Key model for authentication and authorization."""
 
     __tablename__ = "api_keys"
+
+    __table_args__ = (
+        # The hosted Playground resolves its dispatch key on every message, by
+        # owner and workspace among the rows this deployment minted for itself
+        # (``services/playground_dispatch``). Partial, because those rows are a
+        # handful beside every key on the deployment, so the index stays the size
+        # of the thing it answers for rather than the size of the table.
+        #
+        # ``created_at`` and ``id`` are the resolver's tie-break, carried here so
+        # the read is ordered by the index rather than sorted after it. They
+        # matter only where the race that resolver tolerates has left a second
+        # row, which is also why they cost nothing: neither column is ever
+        # updated, so the per-message write that refreshes the row's allow-list
+        # does not touch this index.
+        Index(
+            "ix_api_keys_internal_dispatch",
+            "user_id",
+            "workspace_id",
+            "created_at",
+            "id",
+            postgresql_where=text("internal_secret IS NOT NULL"),
+            sqlite_where=text("internal_secret IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(primary_key=True)
     key_hash: Mapped[str] = mapped_column(unique=True, index=True)
