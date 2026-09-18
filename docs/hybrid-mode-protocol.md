@@ -401,10 +401,19 @@ Content-Type: application/json
   "error_class": "http_401",           // optional on error; omitted when the
                                        // Otari can't classify the failure
                                        // (e.g. mid-stream errors). See below.
-  "session_label": "my-run-personas"   // optional; the caller's cost-attribution
+  "session_label": "my-run-personas",  // optional; the caller's cost-attribution
                                        // label (see below). Omitted when absent.
+  "ttft_ms": 340                       // optional; milliseconds from request start
+                                       // to the first streamed chunk. Streaming only;
+                                       // omitted when no chunk arrived or no start
+                                       // time was captured. Sent on error reports too.
 }
 ```
+
+On a fallback chain, `ttft_ms` is timed from the request's start, not from when the
+reported attempt began. The report is keyed by `correlation_id` = the winning
+attempt's id, so its `ttft_ms` includes time spent on any earlier attempts that
+failed before their first chunk, not just its own.
 
 A successful attempt that completes without provider usage data still sends a
 final report, but omits `usage` so the platform can record it as unavailable

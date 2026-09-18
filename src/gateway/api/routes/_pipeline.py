@@ -3877,6 +3877,7 @@ def build_streaming_response(
                     outcome="success",
                     usage=usage_data,
                     session_label=session_label,
+                    ttft_ms=_ttft_ms(started_at, first_chunk_at),
                     is_final_attempt=True,
                 ),
                 platform_correlation_id,
@@ -3919,6 +3920,7 @@ def build_streaming_response(
                     outcome="success",
                     usage=None,
                     session_label=session_label,
+                    ttft_ms=_ttft_ms(started_at, first_chunk_at),
                     is_final_attempt=True,
                 ),
                 platform_correlation_id,
@@ -3996,6 +3998,7 @@ def build_streaming_response(
                     outcome="error",
                     usage=None,
                     session_label=session_label,
+                    ttft_ms=_ttft_ms(started_at, first_chunk_at),
                     is_final_attempt=True,
                 ),
                 platform_correlation_id,
@@ -4355,6 +4358,7 @@ async def run_streaming_with_fallback(
     rate_limit_info: RateLimitInfo | None,
     tool_ctx: ToolContext,
     session_label: str | None = None,
+    started_at: float,
 ) -> StreamingResponse:
     """Multi-attempt streaming for hybrid-mode requests.
 
@@ -4506,6 +4510,7 @@ async def run_streaming_with_fallback(
         platform_correlation_id=chosen.attempt_id,
         platform_request_id=route.request_id,
         session_label=session_label,
+        started_at=started_at,
     )
 
 

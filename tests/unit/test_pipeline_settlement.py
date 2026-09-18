@@ -338,11 +338,71 @@ async def test_streaming_fallback_wires_forwarded_tools_into_final_timeout(
             config=config,
             remaining_user_tools=[{"name": "slack_send", "input_schema": {}}],
         ),
+        started_at=time.monotonic(),
     )
 
     assert response is marker
     assert captured["first_chunk_timeout_seconds"] == 3.0
     assert captured["final_attempt_extra_seconds"] == 34.0
+
+
+@pytest.mark.asyncio
+async def test_streaming_fallback_forwards_started_at_to_build_streaming_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``started_at`` must reach ``build_streaming_response`` through the
+    fallback wrapper, not just be accepted and dropped.
+
+    ``_ttft_ms`` needs a real ``started_at`` to report anything but ``None``,
+    and the hybrid streaming routes only have a value to offer once this
+    plumbing exists; a call site test alone cannot prove the value actually
+    arrives at the callback that reports it upstream.
+    """
+    config = GatewayConfig()
+    route = ResolvedRoute(
+        request_id="request-1",
+        fallback_enabled=False,
+        attempts=[
+            ResolvedAttempt(
+                attempt_id="attempt-1",
+                position=1,
+                provider="openai",
+                model="gpt-test",
+                api_key="test-key",
+                managed=True,
+            )
+        ],
+    )
+
+    async def fake_iterate_streaming_attempts(**kwargs: Any) -> tuple[Any, AsyncIterator[Any]]:
+        async def stream() -> AsyncIterator[Any]:
+            yield object()
+
+        return route.attempts[0], stream()
+
+    captured: dict[str, Any] = {}
+    marker = Response()
+
+    def fake_build_streaming_response(**kwargs: Any) -> Response:
+        captured.update(kwargs)
+        return marker
+
+    monkeypatch.setattr(pipeline, "iterate_streaming_attempts", fake_iterate_streaming_attempts)
+    monkeypatch.setattr(pipeline, "build_streaming_response", fake_build_streaming_response)
+
+    response = await pipeline.run_streaming_with_fallback(
+        adapter=chat._ADAPTER,
+        route=route,
+        base_request_fields={},
+        config=config,
+        background_tasks=BackgroundTasks(),
+        rate_limit_info=None,
+        tool_ctx=_tool_ctx(config=config),
+        started_at=123.456,
+    )
+
+    assert response is marker
+    assert captured["started_at"] == 123.456
 
 
 # ---------------------------------------------------------------------------
@@ -645,7 +705,11 @@ async def test_standalone_non_stream_forwards_the_contexts_workspace_id(monkeypa
 # ---------------------------------------------------------------------------
 
 
-def _build_platform(stream: AsyncIterator[ChatCompletionChunk]) -> Any:
+def _build_platform(
+    stream: AsyncIterator[ChatCompletionChunk],
+    *,
+    started_at: float | None = None,
+) -> Any:
     return build_streaming_response(
         adapter=chat._ADAPTER,
         stream=stream,
@@ -660,6 +724,7 @@ def _build_platform(stream: AsyncIterator[ChatCompletionChunk]) -> Any:
         reservation=None,
         platform_correlation_id="corr-1",
         platform_request_id="req-1",
+        started_at=started_at,
     )
 
 
@@ -699,8 +764,87 @@ async def test_platform_stream_without_usage_reports_final_success(
         "outcome": "success",
         "usage": None,
         "session_label": None,
+        "ttft_ms": None,
         "is_final_attempt": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_platform_stream_reports_ttft_on_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    """platform_active's on_complete branch skipped log_usage entirely, so
+    ttft_ms never reached _report_platform_usage's payload."""
+    reports: list[dict[str, Any]] = []
+
+    async def completed_report() -> SettledCost | None:
+        return None
+
+    def fake_report(**kwargs: Any) -> Any:
+        reports.append(kwargs)
+        return completed_report()
+
+    monkeypatch.setattr(pipeline, "_report_platform_usage", fake_report)
+
+    async def stream() -> AsyncIterator[ChatCompletionChunk]:
+        # A content chunk ahead of the usage-carrying one marks first_chunk_at
+        # before settlement: the terminal (cost-carrier) chunk itself is
+        # buffered and only marked once flushed after on_complete runs.
+        yield _chunk()
+        yield _chunk(CompletionUsage(prompt_tokens=1, completion_tokens=1, total_tokens=2))
+
+    await _drain(_build_platform(stream(), started_at=time.monotonic()))
+
+    assert len(reports) == 1
+    assert reports[0]["ttft_ms"] is not None
+    assert reports[0]["ttft_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_platform_stream_reports_ttft_on_no_usage(monkeypatch: pytest.MonkeyPatch) -> None:
+    reports: list[dict[str, Any]] = []
+
+    async def completed_report() -> SettledCost | None:
+        return None
+
+    def fake_report(**kwargs: Any) -> Any:
+        reports.append(kwargs)
+        return completed_report()
+
+    monkeypatch.setattr(pipeline, "_report_platform_usage", fake_report)
+
+    async def stream() -> AsyncIterator[ChatCompletionChunk]:
+        yield _chunk()
+
+    await _drain(_build_platform(stream(), started_at=time.monotonic()))
+
+    assert len(reports) == 1
+    assert reports[0]["ttft_ms"] is not None
+    assert reports[0]["ttft_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_platform_stream_reports_ttft_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pipeline, "_USAGE_REPORT_TASKS", set(), raising=False)
+    reports: list[dict[str, Any]] = []
+
+    async def fake_report(**kwargs: Any) -> SettledCost | None:
+        reports.append(kwargs)
+        return None
+
+    monkeypatch.setattr(pipeline, "_report_platform_usage", fake_report)
+
+    async def stream() -> AsyncIterator[ChatCompletionChunk]:
+        yield _chunk()
+        raise RuntimeError("upstream broke")
+
+    await _drain(_build_platform(stream(), started_at=time.monotonic()))
+    for _ in range(20):
+        if reports:
+            break
+        await asyncio.sleep(0)
+
+    assert len(reports) == 1
+    assert reports[0]["ttft_ms"] is not None
+    assert reports[0]["ttft_ms"] >= 0
 
 
 @pytest.mark.asyncio
