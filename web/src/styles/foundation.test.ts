@@ -37,16 +37,28 @@ function walk(root: string): string[] {
     }
   }
 }
-const CSS = readFileSync(join(WEB, "src", "styles", "globals.css"), "utf8")
+/**
+ * The foundation as the application loads it, which is two files: `globals.css`
+ * and the design system's own stylesheet, which `globals.css` imports first.
+ * Concatenated in that order so a block present in both resolves the way the
+ * first-match lookup below always has. Which file a rule belongs in is the
+ * subject of `architecture.test.ts`, not of this one.
+ */
+const CSS = [
+  readFileSync(join(WEB, "src", "styles", "globals.css"), "utf8"),
+  readFileSync(join(WEB, "src", "design-system", "design-system.css"), "utf8"),
+].join("\n")
 
 /**
  * The text of one top-level block, from `selector {` to the `}` that closes it
- * in the first column. Every block in globals.css is written that way, so a
+ * in the first column. Every block in either file is written that way, so a
  * brace counter would only add ways to be subtly wrong about a nested at-rule.
  */
 function block(selector: string): string {
   const start = CSS.indexOf(`${selector} {`)
-  expect(start, `no \`${selector} {\` block in globals.css`).toBeGreaterThan(-1)
+  expect(start, `no \`${selector} {\` block in the foundation`).toBeGreaterThan(
+    -1,
+  )
   const end = CSS.indexOf("\n}\n", start)
   expect(end, `\`${selector}\` block is never closed`).toBeGreaterThan(start)
   return CSS.slice(start, end)
@@ -642,7 +654,7 @@ describe("design foundation tokens", () => {
 // Three of those reached this file from scripted edits and were found by
 // somebody reading the lines next to them, which is not a way of finding
 // things.
-it("has no comment opened inside another comment in globals.css", () => {
+it("has no comment opened inside another comment in the foundation", () => {
   const offenders: string[] = []
   let inComment = false
   for (let i = 0; i < CSS.length - 1; i++) {
@@ -915,7 +927,7 @@ describe("semantic tokens only", () => {
     // able to name the thing it is explaining.
     expect(
       stripComments(source),
-      "a focus ring is defined once in globals.css; use `otari-focus-ring`, do not spell one here",
+      "a focus ring is defined once; use `otari-focus-ring`, do not spell one here",
     ).not.toMatch(
       /\b(?:ring|outline)-(?:accent|primary|focus)\b|\boutline-offset-\d|\b(?:ring|outline)-[1-9]\b/,
     )
@@ -1418,9 +1430,9 @@ describe("the phone viewport's touch-target floor", () => {
     // Asserted as a pair: the dense height exists, and it is undone at 767px.
     //
     // Both halves are now a custom property on the PLACE rather than a height
-    // on its descendants, which is why these read `--field-height` (see
-    // globals.css, and Toolbar's docstring, for why a variable and not a
-    // descendant selector). What is being held is the pair, not the spelling:
+    // on its descendants, which is why these read `--field-height` (see the
+    // field-metrics family in globals.css, and Toolbar's docstring, for why a
+    // variable and not a descendant selector). What is being held is the pair, not the spelling:
     // if a rewrite drops the 767px half, a phone gets a 32px search box.
     expect(CSS).toMatch(
       /\.otari-toolbar,\s*\.otari-pagination,\s*\.otari-settings \{\s*--field-height: 2rem;/,

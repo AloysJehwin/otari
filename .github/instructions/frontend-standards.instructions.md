@@ -34,7 +34,16 @@ full guidance, with worked examples grounded in this dashboard's code, lives in 
    `@layer`, and an unlayered declaration is what outranks a layered one), a shared utility
    once the look repeats, the component's own prop (`variant`, `size`, `isDisabled`,
    `isPending`, `fullWidth`, `isInvalid`), and only then a rule against HeroUI's
-   own classes under the `.otari-*` namespace. HeroUI and Tailwind both permit that last one and
+   own classes under the `.otari-*` namespace. Those names are BEM and the shape is not
+   optional: a block is `otari-<block>`, an element `otari-<block>__<element>`, a modifier
+   `otari-<block>--<modifier>`. A stylesheet is global whatever imports it, so the prefix and
+   the two separators are the collision story, and `src/architecture.test.ts` parses that
+   shape, which makes a name departing from it invisible to the probe rather than merely
+   inconsistent. Which file it goes in is a finding too: a rule whose subject is a
+   `design-system/` primitive's own DOM belongs in `web/src/design-system/design-system.css`,
+   which `globals.css` imports first, while a per-table block and anything whose consumers
+   are feature pages stays in `globals.css`.
+   HeroUI and Tailwind both permit that last one and
    it stays discouraged here, so the finding is not that it is forbidden but that a rung above
    reaches the value: a rule like `.otari-table .table__cell` or
    `.table__body tr:first-child td:first-child` is a finding unless nothing above it can do the
