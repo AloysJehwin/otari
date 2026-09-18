@@ -1,6 +1,13 @@
 import { Button, Spinner } from "@heroui/react"
 import { Link } from "@tanstack/react-router"
-import { type ReactNode, useEffect, useRef, useState } from "react"
+import {
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+  useEffect,
+  useRef,
+  useState,
+} from "react"
 import { FiActivity, FiEdit2, FiTrash2 } from "react-icons/fi"
 import type {
   CreateStoredProviderRequest,
@@ -151,8 +158,8 @@ function KnownProviderForm({
   setProviderId,
   apiKey,
   setApiKey,
-  showAdvanced,
-  setShowAdvanced,
+  isAdvancedShown,
+  setIsAdvancedShown,
   apiBase,
   setApiBase,
   name,
@@ -169,22 +176,22 @@ function KnownProviderForm({
   onClose: () => void
   tabs: ReactNode
   providerId: string
-  setProviderId: (v: string) => void
+  setProviderId: Dispatch<SetStateAction<string>>
   apiKey: string
-  setApiKey: (v: string) => void
-  showAdvanced: boolean
-  setShowAdvanced: (v: boolean) => void
+  setApiKey: Dispatch<SetStateAction<string>>
+  isAdvancedShown: boolean
+  setIsAdvancedShown: Dispatch<SetStateAction<boolean>>
   apiBase: string
-  setApiBase: (v: string) => void
+  setApiBase: Dispatch<SetStateAction<string>>
   name: string
-  setName: (v: string) => void
+  setName: Dispatch<SetStateAction<string>>
   clientArgsText: string
-  setClientArgsText: (v: string) => void
+  setClientArgsText: Dispatch<SetStateAction<string>>
   credentials: CredentialFieldValues
-  setCredentials: (v: CredentialFieldValues) => void
+  setCredentials: Dispatch<SetStateAction<CredentialFieldValues>>
   isDirty: boolean
   apiBaseSeededFor: string | null
-  setApiBaseSeededFor: (v: string | null) => void
+  setApiBaseSeededFor: Dispatch<SetStateAction<string | null>>
 }) {
   const create = useCreateStoredProvider()
   const test = useTestProviderCredentials()
@@ -218,13 +225,13 @@ function KnownProviderForm({
   const needsKey = (selected?.requires_api_key ?? true) && !envKeyPresent
   const renamed = name.trim() !== "" && name.trim() !== providerId
   const nameHasDelimiter = /[:/]/.test(name)
-  // Require the key when the chosen provider says it needs one; keyless local
-  // backends (Ollama, llama.cpp) can submit without it.
-  // One snapshot of everything the form owns, seeded on mount, rather than a
-  // isDirty arrives as a prop rather than being computed here: this component
+  // `isDirty` arrives as a prop rather than being computed here: this component
   // remounts on every tab switch, and useDirtySnapshot seeds on mount, so a
   // local snapshot reseeded against already-filled values and read clean. It is
   // computed once in AddProviderForm over both drafts instead. See feedback.md.
+
+  // Require the key when the chosen provider says it needs one; keyless local
+  // backends (Ollama, llama.cpp) can submit without it.
   const canSubmit =
     providerId !== "" &&
     !nameHasDelimiter &&
@@ -234,7 +241,7 @@ function KnownProviderForm({
   // Hold the section open while something inside it is what's blocking submit,
   // so collapsing it can't leave a disabled button with its reason off screen.
   // A hide requested meanwhile is remembered and applies once the field is fixed.
-  const advancedOpen = showAdvanced || !clientArgs.ok || nameHasDelimiter
+  const advancedOpen = isAdvancedShown || !clientArgs.ok || nameHasDelimiter
 
   // The typed fields and the JSON textarea are two views of one `client_args`
   // object, so the request body is built in one place for both the save and the
@@ -289,9 +296,13 @@ function KnownProviderForm({
         onChange={(id) => {
           setProviderId(id)
           setName("")
-          // Clear the API base; the effect above refills it from the provider's
-          // built-in default once this provider's detail loads.
+          // Clear the API base and the marker together; the effect above refills
+          // it from the provider's built-in default once this provider's detail
+          // loads. Clearing the picker is also a change to `id` (to ""), so a
+          // marker left behind would skip the reseed on picking the same
+          // provider again and leave the base blank.
           setApiBase("")
+          setApiBaseSeededFor(null)
           // The typed fields belong to the provider, so a change to it drops
           // values that no longer have a field to sit in.
           setCredentials({})
@@ -333,7 +344,7 @@ function KnownProviderForm({
       <button
         type="button"
         className="self-start text-xs font-medium text-link hover:text-link-hover"
-        onClick={() => setShowAdvanced(!showAdvanced)}
+        onClick={() => setIsAdvancedShown((v) => !v)}
       >
         {advancedOpen
           ? "Hide advanced"
@@ -399,15 +410,15 @@ function CustomProviderForm({
   onClose: () => void
   tabs: ReactNode
   name: string
-  setName: (v: string) => void
+  setName: Dispatch<SetStateAction<string>>
   providerType: string
-  setProviderType: (v: string) => void
+  setProviderType: Dispatch<SetStateAction<string>>
   apiBase: string
-  setApiBase: (v: string) => void
+  setApiBase: Dispatch<SetStateAction<string>>
   apiKey: string
-  setApiKey: (v: string) => void
+  setApiKey: Dispatch<SetStateAction<string>>
   clientArgsText: string
-  setClientArgsText: (v: string) => void
+  setClientArgsText: Dispatch<SetStateAction<string>>
   isDirty: boolean
 }) {
   const create = useCreateStoredProvider()
@@ -549,10 +560,10 @@ function AddProviderForm({
 }) {
   const [tab, setTab] = useState<ProviderTab>("known")
 
-  // Known-tab field values — lifted so they survive when the tab is inactive.
+  // Known-tab field values: lifted so they survive when the tab is inactive.
   const [knownProviderId, setKnownProviderId] = useState("")
   const [knownApiKey, setKnownApiKey] = useState("")
-  const [knownShowAdvanced, setKnownShowAdvanced] = useState(false)
+  const [knownIsAdvancedShown, setKnownIsAdvancedShown] = useState(false)
   const [knownApiBase, setKnownApiBase] = useState("")
   const [knownName, setKnownName] = useState("")
   const [knownClientArgsText, setKnownClientArgsText] = useState("")
@@ -564,7 +575,7 @@ function AddProviderForm({
     string | null
   >(null)
 
-  // Custom-tab field values — lifted for the same reason.
+  // Custom-tab field values: lifted for the same reason.
   const [customName, setCustomName] = useState("")
   const [customProviderType, setCustomProviderType] =
     useState("openai-compatible")
@@ -618,8 +629,8 @@ function AddProviderForm({
           setProviderId={setKnownProviderId}
           apiKey={knownApiKey}
           setApiKey={setKnownApiKey}
-          showAdvanced={knownShowAdvanced}
-          setShowAdvanced={setKnownShowAdvanced}
+          isAdvancedShown={knownIsAdvancedShown}
+          setIsAdvancedShown={setKnownIsAdvancedShown}
           apiBase={knownApiBase}
           setApiBase={setKnownApiBase}
           name={knownName}

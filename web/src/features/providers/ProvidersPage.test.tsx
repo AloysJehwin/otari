@@ -816,6 +816,52 @@ describe("ProvidersPage", () => {
     ).toBeInTheDocument()
   })
 
+  it("reseeds the API base when the same provider is picked again after clearing", async () => {
+    // Emptying the picker clears the base, and it clears the marker the seeding
+    // effect keys on: the marker records which provider the base in the field
+    // came from, so one left behind reads as already seeded and the field stays
+    // blank on picking that provider back.
+    mockApi({
+      stored: [],
+      catalog: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          env_key: "OPENAI_API_KEY",
+          default_api_base: "https://api.openai.com/v1",
+          requires_api_key: true,
+          env_key_present: false,
+        },
+      ],
+    })
+    const user = userEvent.setup()
+    renderPage(<ProvidersPage />)
+
+    await user.click(
+      await screen.findByRole("button", { name: "Add provider" }),
+    )
+    const picker = screen.getByPlaceholderText("Search providers…")
+    await user.type(picker, "Open")
+    await user.click(await screen.findByRole("option", { name: "OpenAI" }))
+
+    await user.click(await screen.findByRole("button", { name: /^Advanced/ }))
+    expect(await screen.findByLabelText("API base")).toHaveValue(
+      "https://api.openai.com/v1",
+    )
+
+    // Emptying the field and leaving it is what drops the selection: the picker
+    // takes no custom value, so react-aria clears it rather than keeping a
+    // provider the input no longer names.
+    await user.clear(picker)
+    await user.tab()
+    await user.type(picker, "Open")
+    await user.click(await screen.findByRole("option", { name: "OpenAI" }))
+
+    expect(await screen.findByLabelText("API base")).toHaveValue(
+      "https://api.openai.com/v1",
+    )
+  })
+
   it("guards client options typed on the custom tab, with nothing else filled", async () => {
     mockApi({ meta: [], stored: [] })
     const user = userEvent.setup()
