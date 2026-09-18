@@ -89,25 +89,23 @@ function noneToJudge(label: string): BudgetHealth {
  * utilization differently.
  */
 function allocationHealth(capped: Allocation[]): BudgetHealth {
-  let overCount = 0
-  let nearCount = 0
-  let worst: BudgetHealth["worst"]
-  let worstPct = -1
-  for (const row of capped) {
-    // A zero allocation admits nothing, so anything spent against one is over
-    // it. Reported as a full 100% rather than as the infinite ratio it really
-    // is: the share has no finite value, and a cell reading "Infinity%" tells
-    // the reader less than "Over budget" at 100% does. It is a floor, so a row
-    // measurably further past its limit still wins `worst`.
-    const pct =
-      row.allocated > 0 ? row.spent / row.allocated : row.spent > 0 ? 1 : 0
-    if (pct >= 1) overCount += 1
-    else if (pct >= BUDGET_WARN) nearCount += 1
-    if (pct > worstPct) {
-      worstPct = pct
-      worst = { ...row, pct }
-    }
-  }
+  // A zero allocation admits nothing, so anything spent against one is over it.
+  // Reported as a full 100% rather than as the infinite ratio it really is: the
+  // share has no finite value, and a cell reading "Infinity%" tells the reader
+  // less than "Over budget" at 100% does. It is a floor, so a row measurably
+  // further past its limit still wins `worst`.
+  const scored = capped.map((row) => ({
+    ...row,
+    pct: row.allocated > 0 ? row.spent / row.allocated : row.spent > 0 ? 1 : 0,
+  }))
+  const overCount = scored.filter((row) => row.pct >= 1).length
+  const nearCount = scored.filter(
+    (row) => row.pct >= BUDGET_WARN && row.pct < 1,
+  ).length
+  const worst = scored.reduce<BudgetHealth["worst"]>(
+    (highest, row) => (highest && highest.pct >= row.pct ? highest : row),
+    undefined,
+  )
   const status: Health = overCount > 0 ? "alert" : nearCount > 0 ? "warn" : "ok"
   const label =
     overCount > 0
@@ -138,11 +136,11 @@ export function budgetHealth(budgets: Budget[]): BudgetHealth {
   }
   const nameBudget = budgetLabeler(budgets)
   const capped = budgets
-    .filter((b) => b.max_budget !== null && b.user_count > 0)
-    .map((b) => ({
-      name: nameBudget(b),
-      spent: b.total_spend,
-      allocated: (b.max_budget as number) * b.user_count,
+    .filter((budget) => budget.max_budget !== null && budget.user_count > 0)
+    .map((budget) => ({
+      name: nameBudget(budget),
+      spent: budget.total_spend,
+      allocated: (budget.max_budget as number) * budget.user_count,
     }))
   if (capped.length === 0) {
     return noneToJudge("No capped budgets")
@@ -174,11 +172,11 @@ export function spendCeilingHealth(
     return noneToJudge("No spend ceilings configured")
   }
   const capped = ceilings
-    .filter((c) => c.max_budget !== null)
-    .map((c) => ({
-      name: nameOf(c),
-      spent: c.current_spend + c.reserved_spend,
-      allocated: c.max_budget as number,
+    .filter((budget) => budget.max_budget !== null)
+    .map((budget) => ({
+      name: nameOf(budget),
+      spent: budget.current_spend + budget.reserved_spend,
+      allocated: budget.max_budget as number,
     }))
   if (capped.length === 0) {
     return noneToJudge("No ceiling caps spend")

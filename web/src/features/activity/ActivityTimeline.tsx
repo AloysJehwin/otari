@@ -108,21 +108,21 @@ export function ActivityTimeline({
   ariaLabel = "Request volume over the selected window",
   action,
 }: ActivityTimelineProps) {
-  const starts = series.map((p) => p.bucketStart)
+  const starts = series.map((point) => point.bucketStart)
   const n = series.length
   const label = formatWindowLabel(windowStart, windowEnd)
 
   // Errors stack only when the window actually has any, so the everyday strip
   // stays a single calm series and red keeps its "something failed" meaning.
-  const hasErrors = series.some((p) => (p.errors ?? 0) > 0)
+  const hasErrors = series.some((point) => (point.errors ?? 0) > 0)
   const chartSeries = hasErrors
     ? [SUCCESS_SERIES, ERROR_SERIES]
     : [PLAIN_SERIES]
-  const data: StackedPoint[] = series.map((p): StackedPoint => {
-    const errors = Math.min(p.errors ?? 0, p.requests)
+  const data: StackedPoint[] = series.map((point): StackedPoint => {
+    const errors = Math.min(point.errors ?? 0, point.requests)
     return hasErrors
-      ? { x: p.bucketStart, success: p.requests - errors, errors }
-      : { x: p.bucketStart, requests: p.requests }
+      ? { x: point.bucketStart, success: point.requests - errors, errors }
+      : { x: point.bucketStart, requests: point.requests }
   })
 
   // The active window as inclusive bucket indices of the extent series. The pan
@@ -135,12 +135,12 @@ export function ActivityTimeline({
   const [panSel, setPanSel] = useState<{
     startIndex: number
     endIndex: number
-  } | null>(null)
+  }>()
   // Ref mirror for the pointer handlers: pointerup can fire before the last
   // pointermove's setState has re-rendered, and committing from the stale
   // closure would pan to the previous position.
   const panSelRef = useRef(panSel)
-  const setPan = (next: { startIndex: number; endIndex: number } | null) => {
+  const setPan = (next?: { startIndex: number; endIndex: number }) => {
     panSelRef.current = next
     setPanSel(next)
   }
@@ -168,7 +168,7 @@ export function ActivityTimeline({
   // is always one tap from a wider view. In halves it (min one bucket). When the
   // extent is not one of the presets (a drill-down window from another page),
   // fall back to the smallest preset that broadens it, so zoom-out never dead-ends.
-  const extentIndex = presets.findIndex((p) => p.key === extentKey)
+  const extentIndex = presets.findIndex((preset) => preset.key === extentKey)
   const extentSeconds =
     extentIndex >= 0
       ? presets[extentIndex].seconds
@@ -177,9 +177,9 @@ export function ActivityTimeline({
     extentIndex >= 0
       ? presets[extentIndex + 1]
       : presets.find(
-          (p) =>
-            p.seconds === null ||
-            (extentSeconds !== null && p.seconds > extentSeconds),
+          (preset) =>
+            preset.seconds === null ||
+            (extentSeconds !== null && preset.seconds > extentSeconds),
         )
 
   const applySpan = (newSpan: number) => {
@@ -257,7 +257,7 @@ export function ActivityTimeline({
     }
     panStart.current = null
     const committed = panSelRef.current
-    setPan(null)
+    setPan(undefined)
     if (committed && committed.startIndex !== windowIdx.startIndex) {
       commit(committed.startIndex, committed.endIndex)
     }
@@ -361,7 +361,7 @@ export function ActivityTimeline({
               showYAxis
               yTickCount={3}
               onSelectRange={commit}
-              window={zoomed || panSel ? sel : null}
+              window={zoomed || panSel ? sel : undefined}
             />
             {/* Pan rail: a minimap-style scrollbar for the zoomed window. Only
                 rendered while zoomed (at the full extent there is nothing to

@@ -63,33 +63,38 @@ export function ModelScopeControl({
   // does not appear twice. This is a pick-from-list control, not free text: every
   // stored entry is a real, canonical selector the backend will accept.
   const catalog = useMemo<CatalogOption[]>(() => {
+    const candidates: CatalogOption[] = [
+      ...(providers.data?.providers ?? []).map((provider) => ({
+        id: `${provider.instance}:*`,
+        label: `${provider.instance}:*  ·  all ${provider.instance} models`,
+      })),
+      ...(discoverable.data?.providers ?? []).flatMap((prov) =>
+        prov.models.map((model) => ({ id: model.key, label: model.key })),
+      ),
+      ...(aliases.data ?? []).map((alias) => ({
+        id: alias.target,
+        label: `${alias.name}  ·  alias`,
+      })),
+    ]
+    // First label wins, so a discoverable model keeps its own name over the
+    // alias that resolves to it.
     const seen = new Set<string>()
-    const options: CatalogOption[] = []
-    const add = (id: string, label: string) => {
-      if (id && !seen.has(id)) {
-        seen.add(id)
-        options.push({ id, label })
-      }
-    }
-    for (const p of providers.data?.providers ?? []) {
-      add(`${p.instance}:*`, `${p.instance}:*  ·  all ${p.instance} models`)
-    }
-    for (const prov of discoverable.data?.providers ?? []) {
-      for (const m of prov.models) add(m.key, m.key)
-    }
-    for (const a of aliases.data ?? []) add(a.target, `${a.name}  ·  alias`)
-    return options
+    return candidates.filter((option) => {
+      if (!option.id || seen.has(option.id)) return false
+      seen.add(option.id)
+      return true
+    })
   }, [providers.data, discoverable.data, aliases.data])
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
     return catalog
-      .filter((o) => !entries.includes(o.id))
+      .filter((option) => !entries.includes(option.id))
       .filter(
-        (o) =>
+        (option) =>
           !q ||
-          o.id.toLowerCase().includes(q) ||
-          o.label.toLowerCase().includes(q),
+          option.id.toLowerCase().includes(q) ||
+          option.label.toLowerCase().includes(q),
       )
       .slice(0, MAX_VISIBLE)
   }, [catalog, entries, query])
@@ -113,7 +118,7 @@ export function ModelScopeControl({
   }
 
   const removeEntry = (id: string) => {
-    const next = entries.filter((e) => e !== id)
+    const next = entries.filter((entry) => entry !== id)
     setEntries(next)
     emit("only", next)
   }
@@ -209,8 +214,8 @@ export function ModelScopeControl({
                   className="max-h-72 overflow-auto"
                   renderEmptyState={() => (
                     <ComboBoxEmpty
-                      isSourceEmpty={catalog.every((o) =>
-                        entries.includes(o.id),
+                      isSourceEmpty={catalog.every((option) =>
+                        entries.includes(option.id),
                       )}
                       emptyMessage={
                         catalog.length === 0

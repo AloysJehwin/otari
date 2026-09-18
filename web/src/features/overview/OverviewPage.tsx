@@ -214,7 +214,7 @@ function UsageKpiCells({
         graphic={
           !empty && hasHourlyTrend ? (
             <Sparkline
-              values={todaySeries.map((p) => p.cost)}
+              values={todaySeries.map((point) => point.cost)}
               ariaLabel="Spend by hour today"
               height={40}
             />
@@ -241,7 +241,7 @@ function UsageKpiCells({
         graphic={
           !empty && hasTrend ? (
             <Sparkline
-              values={periodSeries.map((p) => p.cost)}
+              values={periodSeries.map((point) => point.cost)}
               ariaLabel="Spend trend over the last 30 days"
               height={40}
             />
@@ -265,7 +265,7 @@ function UsageKpiCells({
         graphic={
           !empty && hasTrend ? (
             <Sparkline
-              values={periodSeries.map((p) => p.requests)}
+              values={periodSeries.map((point) => point.requests)}
               ariaLabel="Request volume trend over the last 30 days"
               height={40}
             />
@@ -415,7 +415,9 @@ function OrganizationOverview() {
       ? "no spend ceilings set"
       : "no ceiling caps spend"
 
-  const activeKeys = (keys.data ?? []).filter((k) => k.is_active).length
+  const activeKeys = (keys.data ?? []).filter(
+    (apiKey) => apiKey.is_active,
+  ).length
   const activeMembers = (members.data ?? []).filter(
     (member) => member.status === "active",
   ).length
@@ -617,7 +619,9 @@ export function OverviewPage({
   const budget = budgetHealth(budgets.data ?? [])
   const providerHealth = providerHealthStatus(health.data)
 
-  const activeKeys = (keys.data ?? []).filter((k) => k.is_active).length
+  const activeKeys = (keys.data ?? []).filter(
+    (apiKey) => apiKey.is_active,
+  ).length
   const activeMembers = (members.data ?? []).filter(
     (member) => member.status === "active",
   ).length
@@ -1018,17 +1022,17 @@ function SpendChart({
   series: { bucket_start: string; cost: number }[]
   ready: boolean
 }) {
-  const [hovered, setHovered] = useState<number | null>(null)
+  const [hovered, setHovered] = useState<number>()
   if (!ready || series.length < 2) {
     return null
   }
-  const peak = Math.max(...series.map((p) => p.cost), 0)
-  const hoveredPoint = hovered === null ? null : (series[hovered] ?? null)
+  const peak = Math.max(...series.map((point) => point.cost), 0)
+  const hoveredPoint = hovered === undefined ? undefined : series[hovered]
   // A rounded ceiling rather than the peak itself, so the top label is a number
   // somebody would say out loud and the steps between are even.
   const top = niceCeiling(peak)
   // Top-down, which is the order they are drawn in.
-  const steps = [1, 0.75, 0.5, 0.25, 0].map((f) => top * f)
+  const steps = [1, 0.75, 0.5, 0.25, 0].map((fraction) => top * fraction)
   return (
     <Section className="border-b border-border py-5" contentClassName="">
       <div className="flex items-baseline justify-between">
@@ -1058,7 +1062,7 @@ function SpendChart({
             role="img"
             aria-label={`Daily spend over the last 30 days, peaking at ${formatUsd(peak)}`}
             className="relative flex h-[180px] items-end gap-[3px] border-b border-border"
-            onPointerLeave={() => setHovered(null)}
+            onPointerLeave={() => setHovered(undefined)}
           >
             {series.map((point, i) => (
               // The hit area is the whole column, not the drawn bar: a day with
@@ -1071,7 +1075,7 @@ function SpendChart({
                 className="group flex min-w-px flex-1 items-end self-stretch"
                 onPointerEnter={() => setHovered(i)}
                 onFocus={() => setHovered(i)}
-                onBlur={() => setHovered(null)}
+                onBlur={() => setHovered(undefined)}
               >
                 <span
                   className="w-full bg-accent group-hover:bg-accent-hover"
@@ -1175,10 +1179,8 @@ function ChartHoverCard({
 function niceCeiling(value: number): number {
   if (!(value > 0)) return 1
   const magnitude = 10 ** Math.floor(Math.log10(value))
-  for (const step of [1, 2, 5, 10]) {
-    if (value <= step * magnitude) return step * magnitude
-  }
-  return 10 * magnitude
+  const step = [1, 2, 5, 10].find((candidate) => value <= candidate * magnitude)
+  return (step ?? 10) * magnitude
 }
 
 /** Axis money: whole dollars once the scale is past them, cents below. */

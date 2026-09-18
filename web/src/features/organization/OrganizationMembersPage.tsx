@@ -332,9 +332,7 @@ function InviteMemberForm({
   const [email, setEmail] = useState("")
   const [role, setRole] = useState<MembershipRole>("member")
   const [workspaceIds, setWorkspaceIds] = useState<string[]>([])
-  const [result, setResult] = useState<InviteOrganizationMemberResult | null>(
-    null,
-  )
+  const [result, setResult] = useState<InviteOrganizationMemberResult>()
   const trimmed = email.trim()
 
   const rows = workspaces.data
@@ -537,7 +535,9 @@ function MemberEditor({
   const deleteCeiling = useDeleteScopedBudget()
 
   const initial = useMemo(() => {
-    const byWorkspace = new Map(placements.map((p) => [p.workspaceId, p]))
+    const byWorkspace = new Map(
+      placements.map((placement) => [placement.workspaceId, placement]),
+    )
     return new Map(
       workspaces.map((workspace) => {
         const placement = byWorkspace.get(workspace.id)
@@ -623,10 +623,17 @@ function MemberEditor({
       // success. That is the ordinary path through this page: the member is
       // already in the workspace and is being given a budget for the first time.
       const membershipIds = new Map<string, string | null>(
-        placements.map((p) => [p.workspaceId, p.membershipId]),
+        placements.map((placement) => [
+          placement.workspaceId,
+          placement.membershipId,
+        ]),
       )
-      const wasMember = new Set(placements.map((p) => p.workspaceId))
-      const roleWas = new Map(placements.map((p) => [p.workspaceId, p.role]))
+      const wasMember = new Set(
+        placements.map((placement) => placement.workspaceId),
+      )
+      const roleWas = new Map(
+        placements.map((placement) => [placement.workspaceId, placement.role]),
+      )
       for (const [workspaceId, row] of rows) {
         if (row.member && !wasMember.has(workspaceId)) {
           const created = await addMember.mutateAsync({
@@ -846,7 +853,7 @@ export function OrganizationMembersPage() {
   const updateUser = useUpdateUser()
   const workspaces = useWorkspaces()
   const workspaceIds = useMemo(
-    () => (workspaces.data ?? []).map((w) => w.id),
+    () => (workspaces.data ?? []).map((workspace) => workspace.id),
     [workspaces.data],
   )
   const workspaceMembers = useAllWorkspaceMembers(workspaceIds)
@@ -856,9 +863,9 @@ export function OrganizationMembersPage() {
   // Which of the two ways in this deployment offers: see the header action.
   const { mail_ready } = useDeployment()
 
-  const [editingMember, setEditingMember] = useState<string | null>(null)
-  const [removing, setRemoving] = useState<OrganizationMember | null>(null)
-  const [revoking, setRevoking] = useState<OrganizationMember | null>(null)
+  const [editingMember, setEditingMember] = useState<string>()
+  const [removing, setRemoving] = useState<OrganizationMember>()
+  const [revoking, setRevoking] = useState<OrganizationMember>()
   const [joining, setJoining] = useState(false)
   const [joinCount, setJoinCount] = useState(0)
 
@@ -882,9 +889,13 @@ export function OrganizationMembersPage() {
     [scopedBudgets.data],
   )
   const placementsByUser = useMemo(() => {
-    const names = new Map((workspaces.data ?? []).map((w) => [w.id, w.name]))
-    const byUser = new Map<string, WorkspacePlacement[]>()
-    for (const { workspaceId, member } of workspaceMembers.data) {
+    const names = new Map(
+      (workspaces.data ?? []).map((workspace) => [
+        workspace.id,
+        workspace.name,
+      ]),
+    )
+    return workspaceMembers.data.reduce((byUser, { workspaceId, member }) => {
       const placement: WorkspacePlacement = {
         workspaceId,
         workspaceName: names.get(workspaceId) ?? workspaceId.slice(0, 8),
@@ -892,12 +903,11 @@ export function OrganizationMembersPage() {
         role: member.role,
         ceiling: ceilingByMembership.get(member.id) ?? null,
       }
-      byUser.set(member.user_id, [
-        ...(byUser.get(member.user_id) ?? []),
-        placement,
-      ])
-    }
-    return byUser
+      const placements = byUser.get(member.user_id)
+      if (placements) placements.push(placement)
+      else byUser.set(member.user_id, [placement])
+      return byUser
+    }, new Map<string, WorkspacePlacement[]>())
   }, [workspaces.data, workspaceMembers.data, ceilingByMembership])
   // What each workspace hands a new member: the aggregate default (the one
   // narrowed to no provider). The editor needs it for two reasons: to show what
@@ -914,8 +924,7 @@ export function OrganizationMembersPage() {
   )
   const activeContext: OrganizationContext | undefined = context.data
   const manages = canManage(activeContext)
-  const editingRow =
-    rows.find((row) => memberRowKey(row) === editingMember) ?? null
+  const editingRow = rows.find((row) => memberRowKey(row) === editingMember)
 
   const columns = useMemo<DataTableColumn<OrganizationMember>[]>(() => {
     // Annotated here rather than inferred through the filter below, which would
@@ -1306,7 +1315,7 @@ export function OrganizationMembersPage() {
               ? (placementsByUser.get(editingRow.user_id) ?? [])
               : []
           }
-          onClose={() => setEditingMember(null)}
+          onClose={() => setEditingMember(undefined)}
         />
       ) : null}
 
@@ -1322,9 +1331,9 @@ export function OrganizationMembersPage() {
       </TableScrollFrame>
 
       <ConfirmDialog
-        isOpen={removing !== null}
+        isOpen={removing !== undefined}
         onOpenChange={(open) => {
-          if (!open) setRemoving(null)
+          if (!open) setRemoving(undefined)
         }}
         heading="Remove member"
         body={
@@ -1342,16 +1351,16 @@ export function OrganizationMembersPage() {
         onConfirm={() => {
           if (removing?.organization_member_id) {
             remove.mutate(removing.organization_member_id, {
-              onSuccess: () => setRemoving(null),
+              onSuccess: () => setRemoving(undefined),
             })
           }
         }}
       />
 
       <ConfirmDialog
-        isOpen={revoking !== null}
+        isOpen={revoking !== undefined}
         onOpenChange={(open) => {
-          if (!open) setRevoking(null)
+          if (!open) setRevoking(undefined)
         }}
         heading="Revoke invitation"
         body={
@@ -1368,7 +1377,7 @@ export function OrganizationMembersPage() {
         onConfirm={() => {
           if (revoking?.invitation_id) {
             revoke.mutate(revoking.invitation_id, {
-              onSuccess: () => setRevoking(null),
+              onSuccess: () => setRevoking(undefined),
             })
           }
         }}
