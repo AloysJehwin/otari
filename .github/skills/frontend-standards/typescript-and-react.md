@@ -51,8 +51,10 @@ TypeScript runs in `strict` mode; `pnpm --dir web run typecheck` must pass. Reac
   not in component state (see [data-fetching.md](./data-fetching.md)).
 - **Stable `key`s** for lists, a stable id, not the array index.
 - **The React Compiler is enabled** (`babel-plugin-react-compiler`, wired up in
-  `vite.config.ts`), so memoization is the build's job. Do not add `useMemo`, `useCallback`, or
-  `React.memo` without a measurement or a specific reference the compiler cannot prove stable.
+  `vite.config.ts`), so memoization is the build's job by default and the plain expression is
+  what to write. Reach for `useMemo`, `useCallback` or `React.memo` where it earns its place
+  rather than by reflex or never: an expensive computation, a reference something else
+  identity-checks, or a component the compiler could not optimize.
   It also means the rules of hooks are load-bearing: the compiler silently skips a component it
   cannot verify. See [performance.md](./performance.md).
 - Keep a component per file, colocated with its test.
@@ -86,6 +88,23 @@ Reach for it there and a reader knows at the first word that nothing is being pr
 it must not be is a `map`, a `filter` or a `reduce` with the result pushed into a variable
 declared above it, which is the shape that hides the transformation from the reader and gives
 the accumulator a chance to escape.
+
+**Give that `forEach` a block body.** Biome's `suspicious/useIterableCallbackReturn` rejects a
+concise arrow whose body is a call, because the arrow syntactically returns that call's value.
+It reads the shape rather than the type, so a call returning `void` is flagged too:
+
+```ts
+ids.forEach((id) => params.append("request_group_id", id))    // lint error
+ids.forEach((id) => {
+  params.append("request_group_id", id)
+})                                                            // correct
+```
+
+The rule is right to read the shape: a concise arrow in a `forEach` is one keystroke from
+being a `map` whose result nobody took. (`(id) => void params.append(...)` is the rule's own
+escape hatch and does pass lint, so it is not a review finding, but nothing here is written
+that way and new code should not start. The `void` this codebase does use is the other one,
+discarding a floating promise: `void queryClient.invalidateQueries(...)`.)
 
 Two cases stay imperative, because each iteration decides whether there is a next one and no
 array method expresses that:

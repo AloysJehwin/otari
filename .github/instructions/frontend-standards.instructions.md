@@ -72,7 +72,13 @@ full guidance, with worked examples grounded in this dashboard's code, lives in 
    `fetch()` directly for authenticated management requests; `apiFetch` uses the HttpOnly
    session cookie and signs out on 401, while public sign-in helpers stay outside that path.
    Never mirror server state into `useState`, and never swallow a mutation error. Bound every
-   "fetch all" loop with a hard page cap. See
+   "fetch all" loop with a hard page cap. A fire-and-forget call is prefixed with `void`, which
+   marks it as deliberately not awaited and is what lets the floating-promise lint flag the
+   ones that were forgotten. It is a marker and not error handling: `void` discards the
+   rejection too, so it is correct only where the promise cannot reject meaningfully
+   (`invalidateQueries` and `refetch` resolve with state; `useAutosave`'s `run` catches into
+   its own error). A `void` on a call that can fail is the finding, and the fix is a `.catch`
+   that reports or an `await` in a function that owns the failure. See
    [data-fetching.md](../skills/frontend-standards/data-fetching.md).
 
 5. **TypeScript + React hygiene.** An absent value in your own types and props is the type's
@@ -92,10 +98,18 @@ full guidance, with worked examples grounded in this dashboard's code, lives in 
    value. A loop that produces a value is a transformation written the long way, so `for...of`,
    `for...in` and an index loop all read better as `map`/`filter`/`reduce`/`find`/`flatMap`
    (`for...in` additionally walks inherited keys: use `Object.entries`). `forEach` is correct
-   where the body is genuinely only a side effect and wrong where it is a transformation with
-   the result pushed into an outer variable. Consuming a stream and a bounded request walk stay
-   imperative. The React Compiler is enabled, so hand-written
-   `useMemo`/`useCallback`/`React.memo` needs a stated reason. See
+   where the body is genuinely only a side effect, and takes a block body: Biome's
+   `useIterableCallbackReturn` rejects a concise arrow whose body is a call, reading the shape
+   rather than the type, so a call returning `void` is flagged too. (`(id) => void fn(id)`
+   passes lint and is therefore not a finding, but no code here is written that way.)
+   `forEach` is wrong where it is a transformation with the result pushed into an outer
+   variable.
+   Consuming a stream and a bounded request walk stay imperative. The React Compiler is
+   enabled, so the plain expression is the default and reflexive memoization is the finding.
+   Hand-written `useMemo`/`useCallback`/`React.memo` is correct where it earns its place (an
+   expensive computation, a reference something else identity-checks, a component the compiler
+   could not optimize because it could not verify the rules of hooks), so do not flag one that
+   does: the rule is judgment, not a ban and not a requirement. See
    [typescript-and-react.md](../skills/frontend-standards/typescript-and-react.md) and
    [performance.md](../skills/frontend-standards/performance.md).
 
