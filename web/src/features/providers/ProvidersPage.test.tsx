@@ -762,6 +762,106 @@ describe("ProvidersPage", () => {
     ).toBeInTheDocument()
   })
 
+  it("keeps a tab's draft, its guard and a hand-edited API base across a switch", async () => {
+    // The draft is lifted above the tab components so it survives a switch, but
+    // the two things scoped to it stayed below: useDirtySnapshot seeds on mount,
+    // so it reseeded against filled values and Escape closed with nothing asked,
+    // and the api_base effect refired from cache and overwrote a hand-edited
+    // value with the provider's default.
+    mockApi({
+      stored: [],
+      catalog: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          env_key: "OPENAI_API_KEY",
+          default_api_base: "https://api.openai.com/v1",
+          requires_api_key: true,
+          env_key_present: false,
+        },
+      ],
+    })
+    const user = userEvent.setup()
+    renderPage(<ProvidersPage />)
+
+    await user.click(
+      await screen.findByRole("button", { name: "Add provider" }),
+    )
+    await user.type(screen.getByPlaceholderText("Search providers…"), "Open")
+    await user.click(await screen.findByRole("option", { name: "OpenAI" }))
+    await user.type(screen.getByLabelText(/API key/), "sk-live-aaaa")
+
+    // An operator routing through a proxy replaces the seeded default. The
+    // disclosure appears once the provider's detail lands, which is also what
+    // seeds the base, so wait for it rather than racing it.
+    await user.click(await screen.findByRole("button", { name: /^Advanced/ }))
+    const apiBase = screen.getByLabelText("API base")
+    await user.clear(apiBase)
+    await user.type(apiBase, "https://proxy.internal/v1")
+
+    await user.click(screen.getByRole("button", { name: "Custom endpoint" }))
+    await user.click(screen.getByRole("button", { name: "Known provider" }))
+
+    expect(screen.getByLabelText(/API key/)).toHaveValue("sk-live-aaaa")
+    // Advanced stays open: its disclosure is lifted with the rest of the draft,
+    // so the base is on screen without reopening it.
+    expect(await screen.findByLabelText("API base")).toHaveValue(
+      "https://proxy.internal/v1",
+    )
+
+    // And the guard still arms: the draft survived, so leaving must ask.
+    await user.keyboard("{Escape}")
+    expect(
+      await screen.findByRole("button", { name: "Discard" }),
+    ).toBeInTheDocument()
+  })
+
+  it("reseeds the API base when the same provider is picked again after clearing", async () => {
+    // Emptying the picker clears the base, and it clears the marker the seeding
+    // effect keys on: the marker records which provider the base in the field
+    // came from, so one left behind reads as already seeded and the field stays
+    // blank on picking that provider back.
+    mockApi({
+      stored: [],
+      catalog: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          env_key: "OPENAI_API_KEY",
+          default_api_base: "https://api.openai.com/v1",
+          requires_api_key: true,
+          env_key_present: false,
+        },
+      ],
+    })
+    const user = userEvent.setup()
+    renderPage(<ProvidersPage />)
+
+    await user.click(
+      await screen.findByRole("button", { name: "Add provider" }),
+    )
+    const picker = screen.getByPlaceholderText("Search providers…")
+    await user.type(picker, "Open")
+    await user.click(await screen.findByRole("option", { name: "OpenAI" }))
+
+    await user.click(await screen.findByRole("button", { name: /^Advanced/ }))
+    expect(await screen.findByLabelText("API base")).toHaveValue(
+      "https://api.openai.com/v1",
+    )
+
+    // Emptying the field and leaving it is what drops the selection: the picker
+    // takes no custom value, so react-aria clears it rather than keeping a
+    // provider the input no longer names.
+    await user.clear(picker)
+    await user.tab()
+    await user.type(picker, "Open")
+    await user.click(await screen.findByRole("option", { name: "OpenAI" }))
+
+    expect(await screen.findByLabelText("API base")).toHaveValue(
+      "https://api.openai.com/v1",
+    )
+  })
+
   it("guards client options typed on the custom tab, with nothing else filled", async () => {
     mockApi({ meta: [], stored: [] })
     const user = userEvent.setup()
