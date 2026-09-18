@@ -109,6 +109,19 @@ const TOOLS: ToolsResponse = {
       example: { type: "otari_web_search" },
     },
     {
+      id: "otari_web_fetch",
+      object: "tool",
+      description: "Retrieve bounded content from a public URL.",
+      available: true,
+      accepted_types: ["otari_web_fetch"],
+      input_schema: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+      example: { type: "otari_web_fetch" },
+    },
+    {
       id: "otari_code_execution",
       object: "tool",
       description: "Execute Python code in a sandboxed REPL.",
@@ -586,6 +599,9 @@ describe("ToolsGuardrailsPage tool status", () => {
       await screen.findByRole("button", { name: /otari_web_search/ }),
     ).toBeInTheDocument()
     expect(
+      screen.getByRole("button", { name: /otari_web_fetch/ }),
+    ).toBeInTheDocument()
+    expect(
       screen.getByRole("button", { name: /otari_code_execution/ }),
     ).toBeInTheDocument()
     // The code-execution fixture has available: false.
@@ -649,7 +665,96 @@ describe("ToolsGuardrailsPage tool status", () => {
     ).toBeInTheDocument()
   })
 
-  it("keeps the editable settings usable when /v1/tools fails", async () => {
+  it("sends an unconfigured sandbox to its own backend field", async () => {
+    // The shortcut is the only thing on the page that moves an operator from
+    // "why is this off" to the field that turns it on, and it is keyed off the
+    // service's url-typed field, not off which tool is being rendered.
+    mockApi()
+    const user = userEvent.setup()
+    renderWithClient(<ToolsGuardrailsPage only="sandbox" />)
+
+    await user.click(
+      await screen.findByRole("button", { name: /otari_code_execution/ }),
+    )
+
+    await user.click(screen.getByRole("button", { name: "Set backend URL ↓" }))
+    expect(screen.getByLabelText(SANDBOX_URL)).toHaveFocus()
+  })
+
+  it("says Fetch is disabled rather than sending it to a URL field", async () => {
+    // Fetch has no backend of its own: web_fetch_enabled is startup-only, so
+    // the default "set a backend URL" reason would name a field that cannot
+    // turn it on.
+    mockApi({
+      tools: {
+        object: "list",
+        data: TOOLS.data.map((tool) =>
+          tool.id === "otari_web_fetch" ? { ...tool, available: false } : tool,
+        ),
+      },
+    })
+    const user = userEvent.setup()
+    renderWithClient(<ToolsGuardrailsPage only="web_search" />)
+
+    const row = await screen.findByRole("button", {
+      name: /otari_web_fetch/,
+    })
+    expect(row).toHaveTextContent("Unavailable · not enabled")
+    await user.click(row)
+
+    expect(
+      screen.getByText(/Set OTARI_WEB_FETCH_ENABLED=true/),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Set backend URL ↓" }),
+    ).not.toBeInTheDocument()
+  })
+
+  it("opens the Fetch declaration a client must send", async () => {
+    mockApi()
+    const user = userEvent.setup()
+    renderWithClient(<ToolsGuardrailsPage only="web_search" />)
+
+    await user.click(
+      await screen.findByRole("button", { name: /otari_web_fetch/ }),
+    )
+
+    expect(screen.getByText('"type": "otari_web_fetch"')).toBeInTheDocument()
+    // Fetch's own docs heading, not the Web search one its card sits under.
+    expect(
+      screen.getByRole("link", { name: /Developer docs/ }),
+    ).toHaveAttribute("href", expect.stringContaining("tools.md#web-fetch"))
+  })
+
+  it("renders and saves a separate Fetch per-call price", async () => {
+    const fetchMock = mockApi()
+    const user = userEvent.setup()
+    renderWithClient(<ToolsGuardrailsPage only="web_search" />)
+
+    const price = await screen.findByLabelText(
+      "Price per call for otari:web_fetch",
+    )
+    await waitFor(() => expect(price).toBeEnabled())
+    await user.type(price, "0.0042")
+    await user.tab()
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url).includes("/api/v1/pricing") &&
+          (init?.method ?? "") === "POST",
+      )
+      expect(call).toBeDefined()
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+        model_key: "otari:web_fetch",
+        input_price_per_million: 4200,
+        output_price_per_million: 0,
+        unit: "requests",
+      })
+    })
+  })
+
+  it("keeps the editable settings usable when /api/v1/tools fails", async () => {
     // The status row is reference material; a failed discovery fetch must not
     // take the settings form down with it.
     mockApi({ toolsStatus: 500 })
