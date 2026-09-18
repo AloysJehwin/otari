@@ -87,14 +87,52 @@ its listeners, and its queries exist while it is closed.
 
 ## The server does the shaping
 
-Filtering, sorting, searching, and pagination of server data belong to the endpoint. Pulling
-ten thousand rows to `.filter()` them in the browser is both slow and wrong: it filters only
-the page that was fetched, so the result is a subset of a subset and the count is a lie. A
-small list already in memory, rendered in a table, is fine.
+**The endpoint returns what the page needs and the dashboard renders it.** Filtering,
+searching, sorting, joining and aggregating server data belong to the endpoint, not to the
+browser.
 
-When a hook genuinely has to walk everything, bound the walk. `fetchAllPricing` in
-The domain modules under `shared/api/` are the shape to copy, and [data-fetching.md](./data-fetching.md)
-explains the cap.
+Doing any of them here fails in one of three ways, depending on what was fetched. Filter the
+page on screen and every match on another page is missed. Walk the collection first and the
+answer is right, paid for with a full scan, and there is still no server-side count to put
+under it. Walk a collection past the hundred-page cap and the tail is gone with nothing said,
+so the answer is wrong and looks right. A small list already in memory, rendered in a table,
+is fine.
+
+**Nor does it assemble a view out of several responses.** Reading members, users, budgets and
+ceilings to join them by id in the browser is four round trips and four whole tables to render
+one page, and the joins are the server's work done with less information. One endpoint returns
+the page's shape.
+
+**If the endpoint you need does not exist, that is the change to make.** Not a walk, not a
+client-side join, not a filter over everything. The gateway is in this repository.
+
+**Reading a whole collection is not an exception to that, it is the thing it forbids.** A cap
+on such a walk stops it looping forever against a backend that ignores `skip`; it does not make
+the read paginated, and everything downstream still sorts and filters in the browser. A hook
+that looks like it has to read everything is a hook whose endpoint does not offer what the page
+needs, and that is a reason to change the endpoint.
+
+What to reach for instead, by what the page is doing:
+
+- **A table** takes `skip` and `limit` from the URL state, with
+  `placeholderData: (previous) => previous` so the rows do not blank between pages. Every list
+  route in the gateway already accepts both, capped at `limit=1000`, so this needs nothing
+  from the backend.
+- **A picker** needs the endpoint to search. Fetching every option to filter in memory offers
+  a subset the moment the collection passes one page, and says nothing about it. No list route
+  accepts a search term today except the two usage ones, so a picker over a large collection is
+  a gateway change before it is a dashboard one.
+- **A lookup** (a row carries a `user_id`, the page wants a name) belongs in the response.
+  Either the row carries its own label or there is a batch endpoint to resolve the ids on the
+  page. Reading the whole table to join it in the browser is the dashboard doing the server's
+  join, and it pays for every row to answer for the handful on screen.
+- **A page built from several reads** wants one endpoint shaped for it.
+  `OrganizationMembersPage` currently takes seven and joins them by id; that is the case this
+  rule is about, not an edge of it.
+
+Nineteen reads in `shared/api/` predate this rule and still walk. #1376 tracks working them
+down; `fetchAllPaged` and `fetchAllRows` in `shared/api/paging.ts` exist to be deleted, not to
+be reached for.
 
 ## Long lists
 
