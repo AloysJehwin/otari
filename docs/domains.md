@@ -55,28 +55,28 @@ not the module beside it.
 
 ## The shape today
 
-Measured on `main` at `ecd07b13`, 2026-09-17, and updated by each domain change
+Measured on `main` at `cf2968c1`, 2026-09-21, and updated by each domain change
 since. A module "runs queries" when it imports a query builder (`select`,
 `update`, `delete` or `insert` from SQLAlchemy or SQLModel) and calls `execute`,
 `exec`, `scalar`, `scalars` or `get` on a session.
 
 | Measure | Count |
 | --- | --- |
-| Service modules | 108, of which 71 sit flat at the top of `services/` |
-| Service modules that run queries | 39, plus 2 that only call `session.get` |
-| Route modules | 72 |
+| Service modules | 111, of which 71 sit flat at the top of `services/` |
+| Service modules that run queries | 38, plus 2 that only call `session.get` |
+| Route modules | 73 |
 | Route modules that run queries | 17, plus 1 that only calls `session.get` |
 | Route modules that define Pydantic models inline | 40 |
 | Model modules | 19 |
-| Repository modules | 9: a base, `users_repository.py`, and 7 under `tenancy/` |
-| Service packages per domain | 1: `services/tools/`, which holds the built-in tool registry and no service yet. `services/mail/`, `services/routing/` and `services/tenancy/` are older subpackages |
-| Repository packages per domain | None. `repositories/tenancy/` is an older subpackage |
-| Modules in `schemas/` | One domain module so far, `budgets.py` |
+| Repository modules | 10: a base, `users_repository.py`, 7 under `tenancy/`, and `overview/overview_repository.py` |
+| Service packages per domain | 2: `services/tools/`, which holds the built-in tool registry and no service yet, and `services/overview/`. `services/mail/`, `services/routing/` and `services/tenancy/` are older subpackages |
+| Repository packages per domain | 1: `repositories/overview/`. `repositories/tenancy/` is an older subpackage |
+| Modules in `schemas/` | Two domain modules so far, `budgets.py` and `overview.py` |
 | Modules in `exceptions/` | The shared error bases in `_base.py`, which the package root re-exports, and one domain module so far, `budget_exceptions.py`. `services/tenancy/errors.py` holds the rest of the tenancy errors in 1,145 lines |
 
 ## The domains
 
-Fifteen domains plus a shared set. A module appears once. Paths are relative to
+Sixteen domains plus a shared set. A module appears once. Paths are relative to
 their layer's directory. A domain package is listed by its directory, which
 covers every module inside it. A route module whose name starts with an underscore is
 a shared helper, which the target shape moves out of the routes layer.
@@ -280,6 +280,24 @@ nothing about what triggers an alert and imports no other domain. Each trigger
 lives in the domain it watches and calls the alerts service.
 
 - No code yet. It arrives in the target shape.
+
+### overview
+
+The dashboard overview's summary: the counts and the budget health that the
+page shows, in one answer. It is a read model across api-keys, organizations
+and budgets, so it has no tables of its own and writes nothing.
+
+- Routes: `overview.py`
+- Services: `overview/`
+- Repositories: `overview/`
+- Schemas: `overview.py`
+
+`overview/overview_repository.py` reads the tables of those three domains
+directly, and it takes the session instead of extending `BaseRepository`. The
+target shape has the overview service ask each domain's service for its data.
+
+The overview has no slot of its own in the order of work. Its queries move with
+each domain it reads, and budgets is the first.
 
 ### Shared
 
