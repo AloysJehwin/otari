@@ -119,33 +119,50 @@ def get_enabled_features(request: Request) -> tuple[CoreFeature, ...]:
     return enabled
 
 
-def _extract_bearer_token(request: Request, config: GatewayConfig) -> str:
-    """Extract the API token from the request headers.
+def extract_credential_token(request: Request) -> str:
+    """Extract the caller's credential token from the request headers.
+
+    Every mode reads the same headers through this one helper, so which
+    deployment a caller talks to never changes how their key is presented;
+    only who verifies the token differs (hybrid forwards it to the platform,
+    the other modes check the local database).
 
     The canonical Otari-Key header carries the token directly. A ``Bearer ``
     prefix is accepted and stripped for back-compat, but is not required: a header
     named for the key holds the raw token, matching the ``x-api-key`` convention
     and the snippet the dashboard hands out. The standard Authorization header
     still requires the Bearer scheme. Finally the raw x-api-key header is honored
-    (Anthropic-native clients).
+    (Anthropic-native clients). Surrounding whitespace is stripped, and a
+    credential that is only whitespace is answered as missing rather than sent
+    on to fail verification as a token of spaces.
     """
+    token: str | None = None
     value = request.headers.get(API_KEY_HEADER)
     if value:
-        return value[7:] if value.startswith("Bearer ") else value
+        # Leading whitespace comes off before the scheme check, so a padded
+        # value still has its Bearer prefix recognized rather than kept as
+        # part of the token.
+        value = value.lstrip()
+        token = value[7:] if value.startswith("Bearer ") else value
+    else:
+        auth_header = request.headers.get("Authorization")
+        if auth_header:
+            auth_header = auth_header.lstrip()
+            # A blank value is a missing credential, not a scheme violation;
+            # only a non-empty non-Bearer value is an invalid format.
+            if auth_header and not auth_header.startswith("Bearer "):
+                record_auth_failure("invalid_format")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid header format. Expected 'Bearer <token>'",
+                )
+            token = auth_header[7:]
+        else:
+            token = request.headers.get(X_API_KEY_HEADER)
 
-    auth_header = request.headers.get("Authorization")
-    if auth_header:
-        if not auth_header.startswith("Bearer "):
-            record_auth_failure("invalid_format")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid header format. Expected 'Bearer <token>'",
-            )
-        return auth_header[7:]
-
-    raw_token = request.headers.get(X_API_KEY_HEADER)
-    if raw_token:
-        return raw_token
+    token = token.strip() if token else ""
+    if token:
+        return token
 
     record_auth_failure("missing_credentials")
     raise HTTPException(
@@ -354,7 +371,11 @@ async def verify_api_key(
     db: Annotated[AsyncSession, Depends(get_db)],
     config: Annotated[GatewayConfig, Depends(get_config)],
 ) -> APIKey:
-    """Verify API key from Otari-Key header.
+    """Verify API key from the credential headers.
+
+    ``config`` is not consulted, but stays in the signature: like its sibling
+    ``verify_api_key_or_master_key``, this is called directly (not only via
+    ``Depends``) by downstream deployments, so the three-argument shape is API.
 
     Args:
         request: FastAPI request object
@@ -368,7 +389,7 @@ async def verify_api_key(
         HTTPException: If key is invalid, inactive, or expired
 
     """
-    token = _extract_bearer_token(request, config)
+    token = extract_credential_token(request)
     return await _verify_and_update_api_key(db, token, _api_key_format(request, db))
 
 
@@ -398,7 +419,7 @@ async def verify_master_key(
     """
     if session_identity is not None:
         return None
-    token = _extract_bearer_token(request, config)
+    token = extract_credential_token(request)
 
     if config.master_key is None:
         stored_hash = await _load_generated_master_key_hash(config, db)
@@ -503,7 +524,7 @@ async def verify_api_key_or_master_key(
         HTTPException: If key is invalid, inactive, or expired
 
     """
-    token = _extract_bearer_token(request, config)
+    token = extract_credential_token(request)
 
     if await is_valid_master_key(token, config, db):
         return None, True
@@ -847,6 +868,7 @@ __all__ = [
     "get_log_writer",
     "is_valid_master_key",
     "require_capability",
+    "extract_credential_token",
     "verify_api_key",
     "verify_api_key_or_master_key",
     "verify_catalog_reader",

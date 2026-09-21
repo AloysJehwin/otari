@@ -15,8 +15,9 @@ exporter appends `/v1/traces`, `/v1/logs` and `/v1/metrics`.
 
 ## Authentication
 
-In standalone and hosted mode, Otari accepts a local API key or the master key in
-any of these forms:
+Otari accepts a credential in any of these forms, whatever the mode: a local API
+key or the master key in standalone and hosted mode, an otari.ai user token in
+hybrid mode:
 
 ```text
 Authorization: Bearer <token>
@@ -32,9 +33,9 @@ operations, a separately scoped endpoint serves it to the caller's own
 organization: `/api/v1/organizations/me/usage` for usage, and
 `/api/v1/organizations/me/keys` for a member's own API keys.
 
-In hybrid mode, the generation APIs and the `/api/v1/mcp` endpoints accept an
-otari.ai user token through `Authorization: Bearer <token>`. Local API keys and
-management APIs are not used.
+In hybrid mode, the generation APIs and the `/api/v1/mcp` and `/api/v1/hooks`
+endpoints accept an otari.ai user token in the same header forms. Local API
+keys and management APIs are not used.
 
 ## Availability by mode
 

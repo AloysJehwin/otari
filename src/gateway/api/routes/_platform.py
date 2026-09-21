@@ -22,7 +22,7 @@ from anthropic import APIConnectionError as _AnthropicAPIConnectionError
 from anthropic import APITimeoutError as _AnthropicAPITimeoutError
 from any_llm import LLMProvider
 from any_llm.types.completion import CompletionUsage
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, status
 from openai import APIConnectionError as _OpenAIAPIConnectionError
 from openai import APITimeoutError as _OpenAIAPITimeoutError
 from pydantic import BaseModel, Field, ValidationError
@@ -463,28 +463,6 @@ async def run_platform_attempts(
 
 
 # ---------- platform-side helpers ----------
-
-
-def _extract_platform_user_token(request: Request) -> str:
-    """Pull the user's bearer token off the ``Authorization`` header.
-
-    Used in hybrid mode to forward the caller's identity to the platform's
-    resolve endpoint. Standalone mode uses ``verify_api_key_or_master_key``
-    instead.
-    """
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authentication token",
-        )
-    token = auth_header[7:].strip()
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authentication token",
-        )
-    return token
 
 
 def _split_model_selector(model_selector: str) -> tuple[str | None, str]:
