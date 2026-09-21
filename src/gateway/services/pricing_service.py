@@ -8,7 +8,7 @@ from typing import NamedTuple
 
 from genai_prices import Usage, calc_price
 from genai_prices.types import PriceCalculation, TieredPrices
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, distinct, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.config import API_ROOT
@@ -600,6 +600,100 @@ async def rates_in_force(
     stored = {row.model_key for row in rows}
     in_force = [row for row in rows if _canonical_key_form(row.model_key) not in stored - {row.model_key}]
     return in_force[:limit]
+
+
+async def _keys_shadowed_by_their_canonical_form(db: AsyncSession) -> set[str]:
+    """Legacy ``provider/model`` keys that also exist as ``provider:model``.
+
+    A lookup resolves such a model to the canonical row, so the legacy one is a
+    rate nothing is ever metered at and listing it would report one model twice.
+    :func:`rates_in_force` drops it after reading everything, which a paged read
+    cannot do: dropping rows after the window makes a short page and a count
+    that disagrees with it. So the keys are resolved first and excluded in SQL.
+
+    Two statements rather than string surgery in the query: splitting on the
+    *first* separator is what :func:`_canonical_key_form` means, and neither
+    ``replace`` (which takes every occurrence) nor a portable ``position`` says
+    that across both PostgreSQL and SQLite. A write normalizes its key
+    (``normalize_pricing_key``), so the legacy form only survives in older rows
+    and the first statement usually answers empty.
+    """
+
+    legacy = set(
+        (
+            await db.scalars(
+                select(distinct(ModelPricing.model_key)).where(
+                    ModelPricing.model_key.like("%/%"),
+                    ModelPricing.model_key.notlike("%:%"),
+                )
+            )
+        ).all()
+    )
+    if not legacy:
+        return set()
+    canonical = {key: _canonical_key_form(key) for key in legacy}
+    wanted = sorted(set(canonical.values()))
+    present: set[str] = set()
+    for start in range(0, len(wanted), _KEY_CHUNK):
+        chunk = wanted[start : start + _KEY_CHUNK]
+        present.update(
+            (await db.scalars(select(distinct(ModelPricing.model_key)).where(ModelPricing.model_key.in_(chunk)))).all()
+        )
+    return {key for key, form in canonical.items() if form in present}
+
+
+async def current_rates_page(
+    db: AsyncSession,
+    *,
+    skip: int,
+    limit: int,
+    as_of: datetime | None = None,
+) -> tuple[list[ModelPricing], int]:
+    """One page of each priced model's current rate, with the total model count.
+
+    :func:`rates_in_force` answers what settlement would pick, so a key whose
+    only row is scheduled for later has none. The catalog needs the wider view:
+    a rate an operator has queued is one the table has to show, so this falls
+    back to the earliest scheduled row where nothing has taken effect yet. The
+    two agree wherever a rate is live.
+    """
+
+    lookup_time = normalize_effective_at(as_of)
+    shadowed = await _keys_shadowed_by_their_canonical_form(db)
+    # One grouped pass rather than a join of a past and a future subquery: the
+    # group-wide MIN is the earliest row, and COALESCE only reaches it when no
+    # row has taken effect. A FULL OUTER JOIN would say the same thing and is
+    # not portable to the SQLite the OSS edition runs on.
+    chosen = (
+        select(
+            ModelPricing.model_key.label("model_key"),
+            func.coalesce(
+                func.max(case((ModelPricing.effective_at <= lookup_time, ModelPricing.effective_at))),
+                func.min(ModelPricing.effective_at),
+            ).label("effective_at"),
+        )
+        .where(ModelPricing.model_key.notin_(shadowed) if shadowed else true())
+        .group_by(ModelPricing.model_key)
+        .subquery()
+    )
+    # ``(model_key, effective_at)`` is the primary key, so the join keeps one row
+    # per model. Ordered by key so a page is stable between reads.
+    stmt = (
+        select(ModelPricing)
+        .join(
+            chosen,
+            (ModelPricing.model_key == chosen.c.model_key) & (ModelPricing.effective_at == chosen.c.effective_at),
+        )
+        .order_by(ModelPricing.model_key)
+        .offset(skip)
+        .limit(limit)
+    )
+    rows = list((await db.execute(stmt)).scalars())
+    total = select(func.count(distinct(ModelPricing.model_key)))
+    if shadowed:
+        total = total.where(ModelPricing.model_key.notin_(shadowed))
+    count = await db.scalar(total)
+    return rows, count or 0
 
 
 async def find_model_pricing(
