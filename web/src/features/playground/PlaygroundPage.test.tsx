@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type {
-  ModelListResponse,
+  CatalogResponse,
   OrganizationContext,
   PlaygroundComparisons,
   PlaygroundConsent,
@@ -19,7 +19,11 @@ import {
   SelectedWorkspaceProvider,
   useSelectedWorkspace,
 } from "@/shared/hooks/SelectedWorkspace"
-import { organizationContext } from "@/tests/fixtures"
+import {
+  catalogModelSummary,
+  catalogResponse,
+  organizationContext,
+} from "@/tests/fixtures"
 import { withRouter } from "@/tests/router"
 
 /** Mirrors `RATING_ACKNOWLEDGEMENT_MS` in `hooks/usePlayground.ts`. */
@@ -27,33 +31,27 @@ const RATING_ACKNOWLEDGEMENT_MS = 3000
 
 const WORKSPACE_ID = "44444444-4444-4444-4444-444444444444"
 
-const CATALOG: ModelListResponse = {
-  object: "list",
-  data: [
-    {
-      id: "openai:gpt-4o",
-      object: "model",
-      created: 0,
-      owned_by: "openai",
-      pricing_source: "none",
-    },
-    {
-      id: "anthropic:claude-sonnet-4",
-      object: "model",
-      created: 0,
-      owned_by: "anthropic",
-      pricing_source: "none",
-    },
-    // Not a chat model: it must not reach the picker.
-    {
-      id: "openai:text-embedding-3-small",
-      object: "model",
-      created: 0,
-      owned_by: "openai",
-      pricing_source: "none",
-    },
-  ],
-} as ModelListResponse
+const CATALOG: CatalogResponse = catalogResponse([
+  catalogModelSummary({
+    id: "gpt-4o",
+    vendor: "OpenAI",
+    selector: "gpt-4o",
+    selectors: ["openai:gpt-4o"],
+  }),
+  catalogModelSummary({
+    id: "claude-sonnet-4",
+    vendor: "Anthropic",
+    selector: "claude-sonnet-4",
+    selectors: ["anthropic:claude-sonnet-4"],
+  }),
+  // Not a chat model: it must not reach the picker.
+  catalogModelSummary({
+    id: "text-embedding-3-small",
+    vendor: "OpenAI",
+    selector: "text-embedding-3-small",
+    selectors: ["openai:text-embedding-3-small"],
+  }),
+])
 
 const NO_TOOLS: PlaygroundTools = {
   web_search: {
@@ -118,7 +116,7 @@ interface ApiState {
   conversations?: PlaygroundConversations
   comparisons?: PlaygroundComparisons
   favorites?: PlaygroundFavoriteModels
-  catalog?: ModelListResponse
+  catalog?: CatalogResponse
   messages?: PlaygroundMessages
   context?: OrganizationContext
 }
@@ -147,7 +145,7 @@ function mockApi(state: ApiState = {}) {
       if (path.startsWith("/organizations/me")) {
         return (state.context ?? context()) as never
       }
-      if (path.startsWith("/models")) {
+      if (path.startsWith("/catalog/models")) {
         return (state.catalog ?? CATALOG) as never
       }
       if (path.startsWith("/playground/tools")) return NO_TOOLS as never
@@ -318,18 +316,31 @@ afterEach(() => {
 })
 
 describe("the Playground before the first question", () => {
-  it("identifies the provider when model labels are shared", async () => {
+  it("offers the model, not its provider offerings", async () => {
+    // The Models page shows one entry for a model two providers serve, and the
+    // picker matches it: one row, keyed by the model-level selector.
     mockApi({
       catalog: {
         ...CATALOG,
-        data: [...CATALOG.data, { ...CATALOG.data[0], id: "backup:gpt-4o" }],
-      } as ModelListResponse,
+        models: [
+          catalogModelSummary({
+            id: "gpt-4o",
+            vendor: "OpenAI",
+            selector: "gpt-4o",
+            selectors: ["openai:gpt-4o", "backup:gpt-4o"],
+          }),
+          ...CATALOG.models.slice(1),
+        ],
+      },
     })
     renderPage()
     await screen.findByText("Try a prompt.")
     expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent(
-      "openai:gpt-4o",
+      "gpt-4o",
     )
+    await userEvent.click(screen.getByRole("button", { name: "Model" }))
+    expect(screen.queryByText("openai:gpt-4o")).not.toBeInTheDocument()
+    expect(screen.queryByText("backup:gpt-4o")).not.toBeInTheDocument()
   })
 
   it("filters comparison history from the shared History control", async () => {
@@ -367,7 +378,7 @@ describe("the Playground before the first question", () => {
   })
 
   it("says what to do when the deployment serves no models", async () => {
-    mockApi({ catalog: { object: "list", data: [] } as ModelListResponse })
+    mockApi({ catalog: { ...CATALOG, models: [] } })
     renderPage()
 
     expect(
@@ -410,7 +421,7 @@ describe("sending a question", () => {
       `/playground/chat/completions?workspace_id=${WORKSPACE_ID}`,
     )
     expect(JSON.parse(String(init?.body))).toMatchObject({
-      model: "openai:gpt-4o",
+      model: "gpt-4o",
       stream: true,
       messages: [{ role: "user", content: "hi" }],
     })
@@ -545,7 +556,7 @@ describe("retention consent", () => {
       )
       expect(save?.body).toMatchObject({
         workspace_id: WORKSPACE_ID,
-        model: "openai:gpt-4o",
+        model: "gpt-4o",
         title: "hi",
       })
     })
@@ -691,7 +702,7 @@ describe("comparing two models", () => {
       expect(rating?.body).toMatchObject({
         workspace_id: WORKSPACE_ID,
         user_question: "which?",
-        model_a: "openai:gpt-4o",
+        model_a: "gpt-4o",
         model_a_answer: "an answer",
         model_b_answer: "an answer",
         preference: "model_b",
@@ -957,7 +968,7 @@ describe("when a write fails", () => {
       id: "conv-1",
       workspace_id: WORKSPACE_ID,
       title: "How does OAuth work",
-      model: "openai:gpt-4o",
+      model: "gpt-4o",
       message_count: 2,
       created_at: "2026-01-01T00:00:00Z",
     }
@@ -1038,7 +1049,7 @@ describe("history", () => {
       id: "conv-1",
       workspace_id: WORKSPACE_ID,
       title: "How does OAuth work",
-      model: "anthropic:claude-sonnet-4",
+      model: "claude-sonnet-4",
       message_count: 2,
       created_at: "2026-01-01T00:00:00Z",
     }

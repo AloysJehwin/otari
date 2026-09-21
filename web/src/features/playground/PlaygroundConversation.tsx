@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from "react"
 import { ChatPanel } from "./ChatPanel"
-import { type PlaygroundModel, splitModelKey } from "./helpers/playgroundModels"
+import type { PlaygroundModel } from "./helpers/playgroundModels"
 import type { PanelState } from "./helpers/playgroundTypes"
 import { ModelSelect } from "./ModelSelect"
 import { CHAT_COLUMN } from "./playgroundLayout"
@@ -47,7 +47,11 @@ export function PlaygroundConversation({
           { name: "B", panel: panelB, setPanel: setPanelB, other: panelA },
         ] as const
       ).map(({ name, panel, setPanel, other }) => {
-        const identity = splitModelKey(panel.model)
+        // The picker's own strings, so this panel says what the row said. The
+        // key itself stands in for a selection the catalog no longer serves.
+        const selected = models.find((model) => model.key === panel.model)
+        const vendor = selected?.vendor ?? ""
+        const label = selected?.label ?? panel.model
         return (
           <section
             key={name}
@@ -87,15 +91,17 @@ export function PlaygroundConversation({
               />
             </div>
             <p className="pl-8 text-caption">
-              {identity.instance ||
-                (panel.model
-                  ? "Model alias"
-                  : `Any model other than ${name === "A" ? "B" : "A"}`)}
+              {panel.model
+                ? // The vendor, matching the picker's group heading; empty
+                  // where the catalog knows none, since a filler word under a
+                  // model name states nothing.
+                  vendor
+                : `Any model other than ${name === "A" ? "B" : "A"}`}
             </p>
             {panel.turns.length === 0 && !panel.isAwaitingFirstToken ? (
               <div className="flex min-h-40 flex-1 items-center justify-center py-12 pl-8 text-center text-body text-subtle">
                 {panel.model
-                  ? `${identity.label}’s answer appears here.`
+                  ? `${label}’s answer appears here.`
                   : `Choose model ${name} to start comparing.`}
               </div>
             ) : (
