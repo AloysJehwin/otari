@@ -54,59 +54,52 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Literal, get_args
 
-from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import col
 
-from gateway.models.api_keys import APIKey
-from gateway.models.budgets import MAX_COUNT_LIMIT, Budget, ScopedBudget, WorkspaceBudgetDefault
-from gateway.models.money import MAX_USD_LIMIT, as_float, to_usd_or_none
-from gateway.models.tenancy import Organization, OrganizationMember, User, Workspace, WorkspaceMember
-from gateway.models.users import User as GatewayUser
-from gateway.services.budget_periods import ResetAlignment, period_window
-from gateway.services.budget_retiming import cadence_of, retime_ceilings_for_budget
-from gateway.services.tenancy.errors import (
+from gateway.exceptions.budget_exceptions import (
     OrganizationBudgetHeldElsewhereError,
     OrganizationBudgetInUseError,
     OrganizationBudgetNotFoundError,
     OrganizationScopedBudgetAlreadyExistsError,
     OrganizationScopedBudgetNotFoundError,
     OrganizationScopeNotFoundError,
-    TenancyValidationError,
 )
+from gateway.models.api_keys import APIKey
+from gateway.models.budgets import (
+    SCOPE_API_TOKEN,
+    SCOPE_ORG_MEMBER,
+    SCOPE_ORGANIZATION,
+    SCOPE_TYPES,
+    SCOPE_WORKSPACE,
+    SCOPE_WORKSPACE_MEMBER,
+    Budget,
+    ScopedBudget,
+    WorkspaceBudgetDefault,
+)
+from gateway.models.money import to_usd_or_none
+from gateway.models.tenancy import Organization, OrganizationMember, User, Workspace, WorkspaceMember
+from gateway.models.users import User as GatewayUser
+from gateway.schemas.budgets import (
+    OrganizationBudgetCreate,
+    OrganizationBudgetPublic,
+    OrganizationBudgetsPublic,
+    OrganizationBudgetUpdate,
+    OrganizationScopedBudgetCreate,
+    OrganizationScopedBudgetPublic,
+    OrganizationScopedBudgetsPublic,
+    OrganizationScopedBudgetUpdate,
+)
+from gateway.services.budget_periods import period_window
+from gateway.services.budget_retiming import cadence_of, retime_ceilings_for_budget
+from gateway.services.tenancy.errors import TenancyValidationError
 from gateway.services.tenancy.organization_service import OrganizationService
 
-# The scopes this surface understands, spelled out rather than imported from
-# `scoped_budget_service`, which reaches this package through `workspace_scope`.
-# The values are identical to `ScopeType`.
-SCOPE_ORGANIZATION = "organization"
-SCOPE_WORKSPACE = "workspace"
-SCOPE_WORKSPACE_MEMBER = "workspace_member"
-SCOPE_ORG_MEMBER = "org_member"
-SCOPE_API_TOKEN = "api_token"
-
-# Spelled as a `Literal` and not just as the constants above, because the
-# `Literal` is what puts the allowed values in the OpenAPI schema and refuses an
-# unknown one at the boundary, exactly as `ScopeType` does for the deployment
-# router. The constants stay for the resolution code, where a bare string
-# comparison reads worse than a name.
-OrganizationScopeType = Literal["organization", "workspace", "workspace_member", "org_member", "api_token"]
-ORGANIZATION_SCOPE_TYPES: tuple[str, ...] = get_args(OrganizationScopeType)
-
 _MAX_LIST_LIMIT = 1000
-
-_PERIOD_DESCRIPTION = (
-    "Seconds between resets, counted from the last one. Mutually exclusive with reset_alignment"
-)
-_ALIGNMENT_DESCRIPTION = (
-    "Reset on a UTC calendar boundary instead of a fixed number of seconds, which is the only way "
-    "to express a calendar month. Mutually exclusive with budget_duration_sec"
-)
 
 
 def _require_single_period_source(duration: int | None, alignment: str | None) -> None:
@@ -120,236 +113,6 @@ def _require_single_period_source(duration: int | None, alignment: str | None) -
     """
     if duration is not None and alignment is not None:
         raise TenancyValidationError("A budget resets on budget_duration_sec or on reset_alignment, not both")
-
-
-class OrganizationBudgetRates(BaseModel):
-    """The figures and the period a budget holds, shared by the create and update bodies."""
-
-    name: str | None = Field(default=None, max_length=200, description="Admin-facing label for the budget")
-    max_budget: float | None = Field(
-        default=None,
-        ge=0,
-        le=MAX_USD_LIMIT,
-        description="Maximum spend in USD over one period; null caps nothing",
-    )
-    token_limit: int | None = Field(
-        default=None,
-        ge=0,
-        le=MAX_COUNT_LIMIT,
-        description="Maximum tokens over one period; null caps nothing. Independent of max_budget",
-    )
-    request_limit: int | None = Field(
-        default=None,
-        ge=0,
-        le=MAX_COUNT_LIMIT,
-        description="Maximum requests over one period; null caps nothing. Independent of max_budget",
-    )
-    budget_duration_sec: int | None = Field(default=None, gt=0, description=_PERIOD_DESCRIPTION)
-    # The `Literal`, not a bare `str`: an unrecognized alignment is stored happily
-    # and then raises out of `period_window` the first time a window is derived
-    # from it, which is a 500 on creating a ceiling or on retiming one rather than
-    # a 422 on the request that introduced it. `_roll_expired_periods` degrades
-    # safely (it logs and leaves the exhausted window in place) but the API paths
-    # do not, so the value is refused at the boundary and published in the schema,
-    # matching what `CreateBudgetRequest` on the deployment route already does.
-    #
-    # The response models keep `str | None` on purpose: they echo whatever is
-    # stored, and narrowing them would turn a row holding an unexpected value into
-    # a failed read rather than a readable row someone can go and fix.
-    reset_alignment: ResetAlignment | None = Field(default=None, description=_ALIGNMENT_DESCRIPTION)
-
-
-class OrganizationBudgetCreate(OrganizationBudgetRates):
-    """Create one budget owned by the caller's organization."""
-
-
-class OrganizationBudgetUpdate(OrganizationBudgetRates):
-    """Replace a budget's label, figure and period.
-
-    Every field is optional and keyed on ``model_fields_set``, matching
-    the deployment-wide budget update's own: an *omitted* field is left alone, and an
-    explicit null clears it, so sending ``max_budget: null`` takes a budget back
-    to uncapped, which is what the dashboard's dialog does. The period pair is
-    still mutually exclusive, and setting one does not clear the other, which is
-    why :func:`_require_single_period_source` re-checks the *resulting* pair
-    rather than the submitted one.
-    """
-
-
-class OrganizationBudgetPublic(BaseModel):
-    """One of the organization's budgets, and how much of its own config names it.
-
-    Carries no spend rollup. ``BudgetResponse`` on the deployment surface sums
-    ``users.spend`` over the gateway's ``users`` table, which is deployment-wide
-    and has no tenancy column, so the same figure here would be a cross-tenant
-    read. What an organization's own spend is, is a question for Usage.
-
-    ``ceiling_count`` is the organization-relevant fact instead: how many of its
-    ceilings this budget currently holds, which is what makes a delete refuse.
-    """
-
-    budget_id: str
-    organization_id: uuid.UUID
-    name: str | None
-    max_budget: float | None
-    token_limit: int | None
-    request_limit: int | None
-    budget_duration_sec: int | None
-    reset_alignment: str | None
-    ceiling_count: int
-    created_at: str
-    updated_at: str
-
-    @classmethod
-    def from_model(cls, budget: Budget, *, ceiling_count: int) -> OrganizationBudgetPublic:
-        # `organization_id` is narrowed rather than declared optional: every row
-        # this service returns was filtered on the caller's own, so a null here
-        # would be a bug in the query and not a state the wire should describe.
-        if budget.organization_id is None:  # pragma: no cover - the queries filter it
-            raise OrganizationBudgetNotFoundError(budget.budget_id)
-        return cls(
-            budget_id=budget.budget_id,
-            organization_id=budget.organization_id,
-            name=budget.name,
-            # Narrowed on the way out: the cap is exact in the database, while
-            # the wire contract and the dashboard client stay float.
-            max_budget=as_float(budget.max_budget),
-            token_limit=budget.token_limit,
-            request_limit=budget.request_limit,
-            budget_duration_sec=budget.budget_duration_sec,
-            reset_alignment=budget.reset_alignment,
-            ceiling_count=ceiling_count,
-            created_at=budget.created_at.isoformat(),
-            updated_at=budget.updated_at.isoformat(),
-        )
-
-
-class OrganizationBudgetsPublic(BaseModel):
-    data: list[OrganizationBudgetPublic]
-    count: int
-
-
-class OrganizationScopedBudgetCreate(BaseModel):
-    """Attach one of the organization's budgets to a scope inside it."""
-
-    scope_type: OrganizationScopeType = Field(description="Which kind of identity this ceiling caps")
-    scope_id: str = Field(
-        min_length=1,
-        max_length=255,
-        description=(
-            "Id of the capped identity: this organization, one of its workspaces, "
-            "a membership in either, or an API key in one"
-        ),
-    )
-    # Absent means every provider; a present value must name a real instance.
-    # Resolution matches `provider_key_id == provider_instance OR IS NULL`, and a
-    # blank string is neither, so it would store, list, and never bind. Refused
-    # rather than folded into null, because null is the *wider* cap and coercing
-    # would silently cap more than the caller asked for.
-    provider_key_id: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=255,
-        pattern=r"^\S+$",
-        description=(
-            "Narrow the cap to one provider instance; omit or null to cap spend across every provider. "
-            "Must name a real instance: a blank value would store a ceiling that never binds"
-        ),
-    )
-    budget_id: str = Field(
-        min_length=1,
-        max_length=255,
-        description="The budget this ceiling enforces, which must be one this organization owns",
-    )
-    name: str | None = Field(default=None, max_length=200, description="Admin-facing label for this ceiling")
-
-
-class OrganizationScopedBudgetUpdate(BaseModel):
-    """Relabel a ceiling, or point it at a different budget of this organization's.
-
-    The scope and the provider narrowing are not editable, for the reason
-    the deployment-wide ceiling update gives: changing either moves the ceiling to
-    a different identity while carrying its spend, which is a delete and a
-    create, not an update.
-    """
-
-    budget_id: str | None = Field(default=None, min_length=1, max_length=255)
-    name: str | None = Field(default=None, max_length=200)
-
-
-class OrganizationScopedBudgetPublic(BaseModel):
-    """One ceiling inside the organization, and the figures it enforces.
-
-    The limit and the period are read through the budget rather than stored here,
-    and carried on the wire so a page can render a ceiling without fetching every
-    budget to resolve one id. Same reasoning as ``ScopedBudgetResponse``, whose
-    shape this deliberately mirrors.
-    """
-
-    id: str
-    scope_type: str
-    scope_id: str
-    provider_key_id: str | None
-    budget_id: str
-    name: str | None
-    max_budget: float | None
-    current_spend: float
-    reserved_spend: float
-    token_limit: int | None
-    current_tokens: int
-    reserved_tokens: int
-    request_limit: int | None
-    current_requests: int
-    reserved_requests: int
-    budget_duration_sec: int | None
-    reset_alignment: str | None
-    period_start: str | None
-    period_end: str | None
-    # Whether the budget behind this ceiling is one this organization owns, and
-    # so whether its figure can be changed here at all. False for a ceiling the
-    # otari-ai cutover pointed at a deployment budget: the ceiling is real and
-    # enforcing, and the amount it holds is set outside this organization.
-    manageable: bool
-    created_at: str
-    updated_at: str
-
-    @classmethod
-    def from_model(
-        cls,
-        ceiling: ScopedBudget,
-        budget: Budget,
-        *,
-        organization_id: uuid.UUID,
-    ) -> OrganizationScopedBudgetPublic:
-        return cls(
-            id=ceiling.id,
-            scope_type=ceiling.scope_type,
-            scope_id=ceiling.scope_id,
-            provider_key_id=ceiling.provider_key_id,
-            budget_id=ceiling.budget_id,
-            name=ceiling.name,
-            max_budget=as_float(budget.max_budget),
-            current_spend=float(ceiling.current_spend),
-            reserved_spend=float(ceiling.reserved_spend),
-            token_limit=budget.token_limit,
-            current_tokens=ceiling.current_tokens,
-            reserved_tokens=ceiling.reserved_tokens,
-            request_limit=budget.request_limit,
-            current_requests=ceiling.current_requests,
-            reserved_requests=ceiling.reserved_requests,
-            budget_duration_sec=budget.budget_duration_sec,
-            reset_alignment=budget.reset_alignment,
-            period_start=ceiling.period_start.isoformat() if ceiling.period_start else None,
-            period_end=ceiling.period_end.isoformat() if ceiling.period_end else None,
-            manageable=budget.organization_id == organization_id,
-            created_at=ceiling.created_at.isoformat(),
-            updated_at=ceiling.updated_at.isoformat(),
-        )
-
-
-class OrganizationScopedBudgetsPublic(BaseModel):
-    data: list[OrganizationScopedBudgetPublic]
-    count: int
 
 
 class OrganizationBudgetService:
@@ -422,9 +185,7 @@ class OrganizationBudgetService:
             if workspace_id is None:
                 return None
             return await self._workspace_organization_id(workspace_id)
-        # Not reachable through the routes, which validate `scope_type` against
-        # `ORGANIZATION_SCOPE_TYPES` in the schema, so an unknown one here is a
-        # caller inside this process and resolving to nothing is the safe answer.
+        # A stored scope_type this build does not know resolves to no owner, which refuses rather than leaks.
         return None
 
     async def _workspace_organization_id(self, workspace_id: uuid.UUID) -> uuid.UUID | None:
@@ -446,7 +207,7 @@ class OrganizationBudgetService:
         Both as 404 and with one message, so the response cannot be read as an
         oracle for whether another tenant holds that id.
         """
-        if scope_type not in ORGANIZATION_SCOPE_TYPES:
+        if scope_type not in SCOPE_TYPES:
             raise TenancyValidationError(f"Unknown scope type: {scope_type}")
         owner = await self._scope_organization_id(scope_type=scope_type, scope_id=scope_id)
         if owner is None or owner != organization.id:
@@ -521,7 +282,11 @@ class OrganizationBudgetService:
         }
         return OrganizationBudgetsPublic(
             data=[
-                OrganizationBudgetPublic.from_model(budget, ceiling_count=held.get(budget.budget_id, 0))
+                OrganizationBudgetPublic.from_model(
+                    budget,
+                    organization_id=organization.id,
+                    ceiling_count=held.get(budget.budget_id, 0),
+                )
                 for budget in budgets
             ],
             count=count,
@@ -545,7 +310,7 @@ class OrganizationBudgetService:
         await self.db.commit()
         await self.db.refresh(budget)
         # Freshly created, so nothing can name it yet.
-        return OrganizationBudgetPublic.from_model(budget, ceiling_count=0)
+        return OrganizationBudgetPublic.from_model(budget, organization_id=organization.id, ceiling_count=0)
 
     async def update_budget(
         self,
@@ -614,6 +379,7 @@ class OrganizationBudgetService:
         await self.db.refresh(budget)
         return OrganizationBudgetPublic.from_model(
             budget,
+            organization_id=organization.id,
             ceiling_count=await self._ceiling_count(budget.budget_id),
         )
 
@@ -792,11 +558,8 @@ class OrganizationBudgetService:
         )
         budget = await self._require_own_budget(organization=organization, budget_id=request.budget_id)
 
-        # The window opens now rather than on first spend, so a period-limited
-        # ceiling has a defined end before any request has arrived. An aligned one
-        # opens on the boundary it is already past, so its first period is the
-        # remainder of the calendar period it was created in. Same derivation as
-        # `POST /v1/scoped-budgets`, through the leaf module both import.
+        # The window opens at creation, so a period-limited ceiling has an end before its first request.
+        # An aligned ceiling opens on the current calendar boundary, so its first period is a partial one.
         window = period_window(
             datetime.now(UTC),
             duration=budget.budget_duration_sec,
@@ -918,16 +681,4 @@ class OrganizationBudgetService:
         return ceiling
 
 
-__all__ = [
-    "ORGANIZATION_SCOPE_TYPES",
-    "OrganizationScopeType",
-    "OrganizationBudgetCreate",
-    "OrganizationBudgetPublic",
-    "OrganizationBudgetService",
-    "OrganizationBudgetUpdate",
-    "OrganizationBudgetsPublic",
-    "OrganizationScopedBudgetCreate",
-    "OrganizationScopedBudgetPublic",
-    "OrganizationScopedBudgetUpdate",
-    "OrganizationScopedBudgetsPublic",
-]
+__all__ = ["OrganizationBudgetService"]
