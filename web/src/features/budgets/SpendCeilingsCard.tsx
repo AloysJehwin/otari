@@ -3,6 +3,7 @@ import { useState } from "react"
 
 import type { OrganizationSpendCeiling } from "@/client"
 import { DataTable, type DataTableColumn } from "@/design-system/data/DataTable"
+import { TablePagination } from "@/design-system/data/TablePagination"
 import { ConfirmDialog } from "@/design-system/feedback/ConfirmDialog"
 import { ErrorBanner } from "@/design-system/feedback/ErrorBanner"
 import {
@@ -26,6 +27,8 @@ import { SpendCeilingDialog } from "./SpendCeilingDialog"
 // leaving them out would let the page read as uncapped. The second is marked, so
 // a figure nobody here can change does not look editable.
 
+const DEFAULT_PAGE_SIZE = 25
+
 function spentLabel(ceiling: OrganizationSpendCeiling): string {
   const spent = formatUsd(ceiling.current_spend)
   if (ceiling.reserved_spend === 0) return spent
@@ -42,7 +45,9 @@ export function SpendCeilingsCard({
   organizationId: string
   organizationName: string
 }) {
-  const ceilings = useOrganizationSpendCeilings()
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  const ceilings = useOrganizationSpendCeilings(page, pageSize)
   const budgets = useOrganizationBudgets()
   const workspaces = useWorkspaces()
   const remove = useDeleteOrganizationSpendCeiling()
@@ -69,9 +74,20 @@ export function SpendCeilingsCard({
     setDialogOpen(false)
     setEditing(undefined)
     setPendingDelete(undefined)
+    // The page too, or the new organization is asked for a window its shorter
+    // list does not reach: that answers empty, the step-back below decrements,
+    // and the two walk down a page per request until they meet zero.
+    setPage(0)
   }
 
-  const rows = ceilings.data ?? []
+  const rows = ceilings.data?.data ?? []
+
+  // Deleting the last ceiling on a page leaves it empty while earlier pages
+  // still hold rows. Stepping back during render rather than in an effect, the
+  // way `TablePagination` adjusts its own page box.
+  if (page > 0 && ceilings.data && !ceilings.isFetching && rows.length === 0) {
+    setPage(page - 1)
+  }
   const workspaceRows = workspaces.data ?? []
 
   const openAdd = () => {
@@ -199,6 +215,21 @@ export function SpendCeilingsCard({
             isLoading={ceilings.isPending && !ceilings.data}
             emptyContent="Nothing is capped yet. Add a ceiling to hold an organization or a workspace to a budget."
           />
+          <div className="px-4 pb-3">
+            <TablePagination
+              page={page}
+              pageSize={pageSize}
+              total={ceilings.data?.count ?? null}
+              rowsOnPage={rows.length}
+              onPageChange={setPage}
+              onPageSizeChange={(size) => {
+                setPageSize(size)
+                setPage(0)
+              }}
+              isFetching={ceilings.isFetching}
+              label="spend ceilings"
+            />
+          </div>
         </Card.Content>
       </Card>
 

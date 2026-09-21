@@ -90,7 +90,15 @@ function mockApi({
     })
     if (url.includes(`${API_ROOT}/organizations/me/spend-ceilings`)) {
       if (method === "GET") {
-        return jsonResponse({ data: ceilings, count: ceilings.length })
+        // Honors the window, like the endpoint: a test that ignored it could
+        // not tell a paged read from a read of everything.
+        const params = new URL(url, "http://localhost").searchParams
+        const skip = Number(params.get("skip") ?? 0)
+        const limit = Number(params.get("limit") ?? 100)
+        return jsonResponse({
+          data: ceilings.slice(skip, skip + limit),
+          count: ceilings.length,
+        })
       }
       if (method === "DELETE") return jsonResponse({ message: "deleted" })
       return jsonResponse(spendCeiling(), writeStatus)
@@ -413,6 +421,113 @@ describe("OrganizationBudgetsPage", () => {
     // Reserved counts towards the cap and is not spend yet, so both are shown:
     // the ceiling refuses on their sum.
     expect(within(table).getByText(/held/)).toBeInTheDocument()
+  })
+
+  it("asks for a page of ceilings rather than walking them", async () => {
+    // otari#1420. The Overview used to read this collection too, for a
+    // worst-case aggregate, and a second reader wanting every row is what kept
+    // it a walk; that reader moved to the summary endpoint in otari#1425.
+    const requests = mockApi({
+      ceilings: Array.from({ length: 30 }, (_, index) =>
+        spendCeiling({
+          id: `cccccccc-1111-2222-3333-${String(index).padStart(12, "0")}`,
+        }),
+      ),
+    })
+    renderPage()
+
+    const table = await screen.findByRole("grid", {
+      name: "Organization spend ceilings",
+    })
+    // A header row and a page of 25, not all 30.
+    await waitFor(() => {
+      expect(within(table).getAllByRole("row")).toHaveLength(26)
+    })
+    expect(
+      requests.some((request) =>
+        request.url.includes("/spend-ceilings?skip=0&limit=25"),
+      ),
+    ).toBe(true)
+  })
+
+  it("pages the ceilings without reading the rest", async () => {
+    const user = userEvent.setup()
+    const requests = mockApi({
+      ceilings: Array.from({ length: 30 }, (_, index) =>
+        spendCeiling({
+          id: `cccccccc-1111-2222-3333-${String(index).padStart(12, "0")}`,
+        }),
+      ),
+    })
+    renderPage()
+
+    await screen.findByRole("grid", { name: "Organization spend ceilings" })
+    await user.click(
+      screen.getByRole("button", { name: "Next page, spend ceilings" }),
+    )
+
+    await waitFor(() => {
+      expect(
+        requests.some((request) =>
+          request.url.includes("/spend-ceilings?skip=25&limit=25"),
+        ),
+      ).toBe(true)
+    })
+    const table = await screen.findByRole("grid", {
+      name: "Organization spend ceilings",
+    })
+    // The tail: five rows and the header.
+    await waitFor(() => {
+      expect(within(table).getAllByRole("row")).toHaveLength(6)
+    })
+  })
+
+  it("goes back to the first page when the organization changes", async () => {
+    // Switching invalidates every query rather than remounting the page, so the
+    // window survives the switch. Left alone, the new organization is asked for
+    // a page its shorter list does not reach, that answers empty, the card steps
+    // back, and the two walk down a page per request until they meet zero.
+    const user = userEvent.setup()
+    const requests = mockApi({
+      ceilings: Array.from({ length: 30 }, (_, index) =>
+        spendCeiling({
+          id: `cccccccc-1111-2222-3333-${String(index).padStart(12, "0")}`,
+        }),
+      ),
+    })
+    const { switchTo } = renderPage()
+
+    await screen.findByRole("grid", { name: "Organization spend ceilings" })
+    await user.click(
+      screen.getByRole("button", { name: "Next page, spend ceilings" }),
+    )
+    await waitFor(() => {
+      expect(
+        requests.some((request) => request.url.includes("skip=25&limit=25")),
+      ).toBe(true)
+    })
+
+    const box = screen.getByRole("textbox", {
+      name: "Page number, spend ceilings",
+    })
+    expect(box).toHaveValue("2")
+
+    switchTo(
+      admin({
+        organization: {
+          ...admin().organization,
+          id: "99999999-1111-2222-3333-444444444444",
+        },
+      }),
+    )
+
+    // Back to the first window, so the new organization is never asked for a
+    // page its list may not reach.
+    await waitFor(() => {
+      expect(
+        screen.getByRole("textbox", { name: "Page number, spend ceilings" }),
+      ).toHaveValue("1")
+    })
   })
 
   it("marks a ceiling whose budget is set outside the organization", async () => {
