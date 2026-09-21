@@ -39,6 +39,9 @@ export const nav = (page: Page): Locator =>
  * the page's `h1` and fails strict mode with two elements. Scoping to `main` is
  * what `nav()` does in the other direction, and it stays right however the rail's
  * markup changes.
+ *
+ * Matched exactly, because the Budgets onboarding heading ("No budgets yet")
+ * would otherwise also substring-match that page's title.
  */
 export const pageHeading = (page: Page, name: string): Locator =>
   page.getByRole("main").getByRole("heading", { name, exact: true })
@@ -49,7 +52,7 @@ export async function login(page: Page): Promise<void> {
   await page.locator('input[type="password"]').press("Enter")
   // The sidebar appears once authenticated, regardless of the index landing
   // page.
-  await expect(nav(page).getByRole("link", { name: "Providers" })).toBeVisible()
+  await expect(nav(page).getByRole("link", { name: "Overview" })).toBeVisible()
 }
 
 // The dashboard authenticates with a session cookie, but the seeding and

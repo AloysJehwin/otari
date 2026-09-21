@@ -77,6 +77,7 @@ test.describe("standalone provider setup", () => {
     page,
   }) => {
     await login(page)
+    await openOrganization(page)
     await openPage(page, "Providers", "Providers")
 
     await page.getByRole("button", { name: "Add provider" }).click()
