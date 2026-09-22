@@ -741,6 +741,10 @@ describe("OverviewIndex routing", () => {
   })
 
   it("shows a getting-started overview and links to providers on a fresh gateway", async () => {
+    // The deployment's own credentials. Standalone serves both provider pages
+    // now, and this one stays right because only a deployment operator reaches
+    // this strip at all: a caller who is not one gets `OrganizationOverview`,
+    // which does not draw it.
     mockApi({ providers: [] })
     const user = userEvent.setup()
     renderPage(<OverviewIndex />)
@@ -755,10 +759,11 @@ describe("OverviewIndex routing", () => {
     expect(await screen.findByTestId("loc")).toHaveTextContent("/providers")
   })
 
-  it("sends a hosted deployment to the organization's provider keys instead", async () => {
+  it("sends a hosted deployment to the same organization page", async () => {
     // A hosted deployment does not report the `providers` surface at all, so
-    // the shell answers that route with "not available here"; the first thing a
-    // new operator clicks must not be that panel.
+    // the shell answers that route with "not available here". Both topologies
+    // land in the same place now, which is the point: the row that moved is the
+    // fallback, not this answer.
     mockApi({ providers: [] })
     const user = userEvent.setup()
     renderPage(

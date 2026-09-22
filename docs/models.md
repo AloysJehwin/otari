@@ -105,6 +105,14 @@ reach, narrowed by any workspace model restriction. A deployment whose providers
 all come from `config.yml` therefore shows every tenant the same catalog it
 always did.
 
+The models an organization's own key reaches are the ones offered on it, which
+is what the Providers page records when it pulls a key's catalog. Each carries a
+Serving switch, and a model switched off leaves the catalog and is refused at
+dispatch, because both read one allow-list. A key nobody has refreshed offers no
+rows at all, and that is not the same as offering none: it means the key is
+unnarrowed and reaches whatever its provider serves. Offering none, which is
+every model switched off, serves nothing.
+
 Aliases and stored routing policies are workspace-scoped rows, and the catalog
 reads them for a workspace rather than filtering them by target, so a name alone
 would cross a tenant boundary that the allow-list cannot see. A session is
@@ -229,9 +237,10 @@ The dashboard's Models page is this catalog: one card per model, with a rail
 of filters beside it, and a page per model with its facts and every offering
 compared in a table. "Use this model" opens a drawer beside the table with
 the request to copy, sent to the gateway's pick or to a provider pinned by
-its selector. It is read-only; a deployment rate is set on Model pricing, which the
-offering rows link to for an operator, and an organization admin is linked to
-its own rate override instead. A metered rate that differs from the provider's
+its selector. It is read-only; an organization's own rate is set on Providers,
+which an offering on one of that organization's keys links to. An offering the
+deployment supplies the credential for says so instead, because its rate is the
+deployment price list's rather than a tenant's. A metered rate that differs from the provider's
 list price is marked with the list price.
 
 With `public_catalog: true` (see [Configuration](configuration.md)), the same

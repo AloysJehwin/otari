@@ -19,13 +19,6 @@ export const MODELS = "models"
 export const CATALOG = "catalog"
 export const OVERVIEW = "overview"
 export const PRICING = "pricing"
-// The three operator reads beside the price list: an update the scheduled
-// refresh left waiting, the accepted-snapshot history, and each stored rate
-// against today's default. Children of PRICING, so a confirm or a price write
-// refetches them with the list.
-export const PRICING_PENDING = [PRICING, "pending"] as const
-export const PRICING_SNAPSHOTS = [PRICING, "snapshots"] as const
-export const PRICING_DRIFT = [PRICING, "drift"] as const
 export const SETTINGS = "settings"
 export const MAIL_SETTINGS = "mail-settings"
 export const MAINTENANCE_MODE = "maintenance-mode"
@@ -88,6 +81,17 @@ export const ORGANIZATION_GUARDRAILS = "organization-guardrails"
 // reason the two above have one: this is read by one page, and a credential
 // edit has no business refetching the organization context every page reads.
 export const ORGANIZATION_PROVIDER_KEYS = "organization-provider-keys"
+// The models an organization offers on one of its provider keys. Its own root
+// key rather than a child of ORGANIZATION_PROVIDER_KEYS: making a key default or
+// archiving one does not move a model row, and nesting would refetch every open
+// panel on each of those writes. Scoped per key below the root, because a page
+// can have one key's panel open at a time and the others must not refetch.
+export const ORGANIZATION_PROVIDER_MODELS = "organization-provider-models"
+// What a provider says it serves on a stored credential. The DISCOVERABLE rule
+// one scope down: answering dials the upstream, so it must not share a head with
+// anything a price or a toggle invalidates, or every save would re-dial.
+export const ORGANIZATION_PROVIDER_AVAILABLE_MODELS =
+  "organization-provider-available-models"
 // The organization's email-domain claims. Its own key for the same reason:
 // one page reads it, and claiming a domain has no bearing on anything else.
 export const ORGANIZATION_DOMAINS = "organization-domains"

@@ -13,7 +13,7 @@ an existing ``config.providers`` entry never consults these tables, and a
 bare ``provider:model`` selector never consults ``config.providers`` for a
 workspace that has an org-scoped key. See mozilla-ai/otari#643.
 
-Three tables, named to avoid a collision that already exists in this
+Four tables, named to avoid a collision that already exists in this
 codebase: ``ScopedBudget.provider_key_id`` (`models/budgets.py`) already
 means "an instance-name string, no FK". These tables use ``org_provider_key``
 throughout so no column here is ever ambiguously named ``provider_key_id``.
@@ -34,6 +34,11 @@ throughout so no column here is ever ambiguously named ``provider_key_id``.
   a per-workspace, per-key model allow-list. No rows for a
   ``(workspace, key)`` pair means every model is allowed; one or more rows
   narrows it to exactly those.
+- ``OrgProviderKeyModel`` (``org_provider_key_models``): the models the
+  organization offers on one key, each with a serving switch. Absent rows mean
+  the key is unnarrowed, the same convention as the table above; present rows
+  narrow the organization to the enabled ones, in the catalog and at dispatch
+  alike. The rate is not here: it lives in ``organization_model_pricing``.
 
 Style follows ``models/tenancy.py``: SQLModel (not the declarative ``Base``
 style) because these are tenancy-scoped tables sharing the same mixins and
@@ -42,7 +47,7 @@ style) because these are tenancy-scoped tables sharing the same mixins and
 join explicitly.
 
 CASCADE, not the ``RESTRICT`` default `AGENTS.md` states for a gateway table
-gaining tenancy scope, is deliberate here: these three tables are org- and
+gaining tenancy scope, is deliberate here: these four tables are org- and
 workspace-*owned* resources, like ``organization_member``/``workspace_member``
 (CASCADE), not durable request-plane history like ``usage_logs``/``api_keys``
 (RESTRICT, so a workspace delete cannot silently take budgets or usage with
@@ -54,11 +59,10 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Column, ForeignKeyConstraint, Index, UniqueConstraint, text
+from sqlalchemy import JSON, Column, ForeignKeyConstraint, Index, UniqueConstraint, text, true
 from sqlmodel import Field, SQLModel
 
 from gateway.models.base import CreatedAtMixin, PrimaryKeyMixin, UpdatedAtMixin, _timestamp_field
-from gateway.models.secret_fields import redact_secret_like_values
 
 # ``client_args`` is arbitrary JSON, and this gateway's own Bedrock support is
 # the reason a credential-shaped entry in it cannot simply be rejected outright:
@@ -75,58 +79,6 @@ from gateway.models.secret_fields import redact_secret_like_values
 # ==============================================================================
 # Org provider keys
 # ==============================================================================
-
-
-class OrgProviderKeyCreateRequest(SQLModel):
-    """What a caller sends to create a key.
-
-    The plaintext key is never stored as sent: the service encrypts it
-    (`services/secret_box.py`) and keeps only the ciphertext and ``last4``,
-    the same convention `providers.ProviderCredential` already uses.
-    """
-
-    provider: str = Field(max_length=255)
-    name: str = Field(max_length=255)
-    api_key: str | None = Field(default=None)
-    api_base: str | None = Field(default=None, max_length=1024)
-    client_args: dict[str, Any] | None = None
-
-
-class OrgProviderKeyUpdateRequest(SQLModel):
-    """A partial update. Every field is optional; only what is set is applied."""
-
-    name: str | None = Field(default=None, max_length=255)
-    api_key: str | None = None
-    api_base: str | None = Field(default=None, max_length=1024)
-    client_args: dict[str, Any] | None = None
-
-
-class OrgProviderKeyPublic(SQLModel):
-    """The API-facing shape. Never carries the key, only whether one is set."""
-
-    id: uuid.UUID
-    organization_id: uuid.UUID
-    provider: str
-    name: str
-    api_base: str | None = None
-    client_args: dict[str, Any] | None = None
-    last4: str | None = None
-    is_org_default: bool
-    usable: bool = Field(
-        description=(
-            "False when the stored credential cannot be decrypted on this deployment, so the key "
-            "supplies nothing at dispatch and the catalog withholds its provider. A row this deployment "
-            "cannot read is still listed, because deleting or replacing it is what fixes it."
-        )
-    )
-    archived_at: datetime | None = None
-    created_at: datetime
-    updated_at: datetime | None = None
-
-
-class OrgProviderKeysPublic(SQLModel):
-    data: list[OrgProviderKeyPublic]
-    count: int
 
 
 class OrgProviderKey(SQLModel, PrimaryKeyMixin, CreatedAtMixin, UpdatedAtMixin, table=True):
@@ -168,83 +120,10 @@ class OrgProviderKey(SQLModel, PrimaryKeyMixin, CreatedAtMixin, UpdatedAtMixin, 
     archived_at: datetime | None = _timestamp_field(default=None, column_kwargs={})
     is_org_default: bool = Field(default=False, nullable=False)
 
-    def to_public(self, *, usable: bool) -> OrgProviderKeyPublic:
-        """Serialize for the API. Never includes the key, only ``last4``.
-
-        ``usable`` is passed in rather than derived here: answering it means
-        decrypting, which belongs to the service layer that owns the secret box.
-        Required rather than defaulted so a caller cannot report a key as working
-        without having asked.
-
-        ``client_args`` is arbitrary JSON an admin can set (Bedrock's
-        ``region_name``, other client kwargs), and a credential-shaped field
-        placed there is never echoed back either: ``redact_secret_like_values``
-        masks it the same way ``encrypted_api_key`` itself already stays off
-        the wire (only ``last4`` comes back). That masking is the whole
-        protection the field gets, and it is enough because it holds for every
-        reader: this surface has one audience, the organization owners and
-        admins each of its routes is gated on.
-        """
-        return OrgProviderKeyPublic(
-            id=self.id,
-            organization_id=self.organization_id,
-            provider=self.provider,
-            name=self.name,
-            api_base=self.api_base,
-            client_args=redact_secret_like_values(self.client_args),
-            last4=self.last4,
-            is_org_default=self.is_org_default,
-            usable=usable,
-            archived_at=self.archived_at,
-            created_at=self.created_at,
-            updated_at=self.updated_at,
-        )
-
 
 # ==============================================================================
 # Workspace overrides
 # ==============================================================================
-
-
-class WorkspaceProviderKeyOverrideRequest(SQLModel):
-    """Tri-state: an omitted field leaves that flag unchanged.
-
-    Both fields false, whether that is the merged result or a value sent
-    explicitly, is a no-op the service deletes rather than stores: absence of
-    a row already means full inheritance from the organization default.
-    Setting one true auto-resolves the other when they would otherwise
-    conflict (pinning re-enables a disabled key; disabling un-pins a pinned
-    one); sending both true explicitly is refused.
-    """
-
-    is_default: bool | None = None
-    disabled: bool | None = None
-
-
-class WorkspaceProviderKeyOverridePublic(SQLModel):
-    """The effective view for one workspace+key: raw override flags plus the resolution."""
-
-    workspace_id: uuid.UUID
-    org_provider_key_id: uuid.UUID
-    is_default: bool
-    disabled: bool
-    is_effective_default: bool
-    # Whether this workspace disabled the key, and nothing more. A key it left
-    # alone reads as enabled even when the deployment cannot decrypt it, which is
-    # what `usable` is for: the two answer different questions and a caller
-    # deciding whether the key will serve needs both.
-    is_effective_enabled: bool
-    usable: bool
-    # Carried on the row rather than left to the per-key route: a caller
-    # summarizing a workspace wants the narrowing alongside the flags, and
-    # fetching it per key turns one read into one per key. Empty is the common
-    # answer and means every model the key serves, never none of them.
-    allowed_models: list[str]
-
-
-class WorkspaceProviderKeyOverridesPublic(SQLModel):
-    data: list[WorkspaceProviderKeyOverridePublic]
-
 
 class WorkspaceProviderKeyOverride(SQLModel, PrimaryKeyMixin, CreatedAtMixin, UpdatedAtMixin, table=True):
     """A workspace's departure from its organization's default for one key."""
@@ -280,14 +159,6 @@ class WorkspaceProviderKeyOverride(SQLModel, PrimaryKeyMixin, CreatedAtMixin, Up
 # ==============================================================================
 
 
-class WorkspaceProviderModelRestrictionRequest(SQLModel):
-    model: str = Field(max_length=255)
-
-
-class WorkspaceProviderModelRestrictionsPublic(SQLModel):
-    models: list[str]
-
-
 class WorkspaceProviderModelRestriction(SQLModel, PrimaryKeyMixin, CreatedAtMixin, table=True):
     """One allowed model for a workspace+key pair.
 
@@ -319,17 +190,54 @@ class WorkspaceProviderModelRestriction(SQLModel, PrimaryKeyMixin, CreatedAtMixi
     model: str = Field(max_length=255)
 
 
+# ==============================================================================
+# Offered models
+# ==============================================================================
+
+
+class OrgProviderKeyModel(SQLModel, PrimaryKeyMixin, CreatedAtMixin, UpdatedAtMixin, table=True):
+    """One model an organization offers on one of its provider keys.
+
+    Membership and a serving switch, nothing more. The rate lives in
+    ``organization_model_pricing`` keyed ``provider:model``, which is the store
+    ``services.pricing_service.find_model_pricing`` already reads first for a
+    request whose organization is known, so billing reads exactly what this
+    surface writes and no copy can drift.
+
+    **No rows for a key means the key is unnarrowed**, exactly as
+    ``WorkspaceProviderModelRestriction`` means it: a key that has never been
+    refreshed keeps reaching every model of its provider. One or more rows
+    narrows the organization to the enabled ones, which is how the serving
+    switch reaches both the catalog
+    (``services/tenancy/organization_model_access``) and dispatch
+    (``cached_org_model_restriction``).
+    """
+
+    __tablename__ = "org_provider_key_models"
+    __table_args__ = (
+        UniqueConstraint("org_provider_key_id", "model", name="uq_org_provider_key_models_key_model"),
+        # Same reasoning as `WorkspaceProviderKeyOverride`'s matching constraint.
+        ForeignKeyConstraint(
+            ["organization_id", "org_provider_key_id"],
+            ["org_provider_keys.organization_id", "org_provider_keys.id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    # Denormalized from the key's own organization; see the composite FK above
+    # for why it is stored rather than joined at read time.
+    organization_id: uuid.UUID
+    org_provider_key_id: uuid.UUID = Field(index=True)
+    model: str = Field(max_length=255)
+    # A model nothing prices is offered but not served, so a model the pricing
+    # data has not caught up with cannot be billed at nothing.
+    enabled: bool = Field(default=True, nullable=False, sa_column_kwargs={"server_default": true()})
+
+
+
 __all__ = [
     "OrgProviderKey",
-    "OrgProviderKeyCreateRequest",
-    "OrgProviderKeyPublic",
-    "OrgProviderKeyUpdateRequest",
-    "OrgProviderKeysPublic",
+    "OrgProviderKeyModel",
     "WorkspaceProviderKeyOverride",
-    "WorkspaceProviderKeyOverridePublic",
-    "WorkspaceProviderKeyOverrideRequest",
-    "WorkspaceProviderKeyOverridesPublic",
     "WorkspaceProviderModelRestriction",
-    "WorkspaceProviderModelRestrictionRequest",
-    "WorkspaceProviderModelRestrictionsPublic",
 ]

@@ -56,19 +56,12 @@ from gateway.core.database import create_session
 from gateway.log_config import logger
 from gateway.models.provider_keys import (
     OrgProviderKey,
-    OrgProviderKeyCreateRequest,
-    OrgProviderKeyPublic,
-    OrgProviderKeysPublic,
-    OrgProviderKeyUpdateRequest,
     WorkspaceProviderKeyOverride,
-    WorkspaceProviderKeyOverridePublic,
-    WorkspaceProviderKeyOverrideRequest,
-    WorkspaceProviderKeyOverridesPublic,
     WorkspaceProviderModelRestriction,
-    WorkspaceProviderModelRestrictionsPublic,
 )
 from gateway.models.secret_fields import restore_redacted_values
 from gateway.models.tenancy import User, Workspace
+from gateway.repositories.providers import OrgProviderKeyModelRepository
 from gateway.repositories.tenancy import (
     Candidate,
     OrgProviderKeyRepository,
@@ -76,6 +69,16 @@ from gateway.repositories.tenancy import (
     WorkspaceProviderModelRestrictionRepository,
     WorkspaceRepository,
     resolve_active_key,
+)
+from gateway.schemas.providers import (
+    OrgProviderKeyCreateRequest,
+    OrgProviderKeyPublic,
+    OrgProviderKeysPublic,
+    OrgProviderKeyUpdateRequest,
+    WorkspaceProviderKeyOverridePublic,
+    WorkspaceProviderKeyOverrideRequest,
+    WorkspaceProviderKeyOverridesPublic,
+    WorkspaceProviderModelRestrictionsPublic,
 )
 from gateway.services.secret_box import (
     SecretBoxUnavailableError,
@@ -202,9 +205,9 @@ def reset_org_provider_cache() -> None:
 async def refresh_org_provider_cache(db: AsyncSession) -> None:
     """Reload every organization's effective key per (workspace, provider) in one pass.
 
-    Four queries total, independent of how many organizations or workspaces
+    Five queries total, independent of how many organizations or workspaces
     exist: every workspace's organization, every non-archived key, every
-    override, and every model restriction. The precedence tiers
+    override, every model restriction, and every offered model. The precedence tiers
     (`resolve_active_key`) are then applied in Python once per (workspace,
     provider) pair that actually has a key, not once per workspace times
     every provider that exists anywhere.
@@ -225,7 +228,6 @@ async def refresh_org_provider_cache(db: AsyncSession) -> None:
     )
     overrides = (await db.execute(select(WorkspaceProviderKeyOverride))).scalars().all()
     restrictions = (await db.execute(select(WorkspaceProviderModelRestriction))).scalars().all()
-
     keys_by_org_provider: dict[tuple[uuid.UUID, str], list[OrgProviderKey]] = defaultdict(list)
     providers_by_org: dict[uuid.UUID, set[str]] = defaultdict(set)
     for key in keys:
@@ -237,6 +239,14 @@ async def refresh_org_provider_cache(db: AsyncSession) -> None:
     models_by_workspace_key: dict[tuple[uuid.UUID, uuid.UUID], list[str]] = defaultdict(list)
     for restriction in restrictions:
         models_by_workspace_key[(restriction.workspace_id, restriction.org_provider_key_id)].append(restriction.model)
+
+    # Asked for the live keys only, and keyed on every key that offers a row
+    # rather than on the ones offering a *served* row: a key whose every model is
+    # switched off has to read as an empty allow-list, not an absent one. The
+    # repository is what draws that distinction; see its docstring.
+    enabled_models_by_key = await OrgProviderKeyModelRepository(db).enabled_models_for_keys(
+        [key.id for key in keys]
+    )
 
     new_cache: dict[tuple[uuid.UUID, str], dict[str, Any]] = {}
     new_restrictions: dict[tuple[uuid.UUID, str], list[str]] = {}
@@ -260,9 +270,22 @@ async def refresh_org_provider_cache(db: AsyncSession) -> None:
                     workspace_id,
                 )
                 continue
-            allowed_models = models_by_workspace_key.get((workspace_id, active.id))
-            if allowed_models:
-                new_restrictions[(workspace_id, provider)] = allowed_models
+            # Two narrowings, and neither may widen the other. The workspace's
+            # own restriction is what it was; the organization's offered models
+            # are the serving switches on this key. An entry is stored when
+            # either exists, **including when the result is empty**: an
+            # organization that switched every model off serves none, and
+            # omitting the entry would read as unrestricted.
+            restricted = models_by_workspace_key.get((workspace_id, active.id))
+            offered = enabled_models_by_key.get(active.id)
+            if offered is None and restricted is None:
+                continue
+            if offered is None:
+                new_restrictions[(workspace_id, provider)] = list(restricted or ())
+            elif restricted is None:
+                new_restrictions[(workspace_id, provider)] = list(offered)
+            else:
+                new_restrictions[(workspace_id, provider)] = sorted(set(offered) & set(restricted))
 
     _org_cache.clear()
     _org_cache.update(new_cache)
@@ -403,7 +426,7 @@ class OrgProviderKeyService:
         membership: a row names the provider, the endpoint and the credential's
         last four, which the roles matrix keeps out of a plain member's sight
         (otari-ai#1944). One audience for the whole surface is also what lets
-        `OrgProviderKey.to_public` serialize ``client_args`` for every caller.
+        `OrgProviderKeyPublic.from_row` serialize ``client_args`` for every caller.
         ``count`` is the total matching rows, not the page size, so a caller
         can page correctly (mirrors ``WorkspaceService.list_workspaces``).
         """
@@ -412,7 +435,10 @@ class OrgProviderKeyService:
         rows, count = await self.keys.list_for_organization(
             organization.id, include_archived=include_archived, skip=skip, limit=limit
         )
-        return OrgProviderKeysPublic(data=[row.to_public(usable=key_is_usable(row)) for row in rows], count=count)
+        return OrgProviderKeysPublic(
+            data=[OrgProviderKeyPublic.from_row(row, usable=key_is_usable(row)) for row in rows],
+            count=count,
+        )
 
     async def create_key_for_user(
         self,
@@ -453,7 +479,7 @@ class OrgProviderKeyService:
             raise OrgProviderKeyAlreadyExistsError(provider, name) from None
 
         await refresh_org_provider_cache(self.db)
-        return key.to_public(usable=key_is_usable(key))
+        return OrgProviderKeyPublic.from_row(key, usable=key_is_usable(key))
 
     async def update_key_for_user(
         self,
@@ -487,7 +513,7 @@ class OrgProviderKeyService:
         if "api_base" in update_data:
             await _gate_api_base(update_data["api_base"])
         if "client_args" in update_data:
-            # ``to_public`` masks a credential-shaped entry, so an editor
+            # ``from_row`` masks a credential-shaped entry, so an editor
             # resubmitting the whole object sends the mask for the entries it was
             # never shown; those keep their stored value.
             update_data["client_args"] = restore_redacted_values(update_data["client_args"], key.client_args)
@@ -504,7 +530,7 @@ class OrgProviderKeyService:
             raise OrgProviderKeyAlreadyExistsError(key.provider, str(update_data.get("name", key.name))) from None
 
         await refresh_org_provider_cache(self.db)
-        return updated.to_public(usable=key_is_usable(updated))
+        return OrgProviderKeyPublic.from_row(updated, usable=key_is_usable(updated))
 
     async def archive_key_for_user(self, *, user: User, key_id: uuid.UUID) -> OrgProviderKeyPublic:
         """Archive a key. Organization owners and admins only.
@@ -523,7 +549,7 @@ class OrgProviderKeyService:
         updated = await self.keys.update_key(key, {"archived_at": datetime.now(UTC), "is_org_default": False})
         await self.db.commit()
         await refresh_org_provider_cache(self.db)
-        return updated.to_public(usable=key_is_usable(updated))
+        return OrgProviderKeyPublic.from_row(updated, usable=key_is_usable(updated))
 
     async def restore_key_for_user(self, *, user: User, key_id: uuid.UUID) -> OrgProviderKeyPublic:
         """Restore an archived key. Organization owners and admins only."""
@@ -537,7 +563,7 @@ class OrgProviderKeyService:
         updated = await self.keys.update_key(key, {"archived_at": None})
         await self.db.commit()
         await refresh_org_provider_cache(self.db)
-        return updated.to_public(usable=key_is_usable(updated))
+        return OrgProviderKeyPublic.from_row(updated, usable=key_is_usable(updated))
 
     async def delete_key_for_user(self, *, user: User, key_id: uuid.UUID) -> None:
         """Permanently delete an archived key. Organization owners and admins only.
@@ -576,7 +602,7 @@ class OrgProviderKeyService:
             raise OrgDefaultProviderKeyConflictError(key.provider) from None
 
         await refresh_org_provider_cache(self.db)
-        return updated.to_public(usable=key_is_usable(updated))
+        return OrgProviderKeyPublic.from_row(updated, usable=key_is_usable(updated))
 
     # ------------------------------------------------------------------
     # Workspace overrides

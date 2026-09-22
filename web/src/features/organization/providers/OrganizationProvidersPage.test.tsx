@@ -1,13 +1,26 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { ReactElement } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import type { OrganizationContext, OrgProviderKey } from "@/client"
-import { OrganizationProviderKeysPage } from "@/features/organization/OrganizationProviderKeysPage"
+import type {
+  OrganizationContext,
+  OrganizationPricingOverride,
+  OrgProviderKey,
+  OrgProviderModel,
+} from "@/client"
+import { OrganizationProvidersPage } from "@/features/organization/providers/OrganizationProvidersPage"
 import { API_ROOT } from "@/shared/api/client"
-import { organizationContext, orgProviderKey } from "@/tests/fixtures"
+import {
+  organizationContext,
+  organizationPricingOverride,
+  orgProviderKey,
+  orgProviderModel,
+} from "@/tests/fixtures"
+import { renderWithRouter } from "@/tests/router"
+
+const KEY_ID = "66666666-6666-6666-6666-666666666666"
 
 interface Request {
   url: string
@@ -31,10 +44,15 @@ interface MockOpts {
   // Refuse the catalog read, which is what a deployment that still gates it on
   // the operator does to this page's audience.
   catalogFails?: boolean
+  // The models offered on whichever key a test expands.
+  models?: OrgProviderModel[]
+  // The organization's own stored rates, which the editor seeds from.
+  overrides?: OrganizationPricingOverride[]
 }
 
 function mockApi(opts: MockOpts = {}) {
   const keys = opts.keys ?? []
+  const models = opts.models ?? []
   const requests: Request[] = []
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input)
@@ -45,6 +63,11 @@ function mockApi(opts: MockOpts = {}) {
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     })
 
+    // Ahead of the key routes, because every one of these is nested under a key
+    // and `/provider-keys` matches their URLs too.
+    if (url.includes("/models") || url.includes("/available-models")) {
+      return jsonResponse({ count: models.length, data: models, models: [] })
+    }
     if (url.includes("/provider-keys")) {
       if (method === "GET") {
         return jsonResponse({ count: keys.length, data: keys })
@@ -71,29 +94,62 @@ function mockApi(opts: MockOpts = {}) {
         opts.catalog ?? [{ id: "anthropic", name: "Anthropic" }],
       )
     }
+    // Ahead of the context catch-all, because that path is a prefix of this one.
+    if (url.includes(`${API_ROOT}/organizations/me/pricing`)) {
+      // Narrowed the way the server narrows it, so a test can open the editor on
+      // a second model and see what that model's own read answers.
+      const asked = new URL(url, "http://x").searchParams.get("model_key")
+      const overrides = (opts.overrides ?? []).filter(
+        (row) => asked === null || row.model_key === asked,
+      )
+      return jsonResponse({ count: overrides.length, data: overrides })
+    }
     return jsonResponse(opts.context ?? organizationContext())
   })
   return requests
 }
 
-function renderPage(ui: ReactElement) {
+/**
+ * Answer the organization's own rate list, which the page reads to seed its rate
+ * editor and to refuse an overlapping period before sending one.
+ *
+ * Answered explicitly rather than left to a catch-all, so a test about one of
+ * this page's *other* reads failing is not also a test about this one failing:
+ * a second error banner would make an assertion on "the alert" ambiguous, and
+ * whether that race lands depends on which query settles first.
+ */
+function organizationRatesAnswer(url: string): Response | undefined {
+  if (url.includes(`${API_ROOT}/organizations/me/pricing`)) {
+    return jsonResponse({ count: 0, data: [] })
+  }
+  return undefined
+}
+
+// A live router, not a stub: the page keeps which provider's models are open and
+// which model's rate is being edited in the URL, so `useUrlState` needs a real
+// location to read. `renderWithRouter` awaits the router's first resolution,
+// which is why every caller is awaited.
+function renderPage(ui: ReactElement, url = "/organization/provider-keys") {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
+  return renderWithRouter(
+    <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+    { url },
+  )
 }
 
 afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe("OrganizationProviderKeysPage", () => {
+describe("OrganizationProvidersPage", () => {
   it("keeps the page's add action visible while the dialog is open", async () => {
     // It used to hide while the form was a band on the page. The form is over
     // the page now, and the trigger is where focus returns when it closes.
     mockApi({})
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     const trigger = await screen.findByRole("button", {
       name: "Add provider key",
@@ -109,7 +165,7 @@ describe("OrganizationProviderKeysPage", () => {
     // decrypts, so it serves nothing and its models leave the catalog. Without
     // this the page is indistinguishable from a working one.
     mockApi({ keys: [orgProviderKey({ name: "Production", usable: false })] })
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     expect(await screen.findByText("UNREADABLE")).toBeInTheDocument()
     expect(
@@ -120,7 +176,7 @@ describe("OrganizationProviderKeysPage", () => {
 
   it("says nothing about decryption when every key is readable", async () => {
     mockApi({ keys: [orgProviderKey({ name: "Production" })] })
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await screen.findByText("Production")
     expect(screen.queryByText("UNREADABLE")).not.toBeInTheDocument()
@@ -137,7 +193,7 @@ describe("OrganizationProviderKeysPage", () => {
     // this page's owners and admins do not pass) was invisible from the form.
     mockApi({ catalogFails: true })
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await user.click(
       await screen.findByRole("button", { name: "Add provider key" }),
@@ -162,7 +218,7 @@ describe("OrganizationProviderKeysPage", () => {
     // `seeded` still holds, so the guard arms before anything is typed.
     mockApi()
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await user.click(
       await screen.findByRole("button", { name: "Add provider key" }),
@@ -205,7 +261,7 @@ describe("OrganizationProviderKeysPage", () => {
   it("does not carry a refused create's banner into the next open", async () => {
     mockApi({ createFails: true })
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await user.click(
       await screen.findByRole("button", { name: "Add provider key" }),
@@ -245,7 +301,7 @@ describe("OrganizationProviderKeysPage", () => {
         }),
       ],
     })
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     expect(await screen.findByText("Production")).toBeInTheDocument()
     expect(screen.getByText("DEFAULT")).toBeInTheDocument()
@@ -263,7 +319,7 @@ describe("OrganizationProviderKeysPage", () => {
     // an instance name and belongs to the process, so a page that read it would
     // be showing every tenant the same rows.
     const requests = mockApi({ keys: [orgProviderKey()] })
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await screen.findByText("Production")
     expect(
@@ -281,7 +337,7 @@ describe("OrganizationProviderKeysPage", () => {
   it("creates a key for the provider that was picked", async () => {
     const requests = mockApi()
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await user.click(
       await screen.findByRole("button", { name: "Add provider key" }),
@@ -318,7 +374,7 @@ describe("OrganizationProviderKeysPage", () => {
   it("asks Bedrock for its region by name and sends it in client_args", async () => {
     const requests = mockApi({ catalog: [{ id: "bedrock", name: "Bedrock" }] })
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await user.click(
       await screen.findByRole("button", { name: "Add provider key" }),
@@ -352,7 +408,7 @@ describe("OrganizationProviderKeysPage", () => {
   it("will not add a Bedrock key until the region is there and looks like one", async () => {
     const requests = mockApi({ catalog: [{ id: "bedrock", name: "Bedrock" }] })
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await user.click(
       await screen.findByRole("button", { name: "Add provider key" }),
@@ -388,7 +444,7 @@ describe("OrganizationProviderKeysPage", () => {
   it("will not add a Bedrock key with half of an IAM key pair", async () => {
     const requests = mockApi({ catalog: [{ id: "bedrock", name: "Bedrock" }] })
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await user.click(
       await screen.findByRole("button", { name: "Add provider key" }),
@@ -429,7 +485,7 @@ describe("OrganizationProviderKeysPage", () => {
     // supported place for Bedrock's aws_secret_access_key.
     mockApi()
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await user.click(
       await screen.findByRole("button", { name: "Add provider key" }),
@@ -451,7 +507,7 @@ describe("OrganizationProviderKeysPage", () => {
       ],
     })
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await user.click(
       await screen.findByRole("button", { name: "Add provider key" }),
@@ -486,7 +542,7 @@ describe("OrganizationProviderKeysPage", () => {
       ],
     })
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await user.click(await screen.findByRole("button", { name: "Edit" }))
     expect(
@@ -533,7 +589,7 @@ describe("OrganizationProviderKeysPage", () => {
     // operator did not touch.
     const requests = mockApi({ keys: [orgProviderKey()] })
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await user.click(await screen.findByRole("button", { name: "Edit" }))
     await user.click(await screen.findByRole("button", { name: "Save" }))
@@ -548,7 +604,7 @@ describe("OrganizationProviderKeysPage", () => {
   it("makes a key the organization default", async () => {
     const requests = mockApi({ keys: [orgProviderKey()] })
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await user.click(
       await screen.findByRole("button", { name: "Make default" }),
@@ -573,7 +629,7 @@ describe("OrganizationProviderKeysPage", () => {
       ],
     })
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await screen.findByText("Production")
     expect(screen.queryByText("Retired")).toBeNull()
@@ -601,7 +657,7 @@ describe("OrganizationProviderKeysPage", () => {
       ],
     })
     const user = userEvent.setup()
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     await user.click(await screen.findByText("Show archived (1)"))
     await user.click(screen.getByRole("button", { name: "Delete" }))
@@ -640,7 +696,7 @@ describe("OrganizationProviderKeysPage", () => {
         deployment_operator: false,
       }),
     })
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     expect(
       await screen.findByText(/Only organization owners and admins/),
@@ -670,7 +726,7 @@ describe("OrganizationProviderKeysPage", () => {
         provider_key_encryption_available: false,
       }),
     })
-    renderPage(<OrganizationProviderKeysPage />)
+    await renderPage(<OrganizationProvidersPage />)
 
     expect(
       await screen.findByRole("button", { name: "Add provider key" }),
@@ -682,8 +738,15 @@ describe("OrganizationProviderKeysPage", () => {
     // The bug this page shipped with (#839): the flag was inferred from
     // /api/v1/settings, which 403s for every organization owner, so the banner
     // reported a missing key on a deployment where the write path works.
-    const requests = mockApi()
-    renderPage(<OrganizationProviderKeysPage />)
+    //
+    // An owner who is *not* the deployment's operator, which is the whole case:
+    // the deployment price bands below carry their own `/settings` read and an
+    // operator legitimately makes it, so a context claiming both authorities
+    // would prove nothing about where this page gets the encryption flag.
+    const requests = mockApi({
+      context: organizationContext({ deployment_operator: false }),
+    })
+    await renderPage(<OrganizationProvidersPage />)
 
     expect(
       await screen.findByRole("button", { name: "Add provider key" }),
@@ -701,12 +764,16 @@ describe("OrganizationProviderKeysPage", () => {
     // only because `canManage(undefined)` is false and the banner is gated on
     // it, which is a role check standing in for an encryption one; this pins the
     // outcome so a later change to either gate cannot quietly restore the lie.
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
-      String(input).includes("/provider-keys")
-        ? jsonResponse({ count: 0, data: [] })
-        : jsonResponse({ detail: "Tenancy is unavailable" }, 500),
-    )
-    renderPage(<OrganizationProviderKeysPage />)
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input)
+      return (
+        organizationRatesAnswer(url) ??
+        (url.includes("/provider-keys")
+          ? jsonResponse({ count: 0, data: [] })
+          : jsonResponse({ detail: "Tenancy is unavailable" }, 500))
+      )
+    })
+    await renderPage(<OrganizationProvidersPage />)
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Tenancy is unavailable",
@@ -725,15 +792,177 @@ describe("OrganizationProviderKeysPage", () => {
   })
 
   it("reports a list that could not be read instead of an empty table", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
-      String(input).includes("/provider-keys")
-        ? jsonResponse({ detail: "Tenancy is unavailable" }, 500)
-        : jsonResponse(organizationContext()),
-    )
-    renderPage(<OrganizationProviderKeysPage />)
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input)
+      return (
+        organizationRatesAnswer(url) ??
+        (url.includes("/provider-keys")
+          ? jsonResponse({ detail: "Tenancy is unavailable" }, 500)
+          : jsonResponse(organizationContext()))
+      )
+    })
+    await renderPage(<OrganizationProvidersPage />)
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Tenancy is unavailable",
     )
+  })
+
+  it("opens the rate editor on the rate the model already has, not on a blank form", async () => {
+    // The deep link is in the URL on the first render and the rates are not, so
+    // a dialog opened before they land seeds itself from nothing and keeps that:
+    // its fields read once, at mount. An admin following "Set your rate" from a
+    // model page would then see an empty form over a rate that exists and
+    // replace it by saving.
+    mockApi({
+      keys: [orgProviderKey({ id: KEY_ID, name: "Production" })],
+      overrides: [organizationPricingOverride()],
+    })
+
+    await renderPage(
+      <OrganizationProvidersPage />,
+      "/organization/provider-keys?override=openai%3Agpt-4o",
+    )
+
+    const dialog = await screen.findByRole("dialog")
+    expect(within(dialog).getByLabelText("Input, per 1M tokens")).toHaveValue(
+      "2.5",
+    )
+    expect(within(dialog).getByLabelText("Output, per 1M tokens")).toHaveValue(
+      "10",
+    )
+  })
+
+  it("reseeds the rate editor when it is opened on a second model", async () => {
+    // The rates query keeps the previous model's rows as placeholder data while
+    // the next model's read is in flight, so "the data has arrived" is true and
+    // wrong: the dialog remounts on the new model and seeds from the old one's
+    // answer, which holds no row for it. Blank fields over a rate that exists,
+    // the same failure the deep link had, reached by opening a second model.
+    const user = userEvent.setup()
+    mockApi({
+      keys: [orgProviderKey({ id: KEY_ID, name: "Production" })],
+      models: [
+        orgProviderModel({ id: "m1", model: "gpt-4o" }),
+        orgProviderModel({ id: "m2", model: "gpt-4o-mini" }),
+      ],
+      overrides: [
+        organizationPricingOverride(),
+        organizationPricingOverride({
+          id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          model_key: "openai:gpt-4o-mini",
+          input_price_per_million: 0.15,
+          output_price_per_million: 0.6,
+        }),
+      ],
+    })
+
+    await renderPage(
+      <OrganizationProvidersPage />,
+      `/organization/provider-keys?provider=${KEY_ID}&override=openai%3Agpt-4o`,
+    )
+    const first = await screen.findByRole("dialog")
+    expect(within(first).getByLabelText("Input, per 1M tokens")).toHaveValue(
+      "2.5",
+    )
+    await user.keyboard("{Escape}")
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Set your rate for gpt-4o-mini",
+      }),
+    )
+
+    const second = await screen.findByRole("dialog")
+    await waitFor(() =>
+      expect(within(second).getByLabelText("Input, per 1M tokens")).toHaveValue(
+        "0.15",
+      ),
+    )
+  })
+
+  it("expands the provider named by the URL", async () => {
+    mockApi({
+      keys: [orgProviderKey({ id: KEY_ID, name: "Production" })],
+      models: [orgProviderModel({ model: "gpt-4o" })],
+    })
+
+    await renderPage(
+      <OrganizationProvidersPage />,
+      `/organization/provider-keys?provider=${KEY_ID}`,
+    )
+
+    expect(
+      await screen.findByRole("grid", { name: "Models on Production" }),
+    ).toBeInTheDocument()
+  })
+
+  it("reports a rate list that could not be read instead of opening an empty editor", async () => {
+    // The editor is held shut until the rates land, so a read that never lands
+    // has to say so: silence plus no dialog reads as a link that did nothing.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes(`${API_ROOT}/organizations/me/pricing`)) {
+        return jsonResponse({ detail: "Pricing is unavailable" }, 500)
+      }
+      if (url.includes("/provider-keys")) {
+        return jsonResponse({ count: 0, data: [] })
+      }
+      return jsonResponse(organizationContext())
+    })
+
+    await renderPage(
+      <OrganizationProvidersPage />,
+      "/organization/provider-keys?override=openai%3Agpt-4o",
+    )
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Pricing is unavailable",
+    )
+    expect(screen.queryByRole("dialog")).toBeNull()
+  })
+
+  it("does not open the rate editor for a member who cannot manage the organization", async () => {
+    // The deep link is a URL anybody can type. Rates decide what every member is
+    // billed, so the editor answers to the same role the rest of the page does.
+    mockApi({
+      // Both flags, for the reason the keys test above gives.
+      context: organizationContext({
+        role: "member",
+        deployment_operator: false,
+      }),
+      overrides: [organizationPricingOverride()],
+    })
+
+    await renderPage(
+      <OrganizationProvidersPage />,
+      "/organization/provider-keys?override=openai%3Agpt-4o",
+    )
+
+    expect(
+      await screen.findByText(/Only organization owners and admins/),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole("dialog")).toBeNull()
+  })
+
+  it("reads the models page from the URL, so an expanded panel is shareable to the row", async () => {
+    // The page an expanded panel is on travels with the link, the way `provider`
+    // and `override` already do. Snapped to an offered size, so a stale or
+    // hand-edited `models_size` cannot reach the API as a limit it never offers.
+    const requests = mockApi({
+      keys: [orgProviderKey({ id: KEY_ID, name: "Production" })],
+      models: [orgProviderModel({ model: "gpt-4o" })],
+    })
+
+    await renderPage(
+      <OrganizationProvidersPage />,
+      `/organization/provider-keys?provider=${KEY_ID}&models_page=2&models_size=999`,
+    )
+    await screen.findByRole("grid", { name: "Models on Production" })
+
+    const read = requests.find((request) => request.url.includes("/models?"))
+    expect(read?.url).toContain("skip=50")
+    expect(read?.url).toContain("limit=25")
   })
 })

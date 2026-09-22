@@ -188,11 +188,9 @@ function compareOfferings(
 }
 
 function offeringColumns({
-  canPrice,
   canOverride,
   withUsage,
 }: {
-  canPrice: boolean
   canOverride: boolean
   withUsage: boolean
 }): DataTableColumn<OfferingRow>[] {
@@ -309,21 +307,7 @@ function offeringColumns({
         ),
     })
   }
-  if (canPrice) {
-    columns.push({
-      id: "actions",
-      header: "Actions",
-      cell: ({ offering: row }) => (
-        <Link
-          to="/organization/pricing"
-          search={{ model: row.selector }}
-          className="text-link hover:text-link-hover"
-        >
-          Edit rate
-        </Link>
-      ),
-    })
-  } else if (canOverride) {
+  if (canOverride) {
     // An organization admin cannot touch the deployment's price, but may set
     // what their own organization is billed for a model it supplies the key
     // for. An offering on one of the deployment's own instances is not one of
@@ -336,7 +320,7 @@ function offeringColumns({
       cell: ({ offering: row }) =>
         row.credential === "organization" ? (
           <Link
-            to="/organization/pricing"
+            to="/organization/provider-keys"
             search={{ override: row.selector }}
             className="text-link hover:text-link-hover"
           >
@@ -359,8 +343,14 @@ export function ModelDetailView({
   publicView?: boolean
 }) {
   const organization = useOrganizationContext(!publicView)
-  const canPrice = !publicView && isDeploymentOperator(organization.data)
-  const canOverride = !publicView && !canPrice && canManage(organization.data)
+  // Not a pricing authority here: rates are set per model on Providers, which
+  // answers to the organization role. It decides the two hints below that point
+  // at deployment-wide pages.
+  const isOperator = !publicView && isDeploymentOperator(organization.data)
+  // Includes an operator: on a standalone deployment they are also the single
+  // organization's owner, and excluding them would leave the one caller who can
+  // set a rate without the link to set it.
+  const canOverride = !publicView && canManage(organization.data)
   const selected = useCatalogModel(modelId)
   const [quantization, setQuantization] = useState("all")
   const [useModel, setUseModel] = useState(false)
@@ -474,12 +464,12 @@ export function ModelDetailView({
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-x-5 gap-y-3">
-            {canPrice ? (
+            {canOverride ? (
               <Link
-                to="/organization/pricing"
+                to="/organization/provider-keys"
                 className="inline-flex min-h-9 items-center text-sm text-link hover:text-link-hover"
               >
-                Model pricing
+                Providers
               </Link>
             ) : null}
             {model.offerings.length > 0 ? (
@@ -584,7 +574,6 @@ export function ModelDetailView({
               <DataTable
                 ariaLabel={`Offerings of ${model.name}`}
                 columns={offeringColumns({
-                  canPrice,
                   canOverride,
                   withUsage,
                 })}
@@ -606,7 +595,7 @@ export function ModelDetailView({
             <p className="text-caption">
               Default pricing is off, so an offering with no stored rate is
               unpriced here even where genai-prices publishes one.
-              {canPrice ? " Both switches live on Settings." : ""}
+              {isOperator ? " Both switches live on Settings." : ""}
             </p>
           ) : null}
           {listPriceDiffers ? (
@@ -621,7 +610,7 @@ export function ModelDetailView({
               Also served by {elsewhere(model.also_available_from)}, which{" "}
               {model.also_available_from.length === 1 ? "is" : "are"} not
               configured here.
-              {canPrice ? (
+              {isOperator ? (
                 <>
                   {" "}
                   <Link

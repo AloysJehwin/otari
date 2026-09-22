@@ -284,19 +284,37 @@ describe("ModelDetailPage", () => {
     )
   })
 
-  it("links an operator to Model pricing to edit a rate, and nobody else", async () => {
+  it("offers a deployment operator no rate link on a deployment-supplied offering", async () => {
+    // Operating the deployment stopped being a pricing authority here when the
+    // deployment price editor went away: rates are set per model on Providers,
+    // which answers to the organization role, and a model the deployment
+    // supplies the credential for is not an organization's to re-price. So the
+    // cell states who prices it rather than offering an editor that no longer
+    // exists.
     mockApi()
     renderPage(<ModelDetailPage modelId="z-ai/glm-5.3" />)
 
-    const links = await screen.findAllByRole("link", { name: "Edit rate" })
-    expect(links.map((link) => link.getAttribute("href"))).toEqual([
-      "/organization/pricing?model=fireworks%3Aaccounts%2Ffireworks%2Fmodels%2Fglm-5p3",
-      "/organization/pricing?model=nebius%3Azai-org%2FGLM-5.3",
-    ])
+    await screen.findByRole("grid", { name: "Offerings of GLM-5.3" })
+    expect(screen.queryByRole("link", { name: "Edit rate" })).toBeNull()
+    expect(screen.getAllByText("Deployment priced").length).toBeGreaterThan(0)
     // Nothing on this page writes a price.
     expect(
       screen.queryByRole("button", { name: /set price|edit price/i }),
     ).toBeNull()
+  })
+
+  it("gives a deployment operator its organization's own rate link", async () => {
+    // On a standalone deployment the operator *is* the single organization's
+    // owner, so a gate that excluded them would leave the one caller who can set
+    // a rate without the link to set it.
+    mockApi()
+    GLM_DETAIL.offerings[0] = offering({ credential: "organization" })
+    renderPage(<ModelDetailPage modelId="z-ai/glm-5.3" />)
+
+    const links = await screen.findAllByRole("link", { name: "Set your rate" })
+    expect(links.map((link) => link.getAttribute("href"))).toContain(
+      "/organization/provider-keys?override=nebius%3Azai-org%2FGLM-5.3",
+    )
   })
 
   it("points an organization admin at its own rate override, not the deployment's price", async () => {
@@ -313,7 +331,7 @@ describe("ModelDetailPage", () => {
 
     const links = await screen.findAllByRole("link", { name: "Set your rate" })
     expect(links.map((link) => link.getAttribute("href"))).toContain(
-      "/organization/pricing?override=nebius%3Azai-org%2FGLM-5.3",
+      "/organization/provider-keys?override=nebius%3Azai-org%2FGLM-5.3",
     )
     expect(screen.queryByRole("link", { name: "Edit rate" })).toBeNull()
   })
@@ -384,13 +402,22 @@ describe("ModelDetailPage", () => {
   })
 
   it("keeps the page read-only for a member", async () => {
-    mockApi({ context: organizationContext({ deployment_operator: false }) })
+    // A member, stated as one: the fixture's default role is owner, and an owner
+    // now gets the rate link whether or not they operate the deployment, so a
+    // context that only cleared `deployment_operator` would be asserting the
+    // opposite of what this test is named for.
+    mockApi({
+      context: organizationContext({
+        role: "member",
+        deployment_operator: false,
+      }),
+    })
     renderPage(<ModelDetailPage modelId="z-ai/glm-5.3" />)
 
     await screen.findByRole("grid", { name: "Offerings of GLM-5.3" })
     expect(screen.queryByRole("link", { name: "Edit rate" })).toBeNull()
     expect(screen.queryByRole("link", { name: "Add a provider" })).toBeNull()
-    expect(screen.queryByRole("link", { name: "Model pricing" })).toBeNull()
+    expect(screen.queryByRole("link", { name: "Providers" })).toBeNull()
   })
 
   it("reports a model that does not exist rather than an empty page", async () => {

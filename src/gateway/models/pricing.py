@@ -3,7 +3,7 @@
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Index, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
@@ -16,8 +16,29 @@ from gateway.models.money import UsdRate
 # on these spellings, and the request schemas validate against them.
 PRICING_UNITS: tuple[str, ...] = ("tokens", "requests", "images")
 
-# The vocabulary of ``origin`` on the same two tables.
-PRICING_ORIGINS: tuple[str, ...] = ("config", "api", "migration")
+# The vocabulary of ``origin`` on the same two tables. ``seed`` belongs to
+# ``organization_model_pricing`` alone: it marks a rate the offered-models
+# surface copied from the community dataset on the organization's behalf, which
+# a later refresh may move, where every other origin is a rate somebody chose
+# and a refresh leaves alone.
+PRICING_ORIGINS: tuple[str, ...] = ("config", "api", "migration", "seed")
+
+# The one origin a refresh may move. Named because three modules compare against
+# it and a bare "seed" in any of them reads as a different fact.
+SEED_ORIGIN = "seed"
+
+# What a rate somebody set through the API carries, which is what stops a
+# refresh moving it. Named for the same reason: the two are written in different
+# modules from the one that reads them back.
+API_ORIGIN = "api"
+
+# Which rung of the ladder answered for a rate a reader is shown, in the order
+# ``pricing_service.find_model_pricing`` walks. One vocabulary, because the
+# Models page and the offered-models panel name the same rungs to the same
+# reader, and two spellings of one rung read as two different facts. ``defaults``
+# is plural for the dataset it comes from, and is not the ``default`` that
+# ``ModelObject.pricing_source`` uses internally for the same rung.
+PriceSource = Literal["organization", "deployment", "defaults"]
 
 
 class PricingSnapshot(Base):

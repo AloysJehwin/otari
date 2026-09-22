@@ -1,123 +1,24 @@
-import {
-  keepPreviousData,
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import type {
-  AcceptedPricingSnapshot,
   CreateOrganizationPricingOverride,
-  CurrentPricingPage,
   OrganizationPricingOverride,
   OrganizationPricingOverrides,
-  PricingDriftRow,
-  PricingRefreshPreview,
   PricingResponse,
   SetPricingRequest,
   UpdateOrganizationPricingOverride,
 } from "@/client"
-import { ApiError, apiFetch, longRequestSignal } from "@/shared/api/client"
+import { apiFetch } from "@/shared/api/client"
 import { useOrganizationContext } from "@/shared/api/organizations"
 import { fetchAllRows } from "@/shared/api/paging"
 import {
   CATALOG,
   MODELS,
-  NO_RETRY,
   ORGANIZATION_PRICING,
+  ORGANIZATION_PROVIDER_MODELS,
   PRICING,
-  PRICING_DRIFT,
-  PRICING_PENDING,
-  PRICING_SNAPSHOTS,
-  PROVIDERS,
 } from "@/shared/api/queryKeys"
 
-// The update the scheduled refresh has left for review, or null when there is
-// none: the gateway answers 404 for the common case and that is not an error
-// here. Operator-only, so `enabled` is the caller's gate.
-export function usePendingPricingRefresh(enabled = true) {
-  return useQuery({
-    ...NO_RETRY,
-    queryKey: PRICING_PENDING,
-    queryFn: async (): Promise<PricingRefreshPreview | null> => {
-      try {
-        return await apiFetch<PricingRefreshPreview>("/pricing/refresh/pending")
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 404) return null
-        throw error
-      }
-    },
-    staleTime: 60_000,
-    enabled,
-  })
-}
-
-export function usePricingSnapshots(enabled = true) {
-  return useQuery({
-    ...NO_RETRY,
-    queryKey: PRICING_SNAPSHOTS,
-    queryFn: () => apiFetch<AcceptedPricingSnapshot[]>("/pricing/snapshots"),
-    staleTime: 60_000,
-    enabled,
-  })
-}
-
-// Every stored rate against today's default. Resolves each key through
-// genai-prices gateway-side, so it is kept warm like the other fan-out reads.
-export function usePricingDrift(enabled = true) {
-  return useQuery({
-    ...NO_RETRY,
-    queryKey: PRICING_DRIFT,
-    queryFn: () => apiFetch<PricingDriftRow[]>("/pricing/drift"),
-    staleTime: 60_000,
-    enabled,
-  })
-}
-
 const fetchAllPricing = () => fetchAllRows<PricingResponse>("/pricing")
-
-/**
- * The rate one model is metered at, or null where it has none.
- *
- * The price editor is reachable from Models with a key the price table is not
- * showing, so it cannot resolve the row out of the page it happens to be on.
- * A 404 is the ordinary answer for an unpriced key, not an error.
- */
-export function useModelPricing(modelKey: string | null) {
-  return useQuery({
-    ...NO_RETRY,
-    queryKey: [PRICING, "one", modelKey],
-    queryFn: async (): Promise<PricingResponse | null> => {
-      try {
-        return await apiFetch<PricingResponse>(
-          `/pricing/${encodeURIComponent(modelKey ?? "")}`,
-        )
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 404) return null
-        throw error
-      }
-    },
-    enabled: Boolean(modelKey),
-  })
-}
-
-/**
- * One page of the rate each model is metered at now.
- *
- * `/pricing` answers the stored history (one row per `effective_at`), so a page
- * of it is a page of revisions rather than of models, and it carries no total to
- * put under a table. `/pricing/current` answers one row per key with a count,
- * which is what lets the table page instead of reading the collection.
- */
-export function useCurrentPricing(page: number, pageSize: number) {
-  return useQuery({
-    queryKey: [PRICING, "current", page, pageSize],
-    queryFn: () =>
-      apiFetch<CurrentPricingPage>(
-        `/pricing/current?skip=${page * pageSize}&limit=${pageSize}`,
-      ),
-    placeholderData: keepPreviousData,
-  })
-}
 
 export function usePricing(enabled = true) {
   return useQuery({
@@ -139,59 +40,6 @@ export function useSetPricing() {
       void queryClient.invalidateQueries({ queryKey: [PRICING] })
       void queryClient.invalidateQueries({ queryKey: [MODELS] })
       void queryClient.invalidateQueries({ queryKey: [CATALOG] })
-    },
-  })
-}
-
-export function useDeletePricing() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (modelKey: string) =>
-      apiFetch<void>(`/pricing/${encodeURIComponent(modelKey)}`, {
-        method: "DELETE",
-      }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: [PRICING] })
-      void queryClient.invalidateQueries({ queryKey: [MODELS] })
-      void queryClient.invalidateQueries({ queryKey: [CATALOG] })
-    },
-  })
-}
-
-// Long deadline: this fetches the upstream snapshot and diffs it against every
-// priced model, so it scales with the pricing table rather than with one hop.
-export function usePreviewPricingRefresh() {
-  return useMutation({
-    mutationFn: () =>
-      apiFetch<PricingRefreshPreview>("/pricing/refresh", {
-        method: "POST",
-        signal: longRequestSignal(),
-      }),
-  })
-}
-
-export function useConfirmPricingRefresh() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: () => apiFetch("/pricing/refresh/confirm", { method: "POST" }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: [PRICING] })
-      void queryClient.invalidateQueries({ queryKey: [MODELS] })
-      void queryClient.invalidateQueries({ queryKey: [CATALOG] })
-      void queryClient.invalidateQueries({ queryKey: [PROVIDERS] })
-    },
-  })
-}
-
-// Rejecting also clears anything the scheduled check had left for review, so
-// the pending read is refetched rather than left offering a review of nothing.
-export function useRejectPricingRefresh() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: () =>
-      apiFetch<void>("/pricing/refresh/reject", { method: "POST" }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: PRICING_PENDING })
     },
   })
 }
@@ -225,6 +73,17 @@ export function useOrganizationPricing(
   page: number,
   pageSize: number,
   enabled = true,
+  /**
+   * Narrow to one model, which is what the rate editor needs: every period
+   * stored for it, so it opens on the one in force and can refuse a new one
+   * that would overlap. Without it the editor reads the first page of the whole
+   * table, and an organization with more overrides than that page silently
+   * starts opening a create form over a rate that already exists.
+   *
+   * Empty means no filter, so a caller holding a URL value passes it as it is
+   * rather than converting one absent spelling into another.
+   */
+  modelKey?: string,
 ) {
   const organization = useOrganizationContext()
   const context = organization.data
@@ -241,10 +100,13 @@ export function useOrganizationPricing(
       context?.organization?.id ?? null,
       page,
       pageSize,
+      modelKey ?? null,
     ],
     queryFn: () =>
       apiFetch<OrganizationPricingOverrides>(
-        `/organizations/me/pricing?skip=${page * pageSize}&limit=${pageSize}`,
+        `/organizations/me/pricing?skip=${page * pageSize}&limit=${pageSize}${
+          modelKey ? `&model_key=${encodeURIComponent(modelKey)}` : ""
+        }`,
       ),
     staleTime: 60_000,
     // Kept across a page change and dropped across an organization change, for
@@ -269,6 +131,13 @@ function invalidateOrganizationPricing(
   void queryClient.invalidateQueries({ queryKey: [ORGANIZATION_PRICING] })
   void queryClient.invalidateQueries({ queryKey: [MODELS] })
   void queryClient.invalidateQueries({ queryKey: [CATALOG] })
+  // The offered-models panel reads the same rates through a different route, so
+  // a rate written here moves a row there: its price and the badge saying which
+  // rung set it. Without this the panel keeps showing the number you just
+  // replaced.
+  void queryClient.invalidateQueries({
+    queryKey: [ORGANIZATION_PROVIDER_MODELS],
+  })
 }
 
 export function useCreateOrganizationPricing() {
