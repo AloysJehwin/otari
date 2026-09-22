@@ -25,7 +25,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.models.tenancy import User, Workspace
-from gateway.models.tools import WorkspaceCodeExecutionPolicy
+from gateway.models.tools import CodeExecutor, WorkspaceCodeExecutionPolicy
 from gateway.services.mcp_loop import MAX_TOOL_ITERATIONS_CAP
 from gateway.services.sandbox_backend import (
     CODE_EXECUTION_TOOL_NAME,
@@ -35,7 +35,6 @@ from gateway.services.sandbox_backend import (
 from gateway.services.tenancy import authorization
 from gateway.services.tenancy.errors import SandboxImageNotAllowedError, SandboxToolsUnrunnableError
 from gateway.services.tenancy.organization_service import OrganizationService
-from gateway.types.code_execution import CodeExecutor
 
 # The two ceilings a workspace value is floored against, which are also the
 # largest values worth storing: a policy may only narrow, so a number above the
@@ -143,6 +142,18 @@ class WorkspaceCodeExecutionPolicyUpdate(BaseModel):
             msg = "tools must name at least one tool; use null to narrow nothing, or enabled=false to refuse"
             raise ValueError(msg)
         return deduped
+
+    @field_validator("executor", mode="before")
+    @classmethod
+    def _parse_executor(cls, value: object) -> object:
+        """Accept the vocabulary in any case, and a blank string as no pin.
+
+        An unparseable value passes through for the enum to refuse, because ``None`` would store no pin at all.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        parsed = CodeExecutor.parse(value)
+        return value if parsed is None else parsed
 
 
 class WorkspaceCodeExecutionPolicyPublic(BaseModel):
