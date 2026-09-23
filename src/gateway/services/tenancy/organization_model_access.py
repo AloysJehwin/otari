@@ -17,7 +17,8 @@ Two disjoint addressing schemes decide it, and the split is
 * A bare ``provider:model`` selector resolves through the organization's own BYO
   keys for the request's workspace, so it contributes only where the caller has
   one. Where a workspace has no such key, a provider the hosted port serves
-  contributes ``provider:*``.
+  contributes the models it advertises there, or ``provider:*`` when it
+  advertises no roster.
 
 An organization holding no BYO key still gets every configured instance, which on
 a standalone deployment is the whole catalog.
@@ -41,7 +42,7 @@ from gateway.models.provider_keys import (
     OrgProviderKey,
 )
 from gateway.models.tenancy import User, Workspace
-from gateway.ports.model_provider_port import ModelProviderPort
+from gateway.ports.model_provider_port import HostedModels, ModelProviderPort
 from gateway.repositories.providers import OrgProviderKeyModelRepository
 from gateway.repositories.tenancy.org_provider_key_repository import (
     OrgProviderKeyRepository,
@@ -91,11 +92,69 @@ class SessionCatalogScope:
     """
 
 
-async def _get_hosted_providers(model_provider: ModelProviderPort | None, organization_id: uuid.UUID) -> frozenset[str]:
+async def resolve_hosted_models(
+    model_provider: ModelProviderPort | None, organization_id: uuid.UUID | None
+) -> HostedModels:
+    """What the hosted port advertises, keyed by wire provider name. Empty with no port."""
     if model_provider is None:
+        return {}
+    hosted = await model_provider.get_hosted_models(organization_id=organization_id)
+    return {provider_key(provider): roster for provider, roster in hosted.items()}
+
+
+def hosted_allowlist_entries(hosted_models: HostedModels, providers: frozenset[str]) -> set[str]:
+    """The allow-list entries the hosted ``providers`` contribute.
+
+    A provider contributes each model advertised on it, so a model the
+    deployment switched off leaves the catalog as it left dispatch; one that
+    advertises no particular models contributes ``provider:*``.
+    """
+    entries: set[str] = set()
+    for provider in providers:
+        advertised = hosted_models.get(provider)
+        if advertised is None:
+            entries.add(f"{provider}:*")
+        else:
+            entries.update(f"{provider}:{model}" for model in advertised)
+    return entries
+
+
+async def resolve_organization_byo_providers(db: AsyncSession, organization_id: uuid.UUID | None) -> frozenset[str]:
+    """The providers one organization holds a usable key of its own for, in any workspace.
+
+    For a caller answered from the whole organization, a deployment operator
+    acting in it. Looser than ``OrgProviderKeyService.get_byo_providers``, which
+    asks whether *every* workspace calls the provider on its own key: this asks
+    whether any could, which is what decides that what the deployment advertises
+    must not narrow the organization's view of the provider.
+    """
+    if organization_id is None:
         return frozenset()
-    hosted = await model_provider.get_hosted_providers(organization_id=organization_id)
-    return frozenset(provider_key(provider) for provider in hosted)
+    live = await OrgProviderKeyRepository(db).list_live_keys(organization_id)
+    return frozenset(provider_key(key.provider) for key in live if key_is_usable(key))
+
+
+async def resolve_workspace_byo_providers(db: AsyncSession, workspace_id: uuid.UUID | None) -> frozenset[str]:
+    """The providers one workspace calls on a key of its own.
+
+    For a caller that dispatches from one workspace: an API key, or the master
+    key in the deployment's default workspace. Narrowed exactly as dispatch is:
+    the key active in that workspace, holding a credential, which is the one
+    condition under which dispatch never asks the hosted port. A key the
+    organization holds in another workspace does not count, because this
+    caller cannot reach the provider on it.
+    """
+    if workspace_id is None:
+        return frozenset()
+    organization_id = await organization_for_workspace_id(db, workspace_id)
+    if organization_id is None:
+        return frozenset()
+    active = await OrgProviderKeyService(db).get_active_keys(
+        organization_id=organization_id, workspace_ids=[workspace_id]
+    )
+    return frozenset(
+        provider_key(provider) for provider, key in active.get(workspace_id, {}).items() if has_credential(key)
+    )
 
 
 def _narrowed(
@@ -164,9 +223,7 @@ async def _sees_default_workspace(db: AsyncSession, scope: VisibleWorkspaceScope
     if not scope.sees_every_workspace:
         return default_workspace_id in (scope.workspace_ids or [])
     owner = (
-        await db.execute(
-            select(col(Workspace.organization_id)).where(col(Workspace.id) == default_workspace_id)
-        )
+        await db.execute(select(col(Workspace.organization_id)).where(col(Workspace.id) == default_workspace_id))
     ).scalar_one_or_none()
     return owner == scope.organization.id
 
@@ -291,7 +348,8 @@ async def resolve_session_catalog_scope(
         )
 
     provider_keys = OrgProviderKeyService(db)
-    hosted = await _get_hosted_providers(model_provider, scope.organization.id)
+    hosted_models = await resolve_hosted_models(model_provider, scope.organization.id)
+    hosted = frozenset(hosted_models)
     if scope.sees_every_workspace:
         live_keys = [
             live
@@ -321,7 +379,7 @@ async def resolve_session_catalog_scope(
         await provider_keys.get_byo_providers(organization_id=scope.organization.id) if hosted else frozenset()
     )
     allowlist |= byo_allowlist
-    allowlist.update(f"{provider}:*" for provider in reachable_hosted)
+    allowlist |= hosted_allowlist_entries(hosted_models, reachable_hosted)
     return SessionCatalogScope(
         allowlist=sorted(allowlist),
         reads_default_workspace=await _sees_default_workspace(db, scope),
@@ -356,8 +414,12 @@ async def resolve_session_model_allowlist(
 
 __all__ = [
     "SessionCatalogScope",
+    "hosted_allowlist_entries",
     "resolve_all_organizations_offered_keys",
+    "resolve_hosted_models",
+    "resolve_organization_byo_providers",
     "resolve_session_catalog_scope",
     "resolve_session_model_allowlist",
+    "resolve_workspace_byo_providers",
     "workspace_organizations",
 ]
