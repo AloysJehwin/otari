@@ -214,11 +214,22 @@ whatever edge controls the deployment has.
 ## Invitations
 
 An owner or admin can invite a person to an organization and selected workspaces.
-If mail is configured, Otari sends the accept link. Otherwise the API and
-dashboard expose the link for manual delivery.
+The dashboard always shows the accept link after an invite, so it can be shared
+by hand. If mail is configured, Otari also emails it.
 
-Invitation tokens are bearer credentials. Do not put them in logs or analytics.
-The browser validates and accepts them through the public invitation endpoints.
+Opening the link lets the invitee accept. If the invited address has never signed
+in, the accept page asks them to choose a first password, and once they accept
+they can sign in straight away. No verification email is needed, so this works on
+a deployment without mail. An address that can already sign in, by password or
+through a provider, just accepts; the link cannot set or replace a password on
+it.
+
+Invitation tokens are bearer credentials. Whoever holds an unused link can join
+as the invited address, and choose its first password if it has never signed
+in, so send it only to that person.
+Do not put tokens in logs or analytics. The browser validates and accepts them
+through the public invitation endpoints. A link works once, and expires after
+`invitation_expiry_hours`.
 
 A signed-in person also sees the invitations addressed to them, and accepts or
 declines one without a token: they are already authenticated as the addressee,
