@@ -333,8 +333,9 @@ async def test_a_failed_search_is_announced_as_failed_non_streaming(
 
     announced = [item for item in (out.output or []) if getattr(item, "type", None) == "web_search_call"]
     assert len(announced) == 1
-    assert announced[0].id == "c1"
-    assert announced[0].status == "failed"
+    item = cast(Any, announced[0])
+    assert item.id == "c1"
+    assert item.status == "failed"
 
 
 @pytest.mark.asyncio
@@ -843,8 +844,9 @@ async def test_stream_announces_a_failed_search_as_failed(
         if event.type == "response.output_item.added" and getattr(event.item, "type", None) == "web_search_call"
     ]
     assert len(announced) == 1
-    assert announced[0].id == "c1"
-    assert announced[0].status == "failed"
+    item = cast(Any, announced[0])
+    assert item.id == "c1"
+    assert item.status == "failed"
 
 
 @pytest.mark.asyncio
