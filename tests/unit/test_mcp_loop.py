@@ -120,6 +120,7 @@ def _chunk(
     finish: _FinishReason | None = None,
     content: str | None = None,
     tool_calls: list[tuple[int, str | None, str | None, str | None]] | None = None,
+    usage: CompletionUsage | None = None,
 ) -> ChatCompletionChunk:
     """Build a streaming chunk. tool_calls items are (index, id, name_delta, args_delta)."""
     delta_tool_calls = (
@@ -142,6 +143,7 @@ def _chunk(
         created=0,
         model="fake",
         object="chat.completion.chunk",
+        usage=usage,
     )
 
 
@@ -733,6 +735,52 @@ async def test_stream_loop_runs_mcp_tool_and_continues(monkeypatch: pytest.Monke
     # `tool_calls` terminal is suppressed.
     assert finishes == ["stop"]
     assert pool.calls == [("fetch_url", {})]
+
+
+@pytest.mark.asyncio
+async def test_stream_loop_accumulates_usage_across_rounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each tool-loop round carries its own usage chunk, but only the final round's
+    chunk reaches the client. The final chunk must carry the sum across rounds, so a
+    multi-round tool call is not billed for the last round alone (otari#1772)."""
+    iter_streams = iter(
+        [
+            _async_iter(
+                _chunk(tool_calls=[(0, "call_1", "fetch_url", "{}")]),
+                _chunk(
+                    finish="tool_calls",
+                    usage=CompletionUsage(prompt_tokens=100, completion_tokens=20, total_tokens=120),
+                ),
+            ),
+            _async_iter(
+                _chunk(content="all done"),
+                _chunk(
+                    finish="stop",
+                    usage=CompletionUsage(prompt_tokens=140, completion_tokens=5, total_tokens=145),
+                ),
+            ),
+        ]
+    )
+
+    async def fake_acompletion(**kwargs: Any) -> AsyncIterator[ChatCompletionChunk]:
+        return next(iter_streams)
+
+    monkeypatch.setattr(mcp_loop_module, "acompletion", fake_acompletion)
+
+    pool = _FakePool(tool_names=["fetch_url"], results={"fetch_url": "ok"})
+    chunks = [
+        c
+        async for c in mcp_tool_loop_stream(
+            completion_kwargs={"model": "fake", "messages": [{"role": "user", "content": "go"}]},
+            pool=pool,
+            max_iterations=5,
+        )
+    ]
+
+    usages = [c.usage for c in chunks if c.usage is not None]
+    assert len(usages) == 1, "only the final round's terminal chunk is forwarded"
+    assert usages[0].prompt_tokens == 240
+    assert usages[0].completion_tokens == 25
+    assert usages[0].total_tokens == 265
 
 
 @pytest.mark.asyncio

@@ -247,6 +247,43 @@ def _fold_usage(
         completion.usage.prompt_tokens_details = PromptTokensDetails(cached_tokens=cache_read_total)
 
 
+def _add_chunk_usage(acc: dict[str, int], chunk: ChatCompletionChunk | None) -> None:
+    """Fold one round's terminal-chunk usage into the running stream total."""
+    usage = getattr(chunk, "usage", None) if chunk is not None else None
+    if usage is None:
+        return
+    acc["prompt"] += usage.prompt_tokens or 0
+    acc["completion"] += usage.completion_tokens or 0
+    acc["total"] += usage.total_tokens or 0
+    details = usage.prompt_tokens_details
+    if details is not None:
+        acc["cache_read"] += details.cached_tokens or 0
+
+
+def _fold_stream_usage(chunk: ChatCompletionChunk, acc: dict[str, int]) -> ChatCompletionChunk:
+    """Return the terminal chunk with the earlier rounds' usage added to its own.
+
+    The dropped rounds' tokens were folded into ``acc`` as each was deferred; this
+    final chunk is the only usage-bearing one the client sees, so the loop-wide
+    total belongs on it. Mirrors the non-streaming loop's ``_fold_usage``.
+    """
+    if chunk.usage is None or not any(acc.values()):
+        return chunk
+    prompt = (chunk.usage.prompt_tokens or 0) + acc["prompt"]
+    completion = (chunk.usage.completion_tokens or 0) + acc["completion"]
+    own_details = chunk.usage.prompt_tokens_details
+    own_cache = (own_details.cached_tokens or 0) if own_details is not None else 0
+    cache_read = own_cache + acc["cache_read"]
+    chunk.usage.prompt_tokens = prompt
+    chunk.usage.completion_tokens = completion
+    chunk.usage.total_tokens = prompt + completion
+    if own_details is not None:
+        own_details.cached_tokens = cache_read
+    elif cache_read > 0:
+        chunk.usage.prompt_tokens_details = PromptTokensDetails(cached_tokens=cache_read)
+    return chunk
+
+
 class _ChatStreamState:
     """Per-iteration bookkeeping for the chat streaming loop."""
 
@@ -327,9 +364,7 @@ class _ChatToolLoopStrategy:
     def exit_after_split(self, result: ChatCompletion) -> bool:
         return False
 
-    async def execute_owned(
-        self, pool: ToolBackend, owned: list[Any], acc: Any = None
-    ) -> list[dict[str, Any]]:
+    async def execute_owned(self, pool: ToolBackend, owned: list[Any], acc: Any = None) -> list[dict[str, Any]]:
         # ``acc`` is accepted for interface parity and unused: this format has no
         # native vocabulary for a server-side tool call to report on a mixed batch.
         return await _execute_mcp_calls(pool, owned, budget=self._budget)
@@ -374,18 +409,20 @@ class _ChatToolLoopStrategy:
     def new_stream_state(self) -> _ChatStreamState:
         return _ChatStreamState()
 
-    def new_stream_accumulator(self) -> None:
-        # Chat streaming does not fold cumulative usage into the terminal
-        # chunk (parity with the pre-engine behavior); streaming usage
-        # accounting happens downstream in `streaming_generator`.
-        return None
+    def new_stream_accumulator(self) -> dict[str, int]:
+        # Running usage across tool-loop rounds. Each round's terminal chunk
+        # carries its own usage but is dropped from the visible stream on the
+        # continue path, so its tokens are folded here and added to the final
+        # round's terminal chunk in ``terminal_events``. Without this, a
+        # multi-round tool call is billed for the last round only.
+        return {"prompt": 0, "completion": 0, "total": 0, "cache_read": 0}
 
     def observe(
         self,
         state: _ChatStreamState,
         event: ChatCompletionChunk,
         pool: ToolBackend,
-        acc: None,
+        acc: dict[str, int],
     ) -> tuple[StreamAction, ChatCompletionChunk]:
         chunk_is_terminal = False
         hide = False
@@ -481,7 +518,7 @@ class _ChatToolLoopStrategy:
         return has_foreign or not state.mcp_calls
 
     async def finalize_exit(
-        self, state: _ChatStreamState, pool: ToolBackend, acc: None
+        self, state: _ChatStreamState, pool: ToolBackend, acc: dict[str, int]
     ) -> AsyncIterator[ChatCompletionChunk]:
         del acc
         if state.mcp_calls:
@@ -489,13 +526,18 @@ class _ChatToolLoopStrategy:
         return
         yield  # pragma: no cover - makes this a no-event async iterator
 
-    def terminal_events(self, state: _ChatStreamState, acc: None) -> list[ChatCompletionChunk]:
-        return [state.pending_terminal] if state.pending_terminal is not None else []
+    def terminal_events(self, state: _ChatStreamState, acc: dict[str, int]) -> list[ChatCompletionChunk]:
+        if state.pending_terminal is None:
+            return []
+        return [_fold_stream_usage(state.pending_terminal, acc)]
 
-    def accumulate_stream_usage(self, acc: None, state: _ChatStreamState) -> None:
-        return None
+    def accumulate_stream_usage(self, acc: dict[str, int], state: _ChatStreamState) -> None:
+        # This round's terminal chunk is about to be dropped from the visible
+        # stream (the client must not see a non-final finish_reason), so fold its
+        # usage into the running total before it is lost.
+        _add_chunk_usage(acc, state.pending_terminal)
 
-    def synthetic_events(self, state: _ChatStreamState, acc: None) -> list[Any]:
+    def synthetic_events(self, state: _ChatStreamState, acc: dict[str, int]) -> list[Any]:
         # This format has no native vocabulary for a server-side tool call, so the
         # gateway's calls stay invisible on the wire. Documented in docs/tools.md.
         return []
@@ -505,7 +547,7 @@ class _ChatToolLoopStrategy:
         transcript: list[Any],
         state: _ChatStreamState,
         pool: ToolBackend,
-        acc: None,
+        acc: dict[str, int],
     ) -> AsyncIterator[ChatCompletionChunk]:
         del acc
         # All-MCP: the terminal chunk was silently dropped so the client
