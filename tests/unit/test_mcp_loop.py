@@ -737,26 +737,41 @@ async def test_stream_loop_runs_mcp_tool_and_continues(monkeypatch: pytest.Monke
     assert pool.calls == [("fetch_url", {})]
 
 
+def _usage_only_chunk(usage: CompletionUsage) -> ChatCompletionChunk:
+    """The ``include_usage`` chunk OpenAI sends after the finish chunk: usage, no choices."""
+    return ChatCompletionChunk(id="x", choices=[], created=0, model="fake", object="chat.completion.chunk", usage=usage)
+
+
+def _round_end(finish: _FinishReason, usage: CompletionUsage, *, trailing: bool) -> list[ChatCompletionChunk]:
+    if trailing:
+        return [_chunk(finish=finish), _usage_only_chunk(usage)]
+    return [_chunk(finish=finish, usage=usage)]
+
+
 @pytest.mark.asyncio
-async def test_stream_loop_accumulates_usage_across_rounds(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Each tool-loop round carries its own usage chunk, but only the final round's
-    chunk reaches the client. The final chunk must carry the sum across rounds, so a
-    multi-round tool call is not billed for the last round alone (otari#1772)."""
+@pytest.mark.parametrize("trailing", [True, False], ids=["usage-only-chunk", "usage-on-finish-chunk"])
+async def test_stream_loop_accumulates_usage_across_rounds(monkeypatch: pytest.MonkeyPatch, trailing: bool) -> None:
+    """Each round reports its own usage, but the client sees one report for the loop:
+    the last chunk, carrying the sum across rounds, so a multi-round tool call is not
+    billed for the last round alone (otari#1772). OpenAI and any-llm's Anthropic
+    adapter report usage on a trailing chunk with no choices; some providers put it
+    on the finish chunk itself."""
+    round_one = CompletionUsage(
+        prompt_tokens=100,
+        completion_tokens=20,
+        total_tokens=120,
+        prompt_tokens_details=PromptTokensDetails(cached_tokens=30),
+    )
+    round_two = CompletionUsage(prompt_tokens=140, completion_tokens=5, total_tokens=145)
     iter_streams = iter(
         [
             _async_iter(
                 _chunk(tool_calls=[(0, "call_1", "fetch_url", "{}")]),
-                _chunk(
-                    finish="tool_calls",
-                    usage=CompletionUsage(prompt_tokens=100, completion_tokens=20, total_tokens=120),
-                ),
+                *_round_end("tool_calls", round_one, trailing=trailing),
             ),
             _async_iter(
                 _chunk(content="all done"),
-                _chunk(
-                    finish="stop",
-                    usage=CompletionUsage(prompt_tokens=140, completion_tokens=5, total_tokens=145),
-                ),
+                *_round_end("stop", round_two, trailing=trailing),
             ),
         ]
     )
@@ -777,10 +792,14 @@ async def test_stream_loop_accumulates_usage_across_rounds(monkeypatch: pytest.M
     ]
 
     usages = [c.usage for c in chunks if c.usage is not None]
-    assert len(usages) == 1, "only the final round's terminal chunk is forwarded"
+    assert len(usages) == 1, "one usage report reaches the client for the whole loop"
+    assert chunks[-1].usage is usages[0]
+    assert [c.choices[0].finish_reason for c in chunks if c.choices and c.choices[0].finish_reason] == ["stop"]
     assert usages[0].prompt_tokens == 240
     assert usages[0].completion_tokens == 25
     assert usages[0].total_tokens == 265
+    assert usages[0].prompt_tokens_details is not None
+    assert usages[0].prompt_tokens_details.cached_tokens == 30
 
 
 @pytest.mark.asyncio
