@@ -21,6 +21,8 @@ import pytest
 import yaml
 
 from gateway.core.config import API_ROOT, PLATFORM_TOKEN_ENV_VAR
+from gateway.services.sandbox_backend import CODE_EXECUTION_TOOL_NAME
+from gateway.types.code_execution import ExecResponse, SessionHandle
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "hybrid_edition_smoke.py"
 
@@ -36,7 +38,11 @@ def _load() -> ModuleType:
 
 smoke = _load()
 
-_PEERS = smoke.PeerUrls(platform_base_url="http://cp.test/api/v1", search_base_url="http://search.test")
+_PEERS = smoke.PeerUrls(
+    platform_base_url="http://cp.test/api/v1",
+    sandbox_url="http://sandbox.test",
+    search_base_url="http://search.test",
+)
 
 
 def _call(method: str, url: str, *, headers: dict[str, str] | None = None, body: Any = None) -> tuple[int, Any]:
@@ -65,6 +71,10 @@ def test_the_gate_walks_the_root_the_app_actually_serves() -> None:
     assert smoke.API_ROOT == API_ROOT
 
 
+def test_the_gate_expects_the_sandbox_tool_the_app_offers() -> None:
+    assert smoke.SANDBOX_TOOL == CODE_EXECUTION_TOOL_NAME
+
+
 def test_the_gate_sets_the_token_the_app_reads() -> None:
     assert smoke.PLATFORM_TOKEN_ENV_VAR == PLATFORM_TOKEN_ENV_VAR
 
@@ -90,7 +100,7 @@ def test_config_is_a_hybrid_deployment_and_nothing_else() -> None:
     assert config["platform"]["base_url"] == _PEERS.platform_base_url
     assert "providers" not in config, "local providers are refused in hybrid mode"
     assert "database_url" not in config, "a hybrid gateway runs no database"
-    assert "sandbox_url" not in config, "no sandbox is what makes native code execution pass through"
+    assert config["sandbox_url"] == _PEERS.sandbox_url
     # The gateway appends /search itself.
     assert config["web_search_url"] == _PEERS.search_base_url
 
@@ -190,6 +200,32 @@ def test_web_access_resolve_authorizes_search_only(control_plane: Any) -> None:
     assert body["authorized_tools"] == ["web_search"]
 
 
+@pytest.mark.parametrize(
+    ("token_name", "enabled"),
+    [
+        ("USER_TOKEN_OK", True),
+        ("USER_TOKEN_CODE_DISABLED", False),
+        ("USER_TOKEN_CODE_MALFORMED", "yes"),
+    ],
+)
+def test_code_execution_resolve_answers_per_workspace(control_plane: Any, token_name: str, enabled: Any) -> None:
+    status, body = _call(
+        "POST",
+        f"{control_plane.base_url}{smoke.PLATFORM_PREFIX}/gateway/code-execution/resolve",
+        headers=_tokens(getattr(smoke, token_name)),
+        body={},
+    )
+    assert status == 200
+    assert body["enabled"] == enabled
+
+
+def test_workspaces_with_a_code_execution_policy_can_still_resolve_a_model(control_plane: Any) -> None:
+    """A refusal leg needs the request to get past the credential resolve first."""
+    for token in (smoke.USER_TOKEN_CODE_DISABLED, smoke.USER_TOKEN_CODE_MALFORMED):
+        status, _ = _call("POST", _resolve_url(control_plane), headers=_tokens(token), body={"model": "m"})
+        assert status == 200
+
+
 def test_the_control_plane_carries_no_search_traffic(control_plane: Any) -> None:
     """A search backend is deployment infrastructure, so the control plane does not serve it."""
     url = f"{control_plane.base_url}{smoke.PLATFORM_PREFIX}/gateway/web-search/search?q=x&format=json"
@@ -235,6 +271,19 @@ def test_chat_calls_the_offered_tool_first_and_then_answers(provider: Any) -> No
         body={"messages": [{"role": "user", "content": "q"}, {"role": "tool", "content": "r"}], "tools": tools},
     )
     assert second["choices"][0]["message"]["content"] == smoke.REPLY
+
+
+def test_chat_calls_the_sandbox_tool_with_the_smoke_code(provider: Any) -> None:
+    tools = [{"type": "function", "function": {"name": smoke.SANDBOX_TOOL, "parameters": {}}}]
+    _, body = _call(
+        "POST",
+        f"{provider.base_url}/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {smoke.OPENAI_KEY}"},
+        body={"messages": [{"role": "user", "content": "q"}], "tools": tools},
+    )
+    call = body["choices"][0]["message"]["tool_calls"][0]["function"]
+    assert call["name"] == smoke.SANDBOX_TOOL
+    assert json.loads(call["arguments"]) == {"code": smoke.SANDBOX_CODE}
 
 
 def test_provider_rejects_a_key_the_control_plane_did_not_issue(provider: Any) -> None:
@@ -353,6 +402,35 @@ def test_the_search_service_answers_the_searxng_path(search_service: Any) -> Non
 
 def test_the_search_service_answers_no_other_path(search_service: Any) -> None:
     assert _call("GET", f"{search_service.base_url}/gateway/web-search/search")[0] == 404
+
+
+@pytest.fixture
+def sandbox() -> Iterator[Any]:
+    with smoke.serve(smoke.FakeSandbox(), "test-sandbox") as server:
+        yield server
+
+
+def test_sandbox_answers_in_the_shapes_the_gateway_validates(sandbox: Any) -> None:
+    status, created = _call("POST", f"{sandbox.base_url}/sessions", body={})
+    assert status == 201
+    session_id = SessionHandle.model_validate(created).session_id
+
+    status, executed = _call(
+        "POST",
+        f"{sandbox.base_url}/sessions/{session_id}/exec",
+        body={"tool": "code_execution", "input": {"code": "print('x')"}},
+    )
+    assert status == 200
+    assert ExecResponse.model_validate(executed).result_block.content.stdout == smoke.SANDBOX_STDOUT
+
+    assert _call("DELETE", f"{sandbox.base_url}/sessions/{session_id}")[0] == 204
+    assert sandbox.open_sessions == 0
+    assert [item.route for item in sandbox.recorder.all()] == ["CreateSession", "Execute", "DestroySession"]
+
+
+def test_sandbox_refuses_to_execute_in_a_session_it_did_not_create(sandbox: Any) -> None:
+    status, _ = _call("POST", f"{sandbox.base_url}/sessions/sbx_unknown/exec", body={"tool": "code_execution"})
+    assert status == 404
 
 
 # --------------------------------------------------------------------------- #
