@@ -46,7 +46,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum, auto
-from typing import Any, Generic, Literal, NamedTuple, NoReturn, ParamSpec, Protocol, TypeVar
+from typing import Any, Generic, Literal, NamedTuple, NoReturn, ParamSpec, Protocol, TypeVar, assert_never
 from urllib.parse import ParseResult, urlparse
 
 from any_llm import LLMProvider
@@ -88,7 +88,6 @@ from gateway.api.routes._platform import (
     _report_platform_usage,
     _resolve_platform_code_execution,
     _resolve_platform_credentials,
-    _resolve_platform_web_search,
     is_provider_billing_error,
     record_abandoned_attempt,
     run_platform_attempts,
@@ -123,7 +122,6 @@ from gateway.api.routes._tools import (
     provider_runs_code_natively,
     resolve_code_executor_preference,
     web_search_header_conflicts,
-    web_search_max_results_baseline,
 )
 from gateway.core.config import ATTEMPT_ID_HEADER, REQUEST_ID_HEADER, GatewayConfig
 from gateway.core.database import DATABASE_ERRORS, release_session
@@ -138,6 +136,9 @@ from gateway.core.usage import (
 )
 from gateway.exceptions.tools_exceptions import (
     McpServerResolutionFailedError,
+    WebAccessRefusedError,
+    WebSearchPolicyResolutionFailedError,
+    WebSearchPolicyResolutionFailure,
     WorkspaceMcpServerNotFoundError,
     WorkspaceWebSearchDomainsExcludedError,
 )
@@ -156,6 +157,7 @@ from gateway.models.usage import UsageLog
 from gateway.ports.code_execution_port import CodeExecutionPort
 from gateway.ports.mcp_server_port import McpServerPort, McpServerScope
 from gateway.ports.model_provider_port import HostedAccessDeniedError, ModelProviderPort
+from gateway.ports.web_search_policy_port import WebSearchPolicyPort, WebSearchPolicyScope
 from gateway.rate_limit import RateLimitInfo, check_rate_limit
 from gateway.services.budgets import (
     ZERO,
@@ -236,21 +238,14 @@ from gateway.services.tenancy.workspace_code_execution_policy_service import (
     ResolvedCodeExecutionPolicy,
     resolve_workspace_code_execution_policy,
 )
-from gateway.services.tenancy.workspace_web_search_service import (
-    MAX_WEB_SEARCH_DOMAINS,
-    InvalidStoredWebSearchDomainError,
-    ResolvedWebSearchConfig,
-    narrow_web_search_tool_entry,
-    read_web_search_policy,
-    resolve_workspace_web_search_config,
-)
+from gateway.services.tenancy.workspace_web_search_service import MAX_WEB_SEARCH_DOMAINS
 from gateway.services.tool_usage import (
     MAX_TOOL_NAMES,
     OVERFLOW_TOOL_NAME,
     TOOL_METER_NAMESPACE,
     ToolUsageTally,
 )
-from gateway.services.tools import Dialect, ToolUseBudget, native_rendering
+from gateway.services.tools import Dialect, ToolUseBudget, apply_web_access_policy, native_rendering
 from gateway.services.upstream_redaction import redact_upstream_message
 from gateway.services.url_safety import UnsafeURLError, validate_mcp_url
 from gateway.services.web_retrieval_backend import (
@@ -261,12 +256,9 @@ from gateway.services.web_retrieval_backend import (
     WebSearchNotReachableError,
 )
 from gateway.services.web_retrieval_policy import (
-    DisjointDomainAllowListsError,
     DomainPolicy,
     DomainRuleValidationError,
     canonicalize_domain_rules,
-    intersect_domain_allow_lists,
-    union_domain_block_lists,
 )
 from gateway.services.workspace_scope import (
     organization_for_workspace_id,
@@ -395,12 +387,7 @@ WEB_SEARCH_CONFLICT_DETAIL = (
     "otari_web_search and otari_web_fetch cannot be combined with otari_code_execution or "
     "mcp_servers in the same request yet; pick one."
 )
-WEB_SEARCH_NOT_ENABLED_DETAIL = "web search is not enabled for this workspace"
 WEB_SEARCH_MAX_USES_INVALID_DETAIL = "web_search max_uses must be a non-negative integer"
-WEB_ACCESS_NOT_ENABLED_DETAIL = "web access is not enabled for this workspace"
-MALFORMED_WEB_ACCESS_POLICY_DETAIL = "Authorization service returned a malformed web-access policy"
-WEB_ACCESS_TOOL_NOT_AUTHORIZED_DETAIL = "A requested managed web tool is not authorized for this workspace"
-WEB_ACCESS_DOMAINS_EXCLUDED_DETAIL = "The request and workspace web-access domain policies do not overlap"
 WEB_FETCH_NOT_ENABLED_DETAIL = (
     "otari_web_fetch tool requested but web fetch is disabled on this gateway. "
     "Set OTARI_WEB_FETCH_ENABLED=true on the gateway, or remove otari_web_fetch from `tools`."
@@ -421,8 +408,6 @@ SANDBOX_TOOLS_EXCLUDED_DETAIL = (
 SANDBOX_IMAGE_NOT_ALLOWED_DETAIL = "this workspace's code-execution policy pins a sandbox image that is not allowed"
 MALFORMED_CODE_EXEC_POLICY_DETAIL = "Authorization service returned a malformed code-execution policy"
 CODE_EXEC_POLICY_UNRESOLVABLE_DETAIL = "Code execution policy could not be resolved for this request"
-WEB_SEARCH_CONFIG_UNRESOLVABLE_DETAIL = "Web search configuration could not be resolved for this request"
-WEB_SEARCH_CONFIG_INVALID_DETAIL = "Web search configuration contains an invalid domain rule"
 WEB_SEARCH_REQUEST_DOMAIN_INVALID_DETAIL = (
     "Web search allowed_domains and blocked_domains must each contain at most "
     f"{MAX_WEB_SEARCH_DOMAINS} bare valid hostnames"
@@ -2880,44 +2865,17 @@ def _validate_managed_web_declarations(
         raise adapter.error(400, WEB_TOOL_RESERVED_NAME_DETAIL, ErrorKind.INVALID_REQUEST)
 
 
-def _policy_from_domain_values(
-    allowed: list[str] | tuple[str, ...] | None,
-    blocked: list[str] | tuple[str, ...] | None,
-) -> DomainPolicy:
-    return DomainPolicy(
-        allowed=canonicalize_domain_rules(allowed or ()),
-        blocked=canonicalize_domain_rules(blocked or ()),
-    )
-
-
-def _combined_fetch_policy(
-    workspace_policy: DomainPolicy,
-    search_tool_entry: dict[str, Any] | None,
-) -> DomainPolicy:
-    """Let Search request filters narrow, but never replace, Fetch policy."""
-    request_allowed = None
-    request_blocked = None
-    if search_tool_entry is not None:
-        if search_tool_entry.get("allowed_domains"):
-            request_allowed = canonicalize_domain_rules(search_tool_entry["allowed_domains"])
-        if search_tool_entry.get("blocked_domains"):
-            request_blocked = canonicalize_domain_rules(search_tool_entry["blocked_domains"])
-    workspace_allowed = workspace_policy.allowed or None
-    allowed = intersect_domain_allow_lists(workspace_allowed, request_allowed) or ()
-    blocked = union_domain_block_lists(workspace_policy.blocked or None, request_blocked)
-    return DomainPolicy(allowed=allowed, blocked=blocked)
-
-
-def _read_hybrid_web_policy(payload: dict[str, Any]) -> tuple[set[str], ResolvedWebSearchConfig]:
-    """Read the tool names the control plane authorizes and the workspace's web search policy.
-
-    Raises ``ValueError`` when the answer is malformed, so an unreadable answer fails closed.
-    """
-    # Legacy platforms authorize Search only; an explicit null remains malformed.
-    authorized = payload.get("authorized_tools", [WEB_SEARCH_TOOL_NAME])
-    if not isinstance(authorized, list) or any(not isinstance(value, str) for value in authorized):
-        raise ValueError("authorized_tools must be a list of strings")
-    return set(authorized), read_web_search_policy(payload)
+def _policy_failure_status(reason: WebSearchPolicyResolutionFailure) -> int:
+    """The HTTP status a failed web search policy resolution renders as."""
+    match reason:
+        case WebSearchPolicyResolutionFailure.ANSWER_UNREADABLE:
+            return status.HTTP_502_BAD_GATEWAY
+        case WebSearchPolicyResolutionFailure.NO_CALLER_CREDENTIAL | WebSearchPolicyResolutionFailure.NO_WORKSPACE:
+            return status.HTTP_500_INTERNAL_SERVER_ERROR
+        case WebSearchPolicyResolutionFailure.STORED_POLICY_INVALID:
+            return status.HTTP_503_SERVICE_UNAVAILABLE
+        case _:
+            assert_never(reason)
 
 
 async def prepare_gateway_tools(
@@ -2931,6 +2889,7 @@ async def prepare_gateway_tools(
     mcp_servers: list[McpServerConfig] | None,
     mcp_server_ids: list[uuid.UUID] | None,
     mcp_server_port: McpServerPort,
+    web_search_policy_port: WebSearchPolicyPort,
     max_tool_iterations: int | None,
     tools_header: str | None,
     code_execution_header: str | None = None,
@@ -3272,10 +3231,9 @@ async def prepare_gateway_tools(
         web_fetch_tool_entry, remaining_user_tools = _extract_web_fetch_tool(tools_after_search)
         if web_fetch_tool_entry is not None and not ctx.config.web_fetch_enabled:
             raise adapter.error(400, WEB_FETCH_NOT_ENABLED_DETAIL, ErrorKind.INVALID_REQUEST)
-        # Forwarded to the search backend as `X-Gateway-Token`. Only set in
-        # hybrid mode, where the backend may be the platform-hosted web-search
-        # endpoint that authenticates the gateway. Standalone backends (SearXNG /
-        # self-hosted adapter) get no token and ignore the header.
+        # Forwarded to the search backend as `X-Gateway-Token`, and only where
+        # that backend is the control plane, which authenticates the gateway.
+        # A deployment without a platform token forwards none.
         web_search_auth_token: str | None = None
         use_web_search = False
         use_web_fetch = web_fetch_tool_entry is not None
@@ -3305,60 +3263,28 @@ async def prepare_gateway_tools(
                 )
                 if requested
             ]
-            workspace_search: ResolvedWebSearchConfig | None
-            # A stored workspace row carries no per-tool authorization.
-            authorized_tools: set[str] | None = None
-            if ctx.hybrid_mode:
-                assert ctx.user_token is not None
-                if (
-                    use_web_search
-                    and web_search_url is not None
-                    and url_targets_platform(web_search_url, ctx.config.platform.get("base_url"))
-                ):
-                    web_search_auth_token = ctx.config.platform_token
-                web_search_policy = await _resolve_platform_web_search(
-                    config=ctx.config,
-                    user_token=ctx.user_token,
-                    requested_tools=requested_tools,
-                )
-                try:
-                    authorized_tools, workspace_search = _read_hybrid_web_policy(web_search_policy)
-                except (ValueError, DomainRuleValidationError) as exc:
-                    raise adapter.error(502, MALFORMED_WEB_ACCESS_POLICY_DETAIL, ErrorKind.API) from exc
-            else:
-                if ctx.db is None or ctx.workspace_id is None:
-                    raise adapter.error(500, WEB_SEARCH_CONFIG_UNRESOLVABLE_DETAIL, ErrorKind.API)
-                try:
-                    workspace_search = await resolve_workspace_web_search_config(ctx.db, ctx.workspace_id)
-                except InvalidStoredWebSearchDomainError as exc:
-                    raise adapter.error(503, WEB_SEARCH_CONFIG_INVALID_DETAIL, ErrorKind.API) from exc
-            mandatory_policy = DomainPolicy()
-            if workspace_search is not None:
-                if not workspace_search.enabled:
-                    detail = WEB_ACCESS_NOT_ENABLED_DETAIL if use_web_fetch else WEB_SEARCH_NOT_ENABLED_DETAIL
-                    raise adapter.error(403, detail, ErrorKind.PERMISSION)
-                mandatory_policy = _policy_from_domain_values(
-                    workspace_search.allowed_domains,
-                    workspace_search.blocked_domains,
-                )
-            if authorized_tools is not None and not set(requested_tools) <= authorized_tools:
-                raise adapter.error(403, WEB_ACCESS_TOOL_NOT_AUTHORIZED_DETAIL, ErrorKind.PERMISSION)
+            if (
+                use_web_search
+                and web_search_url is not None
+                and url_targets_platform(web_search_url, ctx.config.platform.get("base_url"))
+            ):
+                web_search_auth_token = ctx.config.platform_token
+            scope = WebSearchPolicyScope(workspace_id=ctx.workspace_id, user_token=ctx.user_token)
             try:
-                web_fetch_policy = _combined_fetch_policy(
-                    mandatory_policy,
-                    web_search_tool_entry if use_web_fetch else None,
+                workspace_search = await web_search_policy_port.resolve(scope, requested_tools)
+            except WebSearchPolicyResolutionFailedError as exc:
+                raise adapter.error(_policy_failure_status(exc.reason), exc.message, ErrorKind.API) from exc
+            try:
+                grant = apply_web_access_policy(
+                    workspace_search,
+                    requested_tools=requested_tools,
+                    search_tool_entry=web_search_tool_entry,
+                    config=ctx.config,
                 )
-            except DisjointDomainAllowListsError as exc:
-                raise adapter.error(403, WEB_ACCESS_DOMAINS_EXCLUDED_DETAIL, ErrorKind.PERMISSION) from exc
-            if workspace_search is not None and web_search_tool_entry is not None:
-                try:
-                    web_search_tool_entry = narrow_web_search_tool_entry(
-                        web_search_tool_entry,
-                        workspace_search,
-                        baseline_max_results=web_search_max_results_baseline(ctx.config),
-                    )
-                except WorkspaceWebSearchDomainsExcludedError as exc:
-                    raise adapter.error(403, exc.message, ErrorKind.PERMISSION) from exc
+            except (WebAccessRefusedError, WorkspaceWebSearchDomainsExcludedError) as exc:
+                raise adapter.error(403, exc.message, ErrorKind.PERMISSION) from exc
+            web_search_tool_entry = grant.search_tool_entry
+            web_fetch_policy = grant.fetch_policy
 
         # Inside the try so a rejection releases the budget reservation the
         # request already took, like every other admission failure here.

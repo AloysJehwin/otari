@@ -17,11 +17,11 @@ from typing import Any
 import pytest
 
 from gateway.exceptions.tools_exceptions import WorkspaceWebSearchDomainsExcludedError
+from gateway.models.tools import ResolvedWebSearchConfig
 from gateway.services.tenancy.workspace_web_search_service import (
     _MAX_DOMAINS,
     _MAX_RESULTS,
     InvalidStoredWebSearchDomainError,
-    ResolvedWebSearchConfig,
     _as_tuple,
     _normalize_domains,
     narrow_web_search_tool_entry,
@@ -38,13 +38,14 @@ def _config(**overrides: object) -> ResolvedWebSearchConfig:
         "allowed_domains": None,
         "blocked_domains": None,
         "provider_options": None,
+        "authorized_tools": None,
     }
     values.update(overrides)
     return ResolvedWebSearchConfig(**values)  # type: ignore[arg-type]
 
 
 # What a request would get with no workspace row: the deployment's own setting,
-# or the backend's built-in. `routes/_tools.web_search_max_results_baseline`
+# or the backend's built-in. `web_search_max_results_baseline`
 # answers it for real; the cases below vary it to say which one is in play.
 _BASELINE = 5
 
@@ -310,6 +311,7 @@ def test_a_control_plane_answer_reads_into_the_same_value_as_a_stored_row() -> N
         allowed_domains=("docs.python.org",),
         blocked_domains=None,
         provider_options={"search_depth": "advanced"},
+        authorized_tools=None,
     )
 
 

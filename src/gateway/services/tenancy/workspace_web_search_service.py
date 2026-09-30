@@ -4,16 +4,14 @@ The backend is an operator concern and stays one, so nothing here can point a wo
 A workspace's policy decides who on this deployment may search, and how far their searches may reach.
 
 A policy may veto and may narrow, and it never grants.
-The same rule applies to a stored row and to the control plane's answer:
+:func:`narrow_web_search_tool_entry` narrows one Search declaration:
 
-* ``enabled=False`` refuses web access for the workspace.
 * ``max_results`` is floored against what the request would otherwise get,
   which is the request's own value or the deployment's default.
 * ``blocked_domains`` is added to the request's own block-list.
 * ``allowed_domains`` is intersected with the request's by domain suffix,
   and a request whose list overlaps the workspace's nowhere is refused.
 * ``purpose_hint`` fills in only when the request named none.
-* No stored row means no narrowing.
 
 ``provider_options`` is merged per key with the request winning.
 It is an opaque mapping of backend options, so no narrowing relation holds between two values of it.
@@ -21,8 +19,8 @@ It is an opaque mapping of backend options, so no narrowing relation holds betwe
 Reading or writing a stored policy requires an owner or admin of the workspace or of its organization.
 Reads are gated as well as writes, because the row is the workspace's posture and not one member's allowance.
 
-The request path reads a policy with :func:`resolve_workspace_web_search_config` or :func:`read_web_search_policy`.
-It applies the policy with the pure :func:`narrow_web_search_tool_entry`.
+:func:`resolve_workspace_web_search_config` reads a stored row.
+:func:`read_web_search_policy` reads a control plane's answer.
 None of them takes an identity, because the workspace comes from the authenticated key.
 """
 
@@ -31,7 +29,6 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -40,7 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.exceptions.tools_exceptions import WorkspaceWebSearchDomainsExcludedError
 from gateway.models.tenancy import User, Workspace
-from gateway.models.tools import WorkspaceWebSearchConfig
+from gateway.models.tools import ResolvedWebSearchConfig, WorkspaceWebSearchConfig
 from gateway.services.tenancy import authorization
 from gateway.services.tenancy.organization_service import OrganizationService
 from gateway.services.web_retrieval_backend import MAX_RESULTS_CAP
@@ -250,23 +247,6 @@ class WorkspaceWebSearchConfigPublic(BaseModel):
         )
 
 
-@dataclass(frozen=True)
-class ResolvedWebSearchConfig:
-    """What the request path reads off a workspace's web search policy.
-
-    A value type rather than the ORM row, so the admission check cannot lazily
-    touch the session after it has moved on, and so the tool context carries no
-    ORM identity into a streaming response that outlives the request handler.
-    """
-
-    enabled: bool
-    max_results: int | None
-    purpose_hint: str | None
-    allowed_domains: tuple[str, ...] | None
-    blocked_domains: tuple[str, ...] | None
-    provider_options: dict[str, Any] | None
-
-
 async def resolve_workspace_web_search_config(
     db: AsyncSession,
     workspace_id: uuid.UUID,
@@ -287,6 +267,7 @@ async def resolve_workspace_web_search_config(
         allowed_domains=_as_tuple(config.allowed_domains, stored=True),
         blocked_domains=_as_tuple(config.blocked_domains, stored=True),
         provider_options=config.provider_options,
+        authorized_tools=None,
     )
 
 
@@ -319,6 +300,7 @@ def read_web_search_policy(answer: Mapping[str, Any]) -> ResolvedWebSearchConfig
         allowed_domains=_answer_domains(answer.get("allowed_domains"), "allowed_domains"),
         blocked_domains=_answer_domains(answer.get("blocked_domains"), "blocked_domains"),
         provider_options=provider_options,
+        authorized_tools=None,
     )
 
 
@@ -337,7 +319,7 @@ def narrow_web_search_tool_entry(
     the caller knows which error shape the request format wants.
 
     ``baseline_max_results`` is how many results this request would get without
-    a workspace row at all (``routes/_tools.web_search_max_results_baseline``:
+    a workspace row at all (``web_search_max_results_baseline``:
     the deployment's own setting, or the backend's built-in). The workspace
     ceiling is floored against it and not merely written in, because writing it
     in would let a workspace whose ceiling sits above the operator's *raise* the
