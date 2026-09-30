@@ -2,6 +2,7 @@
 
 from gateway.services.files._metadata import expiry_for, guess_mime_type
 from gateway.services.files._provider_files import ProviderFile, produced_files_for
+from gateway.services.files._provider_uploads import provider_holds_copies
 from gateway.services.files._sandbox_bridge import SandboxFileBridge
 from gateway.services.files._service import (
     DEFAULT_LIST_LIMIT,
@@ -38,6 +39,7 @@ __all__ = [
     "expiry_for",
     "guess_mime_type",
     "produced_files_for",
+    "provider_holds_copies",
     "run_file_sweeper",
     "sandbox_path_for",
 ]

@@ -1,4 +1,4 @@
-"""Files a provider's own sandbox produced, and the client that reads them back.
+"""The files a provider holds, and the client that reads and writes them.
 
 A provider-native code execution keeps what it wrote in the provider's container
 and answers with the provider's file ID.
@@ -7,11 +7,11 @@ The provider does not keep it for long: OpenAI discards a container 20 minutes a
 
 from __future__ import annotations
 
-import os
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from datetime import timedelta
 from functools import cached_property
 from typing import Any
 from urllib.parse import quote
@@ -20,12 +20,14 @@ import httpx
 from anthropic import AnthropicError
 from any_llm import AnyLLM, LLMProvider
 from any_llm.exceptions import AnyLLMError
-from any_llm.types.files import AsyncFileDownload
+from any_llm.types.files import AsyncFileDownload, FileMetadata
 from pydantic import ValidationError
 
-from gateway.core.config import GatewayConfig, provider_credential_env_names
+from gateway.core.config import GatewayConfig
+from gateway.exceptions.files_exceptions import ProviderUploadFailedError
 from gateway.log_config import logger
-from gateway.services.provider_kwargs import get_provider_kwargs
+from gateway.services.provider_kwargs import effective_credential, get_provider_kwargs
+from gateway.types.provider_account import ResolvedCredential
 
 OPENAI_BASE = "https://api.openai.com/v1"
 
@@ -34,6 +36,11 @@ _TIMEOUT = httpx.Timeout(30.0)
 
 # The providers a produced file can be read back from.
 _FILE_PROVIDERS = frozenset({LLMProvider.ANTHROPIC, LLMProvider.OPENAI})
+
+# The shortest life a provider will give a file it stores. Anthropic's Files
+# API takes an expiry between one hour and 90 days, so a copy cannot be asked
+# for less than an hour. A provider absent here sets no floor of its own.
+_MINIMUM_COPY_LIFETIMES = {LLMProvider.ANTHROPIC: timedelta(hours=1)}
 
 # How a file call fails. any-llm raises its own error, or re-raises the provider
 # SDK's while unified exceptions are off, and the OpenAI container read is httpx.
@@ -135,46 +142,17 @@ def produced_files_for(dialect: str, obj: Any) -> list[ProviderFile]:
     return []
 
 
+def minimum_copy_lifetime(provider: LLMProvider) -> timedelta:
+    """The shortest life ``provider`` will give a file it stores, or zero where it sets no floor."""
+    return _MINIMUM_COPY_LIFETIMES.get(provider, timedelta(0))
+
+
 def serves_files(provider: str) -> bool:
     """Whether Otari knows how to fetch a produced file back from ``provider``."""
     try:
         return LLMProvider(provider) in _FILE_PROVIDERS
     except ValueError:
         return False
-
-
-@dataclass(frozen=True)
-class ProviderCredential:
-    """What one configured provider instance calls its provider with."""
-
-    api_key: str
-    api_base: str | None = None
-    client_args: dict[str, Any] = field(default_factory=dict)
-
-
-def _credentials(
-    config: GatewayConfig, provider: LLMProvider, instance: str | None, workspace_id: uuid.UUID | None
-) -> ProviderCredential:
-    """What ``provider`` is called with to read its files.
-
-    ``instance`` is the configured entry the run dispatched through, so a named
-    instance's own settings are the ones used to read back what it produced.
-    Falls back to the provider SDK's own environment variable for the key, which
-    is how a config with an empty provider stanza is credentialed for dispatch
-    too.
-    """
-    kwargs = get_provider_kwargs(config, provider, instance, workspace_id=workspace_id)
-    api_key = kwargs.get("api_key")
-    if not api_key:
-        for name in provider_credential_env_names(provider.value) or ():
-            if value := os.environ.get(name):
-                api_key = value
-                break
-    if not api_key:
-        raise LookupError(f"no credential configured for provider '{provider.value}'")
-    return ProviderCredential(
-        api_key=str(api_key), api_base=kwargs.get("api_base"), client_args=dict(kwargs.get("client_args") or {})
-    )
 
 
 class FileOverBudgetError(Exception):
@@ -197,7 +175,7 @@ def _declared_size(download: AsyncFileDownload) -> int:
     return 0
 
 
-def _container_file_request(file: ProviderFile, credential: ProviderCredential) -> tuple[str, dict[str, str]]:
+def _container_file_request(file: ProviderFile, credential: ResolvedCredential) -> tuple[str, dict[str, str]]:
     """The URL and headers that read ``file``'s bytes out of its OpenAI container.
 
     Raises :class:`ProviderFileUnavailableError` for a file that names no container.
@@ -213,13 +191,13 @@ def _container_file_request(file: ProviderFile, credential: ProviderCredential) 
 
 
 class ProviderFileClient:
-    """Reads back the files a provider instance's code produced, with that instance's credential.
+    """Reads and writes one provider instance's files, with that instance's credential.
 
-    Owns the connection its reads run on, so a caller closes it with
+    Owns the connection its calls run on, so a caller closes it with
     :meth:`aclose` once it has read everything it wants.
     """
 
-    def __init__(self, *, provider: LLMProvider, provider_instance: str, credential: ProviderCredential) -> None:
+    def __init__(self, *, provider: LLMProvider, provider_instance: str, credential: ResolvedCredential) -> None:
         if provider not in _FILE_PROVIDERS:
             raise LookupError(f"otari cannot read files back from provider '{provider.value}'")
         self._provider = provider
@@ -239,8 +217,10 @@ class ProviderFileClient:
         when the deployment holds no credential for one it can.
         """
         member = LLMProvider(provider)
-        credential = _credentials(config, member, provider_instance, workspace_id)
-        return cls(provider=member, provider_instance=provider_instance, credential=credential)
+        kwargs = get_provider_kwargs(config, member, provider_instance, workspace_id=workspace_id)
+        return cls(
+            provider=member, provider_instance=provider_instance, credential=effective_credential(member, kwargs)
+        )
 
     @property
     def provider(self) -> str:
@@ -280,6 +260,43 @@ class ProviderFileClient:
             await self._connection.aclose()
         except (httpx.HTTPError, RuntimeError):
             logger.exception("Could not release the %s connection", self.provider)
+
+    async def upload(self, data: bytes, *, filename: str, mime_type: str, expires_in: int) -> FileMetadata:
+        """Store ``data`` at the provider for ``expires_in`` seconds, and return what it recorded.
+
+        The provider expires the copy itself, which is what keeps Otari's store
+        the one place a file is kept indefinitely.
+
+        Raises:
+            ProviderUploadFailedError: the provider refused the copy, has no
+                files API, or could not be reached.
+        """
+        try:
+            return await self._llm.aupload_file(data, filename=filename, mime_type=mime_type, expires_in=expires_in)
+        except (*_FILE_CALL_ERRORS, NotImplementedError) as exc:
+            # The class and status only: a provider's error body can echo what it was sent.
+            logger.warning(
+                "Provider %s refused a copy of %s: %s (status %s)",
+                self.provider,
+                filename,
+                type(exc).__name__,
+                getattr(exc, "status_code", None),
+            )
+            raise ProviderUploadFailedError from exc
+
+    async def discard(self, file_id: str) -> bool:
+        """Remove a file this client put at the provider, and say whether it is gone.
+
+        False rather than raising, because every caller is already refusing the
+        request that made the file and has nothing better to do with a failure
+        than say so.
+        """
+        try:
+            await self._llm.adelete_file(file_id)
+        except (*_FILE_CALL_ERRORS, NotImplementedError) as exc:
+            logger.warning("Could not remove %s file %s: %s", self.provider, file_id, exc)
+            return False
+        return True
 
     async def get_filename(self, file_id: str) -> str | None:
         """The file's name, from Anthropic's file metadata.
