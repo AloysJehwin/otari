@@ -38,8 +38,10 @@ from gateway.api.routes._pipeline import (
     CONTAINER_AUTO,
     DB_UNAVAILABLE_DETAIL,
     NO_RESOLVABLE_PROVIDER_DETAIL,
+    DeclaredTools,
     ErrorKind,
     RequestContext,
+    ToolBackends,
     _requested_container,
     classify_provider_error,
     default_attempt_kwargs,
@@ -867,36 +869,40 @@ async def create_message(
         adapter=_ADAPTER,
         ctx=ctx,
         response=response,
-        guardrails=request.guardrails,
-        guardrail_text=latest_user_text(request.messages),
-        tools=request.tools,
-        mcp_servers=request.mcp_servers,
-        mcp_server_ids=request.mcp_server_ids,
-        max_tool_iterations=request.max_tool_iterations,
-        tools_header=request.tools_header,
-        code_execution_header=raw_request.headers.get(CODE_EXECUTION_HEADER),
-        web_search_header=raw_request.headers.get(WEB_SEARCH_HEADER),
-        code_execution_port=code_execution_port,
-        mcp_server_port=mcp_server_port,
-        web_search_policy_port=web_search_policy_port,
-        # Anthropic's own field, which is where an Anthropic SDK puts the id it
-        # read off the last response. Resolved at admission against this caller's
-        # leases; the provider never sees it when the sandbox runs the code.
-        container_id=request.container,
-        sandbox_containers=build_sandbox_container_registry(
-            config=config,
-            uow=ctx.uow,
-            user_id=ctx.user_id,
-            workspace_id=ctx.workspace_id,
-            port=code_execution_port,
+        declared=DeclaredTools(
+            guardrails=request.guardrails,
+            guardrail_text=latest_user_text(request.messages),
+            tools=request.tools,
+            mcp_servers=request.mcp_servers,
+            mcp_server_ids=request.mcp_server_ids,
+            max_tool_iterations=request.max_tool_iterations,
+            tools_header=request.tools_header,
+            code_execution_header=raw_request.headers.get(CODE_EXECUTION_HEADER),
+            web_search_header=raw_request.headers.get(WEB_SEARCH_HEADER),
+            # Anthropic's own field, which is where an Anthropic SDK puts the id it
+            # read off the last response. Resolved at admission against this caller's
+            # leases; the provider never sees it when the sandbox runs the code.
+            container_id=request.container,
         ),
-        sandbox_files=build_sandbox_file_bridge(
-            raw_request=raw_request,
-            config=config,
-            uow=ctx.uow,
-            user_id=ctx.user_id,
-            workspace_id=ctx.workspace_id,
-            inputs=sandbox_inputs,
+        backends=ToolBackends(
+            code_execution_port=code_execution_port,
+            mcp_server_port=mcp_server_port,
+            web_search_policy_port=web_search_policy_port,
+            sandbox_containers=build_sandbox_container_registry(
+                config=config,
+                uow=ctx.uow,
+                user_id=ctx.user_id,
+                workspace_id=ctx.workspace_id,
+                port=code_execution_port,
+            ),
+            sandbox_files=build_sandbox_file_bridge(
+                raw_request=raw_request,
+                config=config,
+                uow=ctx.uow,
+                user_id=ctx.user_id,
+                workspace_id=ctx.workspace_id,
+                inputs=sandbox_inputs,
+            ),
         ),
     )
 
