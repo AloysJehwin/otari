@@ -97,6 +97,7 @@ meets all of them for free.
   make easy to get wrong and no single file can show, which is why
   `otari guardrails validate` composes by default.
 - **Every file declares the same `schema_version`.**
+- **Your own files compose too.** `~/.otari/guardrails.yml` and every file under `~/.otari/guardrails/` compose after the repository's files, under these same rules. The hook puts `user:` in front of every gate ID from `~/.otari/`, so those IDs cannot clash with the repository's unless a repository ID also starts with `user:`. When the combined set cannot load, the hook enforces your files alone, or the repository's alone when yours are the broken ones, and says which. See [Your own guardrail in `~/.otari/`](agent-guardrails.md#your-own-guardrail-in-otari).
 - **Order is not contract.** Files compose in repo-relative path order, and
   that order is only ever a tiebreak. What decides which `judge` and
   `verifier` gates survive their per-run caps is `priority` on the gate
@@ -673,6 +674,8 @@ reproducible the way a glob or phrase match is, not a model's opinion, so a
       markers before finishing.
 ```
 
+A `verifier` gate in a file under `~/.otari/` names its script relative to the home directory instead, and the script must be inside `~/.otari/verifiers/`. The hook refuses a path that resolves anywhere else, and still runs the script with the repository root as its working directory.
+
 `when_changed` is optional, the same repo-relative POSIX glob grammar
 `judge`'s own field of that name uses. Omitted (the default), the gate always
 applies. Given, it scopes the gate to a session that actually touched a
@@ -1061,6 +1064,8 @@ the fix there is the standalone install.
 whether a given machine runs the hook is not a repository-wide decision. Otari's
 own repository gitignores it specifically.
 
+The same entries in `~/.claude/settings.json` run the hook in every repository, which is how gates in `~/.otari/` apply everywhere. Use the full matcher, `Edit|Write|NotebookEdit|Read|Bash`, since one entry serves every repository's gates. Keep the hook in one settings file only, or a repository that also registers it can run it twice for each event.
+
 ## Registering it for Codex
 
 `otari hook setup --harness codex` writes the same pair of hook blocks into
@@ -1123,12 +1128,15 @@ otari guardrails validate
 otari guardrails validate --command "npm install lodash"
 otari guardrails validate --path CHANGELOG.md
 otari guardrails validate --guardrail-file somebody-elses-snippet.yml
+otari guardrails validate --repo-only --strict
 ```
 
 With no `--guardrail-file` it composes everything the hook composes, which is
 what finds a gate id declared in two files and a judge-gate total no one file
 shows. `--guardrail-file` narrows it to one file, which is how a snippet
 from somewhere else is checked before it is dropped in.
+
+`--repo-only` leaves out your own files in `~/.otari/` and checks the repository's guardrail alone. Use it to check a repository's rules before you commit a change to them, so a warning in one of your own files cannot fail `--strict`. It cannot be combined with `--guardrail-file`.
 
 An **error** is a gate that provably cannot do its job, whatever the session
 does. Everything `parse_policy` already refuses (an unsupported
