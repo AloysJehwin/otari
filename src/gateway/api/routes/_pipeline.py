@@ -136,6 +136,7 @@ from gateway.core.usage import (
     reasoning_tokens_of,
 )
 from gateway.exceptions import TenancyError
+from gateway.exceptions.control_plane_exceptions import ControlPlaneError
 from gateway.exceptions.tools_exceptions import (
     McpServerResolutionFailedError,
     WebAccessRefusedError,
@@ -2964,6 +2965,20 @@ async def prepare_gateway_tools(
             use_web_search=web.search_tool_entry is not None,
             use_web_fetch=web.fetch_tool_entry is not None,
         )
+    except ControlPlaneError as exc:
+        # A peer's refusal of the web search, code execution or MCP resolve is a domain error,
+        # so without this it would answer in `main.py`'s shape rather than this route's.
+        # Not `domain_error`: that one is right for the tenancy family it is named for, and
+        # would drop a 429's `Retry-After` and read the status as an invalid request. Both are
+        # the peer's answer, which `_control_plane_error_handler` keeps whole for the same reason.
+        await release_reservation(ctx)
+        retry_after = getattr(exc, "retry_after", None)
+        raise adapter.error(
+            exc.status_code,
+            exc.message,
+            error_kind_for_status(exc.status_code),
+            {"Retry-After": retry_after} if retry_after else None,
+        ) from exc
     except HTTPException:
         await release_reservation(ctx)
         raise
