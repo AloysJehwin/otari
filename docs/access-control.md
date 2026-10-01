@@ -185,6 +185,8 @@ dashboard to finish. Where an edge serves the dashboard elsewhere, set
 OAuth signs in an existing Otari identity whose email the provider verifies. It
 does not provision arbitrary provider accounts.
 
+A provider sign-in on an address that is not yet verified marks it verified. It also removes any password and verification link set on that address before then: the provider confirms who owns the address, not who chose that password. The person can set a new password from their account page once signed in. A password on an address that was already verified is kept.
+
 ### Signup
 
 Signup sets a password for an address and sends a verification link. What an
