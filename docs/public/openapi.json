@@ -2506,6 +2506,17 @@
         "title": "CatalogCapabilities",
         "type": "object"
       },
+      "CatalogCapability": {
+        "enum": [
+          "tool_call",
+          "reasoning",
+          "structured_output",
+          "attachment",
+          "open_weights"
+        ],
+        "title": "CatalogCapability",
+        "type": "string"
+      },
       "CatalogCredential": {
         "description": "Whose key serves a catalog offering, which also says who may price it.",
         "enum": [
@@ -2533,6 +2544,39 @@
           "name"
         ],
         "title": "CatalogElsewhere",
+        "type": "object"
+      },
+      "CatalogFacets": {
+        "description": "The filter rail's choices, from the caller's whole authorized catalog rather than one page.",
+        "properties": {
+          "providers": {
+            "description": "Every provider instance offering an authorized model, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Providers",
+            "type": "array"
+          },
+          "total_count": {
+            "description": "Authorized models before any of the request's filters.",
+            "minimum": 0.0,
+            "title": "Total Count",
+            "type": "integer"
+          },
+          "vendors": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogVendorFacet"
+            },
+            "title": "Vendors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "total_count",
+          "providers",
+          "vendors"
+        ],
+        "title": "CatalogFacets",
         "type": "object"
       },
       "CatalogModelDetail": {
@@ -3183,7 +3227,7 @@
         "description": "The grouped catalog, and the facts a reader needs to interpret its prices.",
         "properties": {
           "count": {
-            "description": "Models matching the search, before the window, so a caller can page without reading them all.",
+            "description": "Models matching all filters before paging.",
             "title": "Count",
             "type": "integer"
           },
@@ -3204,6 +3248,17 @@
             ],
             "description": "When the accepted genai-prices snapshot was taken. Null while the bundled dataset serves.",
             "title": "Defaults As Of"
+          },
+          "facets": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogFacets"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when include_facets is requested."
           },
           "metadata_available": {
             "description": "False when models.dev could not be read; descriptions are then absent.",
@@ -3226,6 +3281,31 @@
           "models"
         ],
         "title": "CatalogResponse",
+        "type": "object"
+      },
+      "CatalogVendorFacet": {
+        "properties": {
+          "value": {
+            "description": "The vendor's name; empty for models whose vendor is unknown.",
+            "title": "Value",
+            "type": "string"
+          },
+          "vendor_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor Slug"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "CatalogVendorFacet",
         "type": "object"
       },
       "CeremonyOptions": {
@@ -21560,7 +21640,7 @@
             }
           },
           {
-            "description": "Narrow to models whose name, catalog id or any selector contains this text, case-insensitively.",
+            "description": "Case-insensitive text in a model's name, vendor, id, selectors, or provider instances.",
             "in": "query",
             "name": "search",
             "required": false,
@@ -21574,35 +21654,232 @@
                   "type": "null"
                 }
               ],
-              "description": "Narrow to models whose name, catalog id or any selector contains this text, case-insensitively.",
+              "description": "Case-insensitive text in a model's name, vendor, id, selectors, or provider instances.",
               "title": "Search"
             }
           },
           {
-            "description": "Number of models to skip",
+            "description": "Number of matching models to skip.",
             "in": "query",
             "name": "skip",
             "required": false,
             "schema": {
               "default": 0,
-              "description": "Number of models to skip",
+              "description": "Number of matching models to skip.",
               "minimum": 0,
               "title": "Skip",
               "type": "integer"
             }
           },
           {
-            "description": "Maximum number of models to return",
+            "description": "Maximum number of models to return.",
             "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
               "default": 100,
-              "description": "Maximum number of models to return",
+              "description": "Maximum number of models to return.",
               "maximum": 1000,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "description": "Match any named provider instance.",
+            "in": "query",
+            "name": "provider",
+            "required": false,
+            "schema": {
+              "description": "Match any named provider instance.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "title": "Provider",
+              "type": "array"
+            }
+          },
+          {
+            "description": "Match any vendor; an empty value names unknown vendors.",
+            "in": "query",
+            "name": "vendor",
+            "required": false,
+            "schema": {
+              "description": "Match any vendor; an empty value names unknown vendors.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "title": "Vendor",
+              "type": "array"
+            }
+          },
+          {
+            "description": "Require every input modality.",
+            "in": "query",
+            "name": "input_modality",
+            "required": false,
+            "schema": {
+              "description": "Require every input modality.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "title": "Input Modality",
+              "type": "array"
+            }
+          },
+          {
+            "description": "Require every output modality.",
+            "in": "query",
+            "name": "output_modality",
+            "required": false,
+            "schema": {
+              "description": "Require every output modality.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "title": "Output Modality",
+              "type": "array"
+            }
+          },
+          {
+            "description": "Require every capability.",
+            "in": "query",
+            "name": "capability",
+            "required": false,
+            "schema": {
+              "description": "Require every capability.",
+              "items": {
+                "$ref": "#/components/schemas/CatalogCapability"
+              },
+              "maxItems": 100,
+              "title": "Capability",
+              "type": "array"
+            }
+          },
+          {
+            "description": "Minimum context window; unknown windows do not match.",
+            "in": "query",
+            "name": "min_context",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Minimum context window; unknown windows do not match.",
+              "minimum": 0,
+              "title": "Min Context",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum cheapest input price per million tokens; unpriced models do not match.",
+            "in": "query",
+            "name": "max_input",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Maximum cheapest input price per million tokens; unpriced models do not match.",
+              "title": "Max Input"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pricing",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "custom",
+                "default",
+                "priced",
+                "unpriced"
+              ],
+              "title": "Pricing",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "discovered",
+                "custom"
+              ],
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Release window ending today (UTC); zero disables it. Unknown and future releases do not match.",
+            "in": "query",
+            "name": "released_within_days",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Release window ending today (UTC); zero disables it. Unknown and future releases do not match.",
+              "maximum": 36500,
+              "minimum": 0,
+              "title": "Released Within Days",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "name",
+              "enum": [
+                "name",
+                "released",
+                "input",
+                "output",
+                "context",
+                "providers"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "required": false,
+            "schema": {
+              "default": "asc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "title": "Direction",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Include the filter choices drawn from the whole authorized catalog.",
+            "in": "query",
+            "name": "include_facets",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Include the filter choices drawn from the whole authorized catalog.",
+              "title": "Include Facets",
+              "type": "boolean"
             }
           }
         ],
